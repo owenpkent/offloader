@@ -71,8 +71,10 @@ def new_hasher(key: str) -> Hasher:
 def hash_file(path: Path, key: str, chunk_size: int = 8 << 20) -> str:
     """Hash a file off disk. Used by full verification to re-read a
     destination, and by `--rescan` to reconstruct checksums."""
+    from .longpath import open_binary
+
     hasher = new_hasher(key)
-    with open(path, "rb") as handle:
+    with open_binary(path, "rb") as handle:
         for chunk in iter(lambda: handle.read(chunk_size), b""):
             hasher.update(chunk)
     return hasher.hexdigest()

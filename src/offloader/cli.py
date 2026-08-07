@@ -7,7 +7,8 @@ import sys
 import time
 from pathlib import Path
 
-from . import PRODUCT_NAME, __version__, engine, hashers, probe, thumbs
+from . import (PRODUCT_NAME, __version__, engine, hashers, longpath,
+               probe, retry, thumbs)
 from .models import FileStatus, Job, VerificationMode
 from .reports import WRITERS
 from .util import format_elapsed, format_size
@@ -147,6 +148,12 @@ def _common_options(parser: argparse.ArgumentParser) -> None:
                         help="footer line for the PDF (default: product and version)")
     parser.add_argument("--exclude", action="append", default=[], metavar="GLOB",
                         help="extra filename pattern to skip (repeatable)")
+    parser.add_argument("--retries", type=int, default=3, metavar="N",
+                        help="attempts per file when a read fails for a "
+                             "transient reason (default: %(default)s, 1 disables)")
+    parser.add_argument("--retry-wait", type=float, default=2.0, metavar="SECONDS",
+                        help="pause before the first retry, backing off after "
+                             "(default: %(default)s)")
     parser.add_argument("--no-probe", action="store_true",
                         help="skip ffprobe metadata and thumbnails")
     parser.add_argument("--quiet", action="store_true", help="suppress progress")
@@ -214,6 +221,8 @@ def _options_from(args: argparse.Namespace, destinations: list[Path]) -> engine.
         skip_existing=getattr(args, "skip_existing", False),
         job_name=args.name,
         extra_probe=not args.no_probe,
+        retry=retry.RetryPolicy(attempts=max(1, args.retries),
+                                delay=max(0.0, args.retry_wait)),
     )
 
 
@@ -323,6 +332,13 @@ def cmd_info(_args: argparse.Namespace) -> int:
     print(f"  ffmpeg:      {thumbs.ffmpeg_path() or 'NOT FOUND (thumbnails disabled)'}")
     print(f"  report font: {fonts.describe()}"
           f"{'' if fonts.using_reference_fonts() else '  (Verdana missing — metrics differ)'}")
+    enabled = longpath.os_long_paths_enabled()
+    if enabled is not None:
+        prefix = "\\\\?\\"
+        note = ("also applied" if enabled
+                else "required for destinations past 260 characters")
+        print(f"  long paths:  Windows support {'on' if enabled else 'off'};"
+              f" {prefix} prefix {note}")
     print(f"  checksums:   {', '.join(sorted(hashers.algorithm_keys()))}")
     print(f"  reports:     {', '.join(WRITERS)}")
     return 0

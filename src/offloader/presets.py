@@ -14,6 +14,7 @@ from pathlib import Path
 from .config import config_file, read_json, write_json
 from .engine import DEFAULT_EXCLUDES, OffloadOptions
 from .models import VerificationMode
+from .retry import RetryPolicy
 from .naming import DEFAULT_TEMPLATE
 
 PRESETS_FILE = "presets.json"
@@ -44,6 +45,8 @@ class Preset:
     skip_existing: bool = False
     excludes: list[str] = field(default_factory=list)
     naming_template: str = DEFAULT_TEMPLATE
+    retry_attempts: int = 3
+    retry_wait: float = 2.0
     color: str = PRESET_COLORS[0]
     logo: Path | None = None
     footer: str | None = None
@@ -97,6 +100,8 @@ class Preset:
             # Metadata is cheap next to the copy itself and useful even when
             # thumbnails are switched off, so it is always collected.
             extra_probe=True,
+            retry=RetryPolicy(attempts=max(1, self.retry_attempts),
+                              delay=max(0.0, self.retry_wait)),
         )
 
     # ---------------------------------------------------------------- codec
@@ -112,6 +117,8 @@ class Preset:
             "skip_existing": self.skip_existing,
             "excludes": list(self.excludes),
             "naming_template": self.naming_template,
+            "retry_attempts": self.retry_attempts,
+            "retry_wait": self.retry_wait,
             "color": self.color,
             "logo": str(self.logo) if self.logo else None,
             "footer": self.footer,
@@ -136,6 +143,8 @@ class Preset:
             skip_existing=bool(data.get("skip_existing", False)),
             excludes=list(data.get("excludes", [])),
             naming_template=data.get("naming_template") or DEFAULT_TEMPLATE,
+            retry_attempts=int(data.get("retry_attempts", 3)),
+            retry_wait=float(data.get("retry_wait", 2.0)),
             color=data.get("color") or PRESET_COLORS[0],
             logo=Path(data["logo"]) if data.get("logo") else None,
             footer=data.get("footer"),

@@ -164,18 +164,55 @@ known.
 
 - **Controller and drive caches.** As above: `full` verification proves the
   operating system is not lying. It cannot prove the drive is not.
-- **Long paths on Windows.** Paths beyond `MAX_PATH` are not yet handled with
-  the `\\?\` prefix, so a very deep destination tree can fail. It fails loudly
-  rather than silently, but it fails.
-- **No retry on transient read errors.** A marginal card or reader that would
-  succeed on a second attempt currently fails the file. robocopy's `/R` is the
-  model to copy here.
 - **Source read errors that return garbage instead of raising.** Very rare, and
   only a second independent read of the source would catch it. Not implemented.
 - **`skip_existing` compares size, not checksum.** It is a speed option, not a
   safety one, and should not be used on a tree whose integrity is in question.
 - **Concurrent instances.** One app instance serialises its queue. Two instances
   pointed at the same destination are not coordinated.
+
+## Marginal media
+
+Cards and readers fail intermittently long before they fail for good. A read
+that fails for a transient-looking reason is retried — three attempts by
+default, backing off from two seconds, matching robocopy's `/R` and `/W`. Tune
+with `--retries` and `--retry-wait`, or per preset.
+
+The discrimination matters more than the retrying. Retrying a missing file, a
+permission denial or a full disk wastes time and buries the real fault in a
+delay, so only errors with a plausible transient cause qualify: `EIO`, `EBUSY`,
+`ETIMEDOUT`, and on Windows `ERROR_NOT_READY`, `ERROR_CRC`,
+`ERROR_SHARING_VIOLATION` (usually antivirus, usually brief) and
+`ERROR_IO_DEVICE`. `ENOENT` and `ENOSPC` fail immediately.
+
+A retry restarts the whole file rather than resuming, because a partial read
+leaves the running checksum meaningless. The partial is discarded and the
+progress it claimed is given back, so a retry cannot push the job past 100 %.
+
+**A recovered file is still reported.** A card that reads on the third attempt
+today is a card to stop using, so the job carries a warning naming it. Silent
+recovery would be the wrong outcome.
+
+## Long paths
+
+Windows caps a path at 260 characters unless the caller opts out with the
+extended-length prefix, and camera-original trees reach that easily — a dated
+project folder, a reel, a camera letter, a `Proxy` subdirectory and a long clip
+name, with a NAS share on the front.
+
+File operations go through helpers that add the prefix when a path approaches
+the limit. The prefix disables path normalisation, so paths are made absolute
+and normalised first, and UNC paths take the `UNC\server\share` form rather than
+a doubled prefix.
+
+**Caveat on the evidence.** The development machine has `LongPathsEnabled = 1`
+in the registry, so Windows accepts long paths there natively and *the original
+failure could not be reproduced on it* — a 315-character destination worked
+before the change as well as after. That registry key defaults to `0`, so most
+Windows machines do need this. Treat it as tested insurance rather than as a fix
+for a demonstrated failure: the transformation logic is covered directly, while
+the end-to-end test passes either way. `offloader info` reports which case a
+given machine is in.
 
 ## Working practice
 

@@ -18,7 +18,8 @@ from pathlib import Path
 from typing import Callable, Iterable, Sequence
 
 from . import braw as braw_mod
-from . import companions, integrity
+from . import companions, integrity, longpath
+from . import retry as retry_mod
 from . import probe as probe_mod
 from . import sysinfo, thumbs
 from .hashers import get_algorithm, hash_file, new_hasher
@@ -176,6 +177,9 @@ class OffloadOptions:
     job_name: str | None = None
     thumbnail_dir: Path | None = None
     extra_probe: bool = True
+    #: How hard to try again when a read fails for a transient-looking reason.
+    #: Marginal cards and readers routinely succeed on a second attempt.
+    retry: retry_mod.RetryPolicy = field(default_factory=retry_mod.RetryPolicy)
 
 
 @dataclass
@@ -239,7 +243,7 @@ def _copy_fanout(source: Path, targets: Sequence[Path], algorithm: str,
         if Path(target).resolve() == source.resolve():
             raise UnsafeDestination(
                 f"refusing to write {target}: it is the source file")
-        target.parent.mkdir(parents=True, exist_ok=True)
+        longpath.makedirs(target.parent)
 
     chunks: queue.Queue = queue.Queue(maxsize=READ_AHEAD)
     stop = threading.Event()
@@ -248,7 +252,7 @@ def _copy_fanout(source: Path, targets: Sequence[Path], algorithm: str,
     def read_ahead() -> None:
         """Keep the queue fed so the next read overlaps the current write."""
         try:
-            with open(source, "rb") as reader:
+            with longpath.open_binary(source, "rb") as reader:
                 while not stop.is_set():
                     if control is not None:
                         control.checkpoint()
@@ -282,7 +286,7 @@ def _copy_fanout(source: Path, targets: Sequence[Path], algorithm: str,
     started = False
     try:
         for target in targets:
-            handles.append(open(target, "wb"))
+            handles.append(longpath.open_binary(target, "wb"))
         thread.start()
         started = True
 
@@ -325,7 +329,7 @@ def _discard(targets: Iterable[Path]) -> None:
     worse than no file at all."""
     for target in targets:
         try:
-            Path(target).unlink(missing_ok=True)
+            longpath.unlink(target)
         except OSError:
             pass
 
@@ -420,6 +424,8 @@ def run(source_root: Path, options: OffloadOptions,
         # or interrupted attempt cannot take it down with it.
         partials = [t.with_name(t.name + PARTIAL_SUFFIX) for t in targets]
 
+        bytes_at_start = counters.job_bytes_done
+
         try:
             def on_chunk(n: int, _idx=index, _st=stat) -> None:
                 counters.job_bytes_done += n
@@ -427,8 +433,32 @@ def run(source_root: Path, options: OffloadOptions,
                                    0, _st.st_size,
                                    counters.job_bytes_done, counters.job_bytes_total))
 
-            src_sum, dst_sums = _copy_fanout(
-                source, partials, options.algorithm, on_chunk, control)
+            def rewind() -> None:
+                # A retry restarts the file, so discard what the failed attempt
+                # wrote and give back the progress it claimed.
+                _discard(partials)
+                counters.job_bytes_done = bytes_at_start
+
+            def note_retry(attempt: int, exc: BaseException, pause: float) -> None:
+                emit(ProgressEvent(index, len(files), source.name, "retry",
+                                   0, stat.st_size,
+                                   counters.job_bytes_done,
+                                   counters.job_bytes_total))
+                counters.errors.append(
+                    f"{source.name}: read failed ({exc}); "
+                    f"attempt {attempt} of {options.retry.attempts}")
+
+            (src_sum, dst_sums), used = retry_mod.call(
+                lambda: _copy_fanout(source, partials, options.algorithm,
+                                     on_chunk, control),
+                options.retry, on_retry=note_retry, before_retry=rewind,
+            )
+            if used > 1:
+                # Not a failure, but a card that needs retries today is a card
+                # to stop using.
+                job.warnings.append(
+                    f"{source.name} copied on attempt {used} of "
+                    f"{options.retry.attempts} — the source may be failing")
             entry.checksum = src_sum or None
         except JobCancelled:
             _discard(partials)
@@ -472,7 +502,15 @@ def run(source_root: Path, options: OffloadOptions,
                             "its verification may have been served from memory"
                         )
                     try:
-                        dst_sum = hash_file(partial, options.algorithm)
+                        dst_sum, verify_attempts = retry_mod.call(
+                            lambda p=partial: hash_file(p, options.algorithm),
+                            options.retry,
+                        )
+                        if verify_attempts > 1:
+                            job.warnings.append(
+                                f"{target.name} verified on attempt "
+                                f"{verify_attempts} — the destination may be "
+                                "failing")
                         destination.checksum = dst_sum or None
                     except OSError as exc:
                         destination.status = FileStatus.FAILED
@@ -498,7 +536,7 @@ def run(source_root: Path, options: OffloadOptions,
                 continue
 
             try:
-                os.replace(partial, target)     # atomic within a filesystem
+                longpath.replace(partial, target)   # atomic within a filesystem
             except OSError as exc:
                 destination.status = FileStatus.FAILED
                 destination.error = f"could not put the file in place: {exc}"

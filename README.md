@@ -120,6 +120,11 @@ The short version:
   proves nothing about the device.
 - Empty files, and verifications that may have been served from cache, are
   reported as warnings rather than folded into a "Verified" verdict.
+- Reads that fail for a transient reason are retried (`--retries`, default 3),
+  and a file that only succeeded on a later attempt is reported — a card that
+  needs retries today is a card to stop using.
+- Destinations past Windows' 260-character limit use the extended-length path
+  prefix. `offloader info` reports whether your machine needs it.
 
 Before you erase a card:
 
@@ -174,6 +179,8 @@ offloader report --source D:\video\080426\A001 --report pdf,html
 | `--exclude GLOB` | extra filename pattern to skip; repeatable |
 | `--flat` | do not recreate the source folder structure |
 | `--skip-existing` | skip files already present at matching size |
+| `--retries N` | attempts per file on a transient read failure (default 3, 1 disables) |
+| `--retry-wait SECONDS` | pause before the first retry, backing off after (default 2) |
 | `--no-probe` | skip ffprobe metadata and thumbnails |
 
 Exit status is `0` on success, `1` if any file failed verification, `2` on a
@@ -232,13 +239,13 @@ what makes the report layer testable without moving bytes.
 
 ```sh
 pip install -e ".[dev]"
-pytest                      # 324 tests, ~26s
+pytest                      # 368 tests, ~26s
 pytest --fuzz               # same suite, 3000 examples per property (~2 min)
 ruff check src tests
 pytest --cov=offloader --cov-report=term-missing
 ```
 
-324 tests at 82% line coverage. They cover formatting against the reference's
+368 tests at 82% line coverage. They cover formatting against the reference's
 exact strings, checksum vectors and streaming equivalence, copy/verify
 behaviour including simulated destination corruption, pause/resume/cancel
 concurrency, ffprobe parsing, preset and history persistence, card detection,
@@ -293,9 +300,6 @@ protection).
 
 Remaining, toward fuller ShotPut Pro parity:
 
-- Long-path support on Windows (the `\\?\` prefix) — a deep destination tree can
-  still fail today, where robocopy handles it natively
-- Retry on transient read errors, for marginal cards and readers
 - ASC-MHL sealing alongside classic MHL
 - Email/SMS notification on completion
 - C4 ID checksums
