@@ -13,6 +13,7 @@ from pathlib import Path
 
 from .config import config_file, read_json, write_json
 from .engine import DEFAULT_EXCLUDES, OffloadOptions
+from .hashers import ALGORITHMS
 from .models import VerificationMode
 from .naming import DEFAULT_TEMPLATE
 from .retry import RetryPolicy
@@ -128,27 +129,63 @@ class Preset:
 
     @classmethod
     def from_dict(cls, data: dict) -> Preset:
+        """Load a preset from JSON, tolerating anything.
+
+        `dict.get(key, default)` returns None when the key is *present* with a
+        null value, which is exactly what a hand-edited or version-skewed
+        config produces. Every field therefore falls back when the value is
+        missing **or** null — a config must never brick the app.
+        """
+        def value(key, fallback):
+            got = data.get(key)
+            return fallback if got is None else got
+
+        def as_int(key, fallback):
+            try:
+                return int(value(key, fallback))
+            except (TypeError, ValueError):
+                return fallback
+
+        def as_float(key, fallback):
+            try:
+                return float(value(key, fallback))
+            except (TypeError, ValueError):
+                return fallback
+
+        def as_list(key):
+            got = value(key, [])
+            return list(got) if isinstance(got, (list, tuple)) else []
+
         try:
-            verification = VerificationMode(data.get("verification", "source-only"))
-        except ValueError:
+            verification = VerificationMode(value("verification", "source-only"))
+        except (ValueError, TypeError):
             verification = VerificationMode.SOURCE_ONLY
+
+        algorithm = value("algorithm", "xxh3-64")
+        if algorithm not in ALGORITHMS:
+            algorithm = "xxh3-64"
+
         return cls(
-            name=data.get("name") or "Untitled",
-            destinations=[Path(p) for p in data.get("destinations", [])],
-            algorithm=data.get("algorithm", "xxh3-64"),
+            name=str(value("name", "Untitled")) or "Untitled",
+            destinations=[Path(p) for p in as_list("destinations")],
+            algorithm=algorithm,
             verification=verification,
-            thumbnail_count=int(data.get("thumbnail_count", 4)),
-            reports=list(data.get("reports", ["pdf"])),
-            preserve_structure=bool(data.get("preserve_structure", True)),
-            skip_existing=bool(data.get("skip_existing", False)),
-            excludes=list(data.get("excludes", [])),
-            naming_template=data.get("naming_template") or DEFAULT_TEMPLATE,
-            retry_attempts=int(data.get("retry_attempts", 3)),
-            retry_wait=float(data.get("retry_wait", 2.0)),
-            color=data.get("color") or PRESET_COLORS[0],
+            thumbnail_count=as_int("thumbnail_count", 4),
+            # An explicitly empty list is a real choice — offload without
+            # paperwork — so only a missing or null key falls back to the
+            # default.
+            reports=([r for r in as_list("reports") if isinstance(r, str)]
+                     if data.get("reports") is not None else ["pdf"]),
+            preserve_structure=bool(value("preserve_structure", True)),
+            skip_existing=bool(value("skip_existing", False)),
+            excludes=[e for e in as_list("excludes") if isinstance(e, str)],
+            naming_template=str(value("naming_template", DEFAULT_TEMPLATE)),
+            retry_attempts=as_int("retry_attempts", 3),
+            retry_wait=as_float("retry_wait", 2.0),
+            color=str(value("color", PRESET_COLORS[0])),
             logo=Path(data["logo"]) if data.get("logo") else None,
             footer=data.get("footer"),
-            use_count=int(data.get("use_count", 0)),
+            use_count=as_int("use_count", 0),
             last_used=data.get("last_used"),
         )
 

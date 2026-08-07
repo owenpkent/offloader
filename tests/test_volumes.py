@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from offloader import volumes
 
 
@@ -82,3 +84,22 @@ def test_usage_fields_are_consistent():
     for volume in volumes.list_volumes():
         assert volume.used_bytes == max(0, volume.total_bytes - volume.free_bytes)
         assert volume.display_name
+
+
+def test_a_firmlinked_system_volume_is_not_a_card(tmp_path: Path, monkeypatch):
+    """REGRESSION, found by CI on macOS. The boot volume also appears as
+    /Volumes/Macintosh HD, a firmlink to /. String comparison missed it, so the
+    system-volume guard did not fire — and macOS has a /private directory,
+    which is an AVCHD marker. The boot drive was badged CARD."""
+    system = tmp_path / "real-root"
+    (system / "private").mkdir(parents=True)
+    alias = tmp_path / "Volumes" / "Macintosh HD"
+    alias.parent.mkdir(parents=True)
+    try:
+        alias.symlink_to(system, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable")
+
+    monkeypatch.setattr(volumes, "system_root", lambda: system)
+    assert not volumes.detect_camera_card(system, "fixed")
+    assert not volumes.detect_camera_card(alias, "removable")

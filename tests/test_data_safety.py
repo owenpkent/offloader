@@ -278,6 +278,8 @@ def test_empty_files_are_flagged(tmp_path: Path):
     job = engine.run(card, _options(tmp_path))
     assert any("A001_C001.mov" in warning and "empty" in warning
                for warning in job.warnings)
+    # Other warnings may be present (a platform without a cache-eviction call
+    # says so once); none of them should be about the non-empty clip.
     assert not any("A001_C002.mov" in warning for warning in job.warnings)
 
 

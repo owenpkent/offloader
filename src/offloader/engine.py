@@ -370,6 +370,9 @@ def run(source_root: Path, options: OffloadOptions,
 
     thumb_dir = options.thumbnail_dir or (dest_roots[0] / f"{job.name}_Reports" / "thumbs")
 
+    #: Whether the "cache could not be evicted" limitation has been reported.
+    evict_noted = False
+
     def emit(event: ProgressEvent) -> None:
         if progress:
             progress(event)
@@ -502,10 +505,16 @@ def run(source_root: Path, options: OffloadOptions,
                                        counters.job_bytes_total))
                     # Evict first, or the read-back is served from the page
                     # cache and verifies our own memory against itself.
-                    if not integrity.evict_from_cache(partial):
+                    if not integrity.evict_from_cache(partial) and not evict_noted:
+                        # Said once per job, not once per clip: where the
+                        # platform has no eviction call at all (macOS has no
+                        # posix_fadvise), repeating it per file would bury the
+                        # warnings that are about actual media.
+                        evict_noted = True
                         job.warnings.append(
-                            f"could not evict {partial.name} from the page cache; "
-                            "its verification may have been served from memory"
+                            "could not evict files from the page cache on this "
+                            "platform, so full verification may have read from "
+                            "memory rather than the device"
                         )
                     try:
                         dst_sum, verify_attempts = retry_mod.call(

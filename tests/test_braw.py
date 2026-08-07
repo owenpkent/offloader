@@ -288,7 +288,13 @@ def test_proxy_directory_naming_variants(tmp_path: Path, directory: str):
     original = write_braw(card / "clip.braw")
     proxy = card / directory / "clip.mp4"
     proxy.write_bytes(b"proxy")
-    assert companions.find_proxy(original) == proxy
+
+    found = companions.find_proxy(original)
+    assert found is not None
+    # samefile, not path equality: on a case-insensitive filesystem "Proxy" and
+    # "proxy" are one directory, so the search returns whichever spelling it
+    # tried first. That is the same file, which is what matters.
+    assert found.samefile(proxy)
 
 
 def test_a_proxy_beside_the_original_is_found(tmp_path: Path):
@@ -381,7 +387,8 @@ def test_an_interrupted_clip_is_flagged_during_the_offload(tmp_path: Path):
     # And it is still unplayable, which the report has to say.
     assert any("A001_C002.braw" in w and "will not play" in w
                for w in job.warnings)
-    assert not any("A001_C001.braw" in w for w in job.warnings)
+    assert not any("A001_C001.braw" in w and "will not play" in w
+                   for w in job.warnings)
 
 
 def test_camera_metadata_reaches_the_job(tmp_path: Path):

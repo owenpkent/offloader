@@ -8,6 +8,23 @@ project uses [semantic versioning][semver].
 
 ## [Unreleased]
 
+### Fixed
+
+Found by adding CI on Linux and macOS — the suite had only ever run on Windows.
+
+- **A preset with explicit nulls loaded unusable.** `dict.get(key, default)`
+  returns None when the key is present with a null value, so a hand-edited or
+  version-skewed `presets.json` produced a preset whose algorithm was None,
+  which crashed when the job ran. Every field now falls back on missing *or*
+  null. Caught by the property tests.
+- **macOS badged the boot drive as a camera card.** The system volume also
+  appears as `/Volumes/Macintosh HD`, a firmlink to `/`, so the system-volume
+  guard missed it by string comparison — and macOS has a `/private` directory,
+  which is an AVCHD marker. Volumes are now compared resolved and deduplicated.
+- **The page-cache warning repeated once per file on macOS**, which has no
+  `posix_fadvise`, burying the warnings that were about actual media. Now said
+  once per job.
+
 ## [0.1.0] — 2026-08-07
 
 First release. Engine, CLI, five report formats, and the desktop app.

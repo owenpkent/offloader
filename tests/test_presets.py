@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from offloader.hashers import ALGORITHMS
 from offloader.models import VerificationMode
 from offloader.presets import Preset, PresetStore, default_presets
 
@@ -144,3 +145,50 @@ def test_mark_used_records_a_timestamp():
     assert preset.use_count == 1
     assert preset.last_used is not None
     assert preset.in_use
+
+
+# ---------------------------------------------------- null tolerance (CI find)
+
+
+def test_explicit_nulls_fall_back_to_defaults(tmp_path: Path):
+    """REGRESSION, found by the property tests on CI. `dict.get(k, default)`
+    returns None when the key is *present* with a null value, which is exactly
+    what a hand-edited or version-skewed presets.json produces. That gave a
+    Preset with `algorithm=None`, which crashes when the job runs."""
+    preset = Preset.from_dict({
+        "name": None, "algorithm": None, "verification": None,
+        "thumbnail_count": None, "reports": None, "excludes": None,
+        "destinations": None, "naming_template": None, "color": None,
+        "retry_attempts": None, "retry_wait": None, "use_count": None,
+    })
+
+    assert preset.algorithm in ALGORITHMS
+    assert preset.name
+    assert preset.naming_template
+    assert preset.reports == ["pdf"]
+    assert preset.destinations == []
+    assert isinstance(preset.thumbnail_count, int)
+    assert isinstance(preset.retry_wait, float)
+    # And it must actually be usable, not merely constructible.
+    assert preset.to_options().algorithm in ALGORITHMS
+
+
+def test_nonsense_types_fall_back_rather_than_raise():
+    preset = Preset.from_dict({
+        "thumbnail_count": "four", "retry_wait": "soon",
+        "retry_attempts": [], "excludes": 7, "reports": 3,
+        "algorithm": "not-an-algorithm", "verification": "sideways",
+    })
+    assert preset.thumbnail_count == 4
+    assert preset.retry_wait == 2.0
+    assert preset.retry_attempts == 3
+    assert preset.excludes == []
+    assert preset.algorithm in ALGORITHMS
+    assert preset.verification is VerificationMode.SOURCE_ONLY
+
+
+def test_an_explicitly_empty_report_list_is_respected():
+    """Offloading without paperwork is a real choice; only a missing or null
+    key should fall back to the default."""
+    assert Preset.from_dict({"reports": []}).reports == []
+    assert Preset.from_dict({}).reports == ["pdf"]

@@ -88,8 +88,16 @@ def detect_camera_card(root: Path, drive_type: str) -> bool:
     """
     if drive_type in ("network", "optical", "ramdisk", "no-root", "unknown"):
         return False
-    if Path(root) == system_root():
-        return False
+    # Compare resolved: macOS surfaces the boot volume a second time as
+    # /Volumes/Macintosh HD, a firmlink to /. Without resolving, that copy
+    # slipped past this guard and was badged as a card, because macOS has a
+    # /private directory and "private" is an AVCHD marker.
+    try:
+        if Path(root).resolve() == system_root().resolve():
+            return False
+    except OSError:
+        if Path(root) == system_root():
+            return False
 
     directories: set[str] = set()
     media_files = 0
@@ -198,13 +206,30 @@ def _posix_volumes() -> list[Volume]:
 
 
 def list_volumes() -> list[Volume]:
-    """Every mounted volume, cards first so they are easy to spot."""
+    """Every mounted volume, cards first so they are easy to spot.
+
+    Deduplicated by resolved root: macOS reaches the boot volume through both
+    `/` and `/Volumes/Macintosh HD`, and listing it twice would be noise.
+    """
     try:
         volumes = (_windows_volumes() if platform.system() == "Windows"
                    else _posix_volumes())
     except Exception:
         volumes = []
-    return sorted(volumes, key=lambda v: (not v.is_camera_card, str(v.root)))
+
+    seen: set[Path] = set()
+    unique: list[Volume] = []
+    for volume in sorted(volumes, key=lambda v: len(str(v.root))):
+        try:
+            key = volume.root.resolve()
+        except OSError:
+            key = volume.root
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(volume)
+
+    return sorted(unique, key=lambda v: (not v.is_camera_card, str(v.root)))
 
 
 def find_volume(path: Path) -> Volume | None:
