@@ -12,7 +12,7 @@ the first attempt rather than burning three."
 
 ## Checklist
 
-- [ ] `pytest` passes
+- [ ] `pytest` passes (398 tests)
 - [ ] `ruff check src tests` passes
 - [ ] Tests added for the behaviour changed
 
