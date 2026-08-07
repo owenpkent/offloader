@@ -136,8 +136,15 @@ def test_a_failed_copy_leaves_the_previous_good_copy_alone(tmp_path: Path,
 
     def flaky_open(path, mode="r", *args, **kwargs):
         handle = real_open(path, mode, *args, **kwargs)
+        # Scoped to the card. Patching every binary read is too broad: on macOS
+        # `sysinfo.collect()` reaches `platform.mac_ver()`, which reads a system
+        # plist, and the failure surfaced there instead of in the copy.
         if "r" in str(mode) and "b" in str(mode):
-            return FailingRead(handle)
+            try:
+                if Path(path).resolve().is_relative_to(card.resolve()):
+                    return FailingRead(handle)
+            except (OSError, ValueError):
+                pass
         return handle
 
     monkeypatch.setattr(builtins, "open", flaky_open)
