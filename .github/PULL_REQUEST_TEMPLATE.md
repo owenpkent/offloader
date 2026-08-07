@@ -22,7 +22,7 @@ If this touches the copy, verification, or delete path:
       passes against the new code
 - [ ] This does not make a "Verified" verdict easier to reach, or the PR
       explains why the change is safe
-- [ ] [`docs/data-safety.md`](../blob/main/docs/data-safety.md) still describes
+- [ ] [`docs/data-safety.md`](https://github.com/owenpkent/offloader/blob/main/docs/data-safety.md) still describes
       reality, including its "what is still not protected" list
 
 If this changes documented behaviour:

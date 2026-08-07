@@ -6,7 +6,7 @@ body:
     attributes:
       value: |
         **If this involves data loss or a wrong verification verdict**, please
-        read [SECURITY.md](../blob/main/SECURITY.md) and report it privately
+        read [SECURITY.md](https://github.com/owenpkent/offloader/blob/main/SECURITY.md) and report it privately
         first.
 
   - type: textarea
