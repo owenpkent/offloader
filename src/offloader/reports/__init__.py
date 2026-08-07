@@ -1,4 +1,4 @@
-"""Report writers: PDF, CSV, MHL, HTML."""
+"""Report writers: PDF, CSV, MHL, ASC MHL, HTML."""
 
 from .csv_report import write_csv  # noqa: F401
 from .html import write_html  # noqa: F401

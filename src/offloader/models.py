@@ -1,8 +1,8 @@
 """Data model for an offload job.
 
-A `Job` is what the reports render. The engine produces one; the CLI's
-`--rescan` path can also reconstruct one from an already-offloaded tree, which
-is what makes the report generator testable without moving bytes.
+A `Job` is what the reports render. The engine produces one; `engine.rescan`
+(behind the CLI's `report` command) reconstructs one from an already-offloaded
+tree, which is what makes the report generator testable without moving bytes.
 """
 
 from __future__ import annotations

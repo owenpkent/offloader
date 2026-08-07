@@ -88,18 +88,21 @@ per-file progress granularity, pause and resume mid-file, cancelling without
 leaving a partial file that looks complete, and per-destination checksums
 computed from the bytes actually written.
 
-## What robocopy is genuinely better at
+## What robocopy was genuinely better at
 
-Not everything here is settled. robocopy still wins on:
+Two of the three have since been adopted; both are covered in
+[`data-safety.md`](data-safety.md).
 
-- **Long paths.** It handles paths beyond `MAX_PATH` natively. This engine does
-  not yet use the `\\?\` prefix on Windows, so a deep destination tree can still
-  fail. Worth fixing.
+- **Long paths.** It handles paths beyond `MAX_PATH` natively. *Since adopted* —
+  file operations add the extended-length prefix when a path approaches the
+  limit, with the caveat that the original failure could not be reproduced on a
+  machine that has `LongPathsEnabled` set.
 - **Retry on flaky media.** `/R` and `/W` retry a failing read, which matters
-  with a marginal card or reader. This engine fails the file on the first
-  `OSError`. Worth adding.
-- **Metadata fidelity.** ACLs, alternate data streams, junctions. Not relevant to
-  camera originals, but relevant if anyone points this at a general file tree.
+  with a marginal card or reader. *Since adopted* — `--retries` and
+  `--retry-wait`, restricted to errors with a plausible transient cause.
+- **Metadata fidelity.** ACLs, alternate data streams, junctions. Still not
+  handled. Not relevant to camera originals, but relevant if anyone points this
+  at a general file tree.
 
 ## Reproducing
 

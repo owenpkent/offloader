@@ -103,7 +103,8 @@ def new_hasher(key: str) -> Hasher:
 
 def hash_file(path: Path, key: str, chunk_size: int = 8 << 20) -> str:
     """Hash a file off disk. Used by full verification to re-read a
-    destination, and by `--rescan` to reconstruct checksums."""
+    destination, and by the `report` and `verify` commands to reconstruct or
+    re-check checksums without copying."""
     from .longpath import open_binary
 
     hasher = new_hasher(key)
