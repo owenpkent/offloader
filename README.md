@@ -81,6 +81,25 @@ Presets, history and settings live in `%APPDATA%\Offloader` (or
 `~/.config/offloader`). A corrupt config file is treated as an empty one — it
 must never stand between someone and their card.
 
+## Blackmagic RAW
+
+ffprobe returns an empty document for `.braw` — not an error, nothing — so a
+general-purpose tool reports a filename, a size, and a placeholder icon.
+[`docs/braw.md`](docs/braw.md) covers what this one does instead:
+
+- **Metadata straight from the container.** Camera model and firmware, lens,
+  reel/scene/take, good-take flag, resolution, compression ratio and bitrate,
+  colour science generation and embedded LUT — 44 keys in all. Only the `moov`
+  is read, so a 28 GB clip costs the same as a 5 MB one.
+- **Thumbnails from the matching proxy.** Nothing but Blackmagic's SDK decodes
+  BRAW, so the contact sheet comes from the proxy the camera wrote beside it
+  (matched by stem). The report says so explicitly, because frames from a proxy
+  are not evidence the original decoded.
+- **A structural check checksums cannot do.** A clip whose recording was
+  interrupted has no `moov` atom. It copies perfectly, verifies perfectly, and
+  will not play. Every `.braw` is checked during the offload and a failure
+  becomes a job warning — while the card is still in your hand.
+
 ## Data safety
 
 The tool is held to one standard: someone reformats a card because it said
@@ -213,13 +232,13 @@ what makes the report layer testable without moving bytes.
 
 ```sh
 pip install -e ".[dev]"
-pytest                      # 294 tests, ~26s
+pytest                      # 324 tests, ~26s
 pytest --fuzz               # same suite, 3000 examples per property (~2 min)
 ruff check src tests
 pytest --cov=offloader --cov-report=term-missing
 ```
 
-294 tests at 82% line coverage. They cover formatting against the reference's
+324 tests at 82% line coverage. They cover formatting against the reference's
 exact strings, checksum vectors and streaming equivalence, copy/verify
 behaviour including simulated destination corruption, pause/resume/cancel
 concurrency, ffprobe parsing, preset and history persistence, card detection,

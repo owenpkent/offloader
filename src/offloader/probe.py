@@ -11,7 +11,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from .models import AudioTrack, MediaInfo
+from .models import AudioTrack, CameraInfo, MediaInfo
 from .util import format_timecode
 
 #: Extensions we bother probing. Everything else is treated as a data file and
@@ -80,10 +80,59 @@ def _parse_rate(value: str | None) -> float | None:
         return None
 
 
+def _from_braw(path: Path) -> MediaInfo:
+    """BRAW metadata, read straight out of the container.
+
+    ffprobe returns an empty document for BRAW — not an error, nothing at all —
+    so this is the only source of resolution, frame rate, camera and lens.
+    """
+    from . import braw as braw_mod
+
+    info = braw_mod.read_info(path)
+    if info is None:
+        return MediaInfo(container="Blackmagic RAW")
+
+    # The container line already says "Blackmagic RAW"; the codec slot carries
+    # what varies between clips.
+    codec = info.compression_ratio or None
+
+    media = MediaInfo(
+        container="Blackmagic RAW",
+        width=info.width,
+        height=info.height,
+        video_codec=codec,
+        fps=info.fps,
+        duration_sec=info.duration_sec,
+        frame_count=info.frame_count,
+        camera=CameraInfo(
+            model=info.camera_type,
+            lens=info.lens_type,
+            reel=info.reel,
+            scene=info.scene,
+            take=info.take,
+            good_take=info.good_take,
+            camera_number=info.camera_number,
+            compression=info.compression_ratio,
+            colour_science=(f"Gen {info.colour_science_gen}"
+                            if info.colour_science_gen else None),
+            lut=info.lut_name,
+            firmware=info.firmware_version,
+            serial=info.camera_id,
+        ),
+    )
+    if media.fps:
+        media.timecode = format_timecode(0, media.fps)
+    return media
+
+
 def probe(path: Path, timeout: float = 30.0) -> MediaInfo:
     """Read metadata for one file. Returns an empty MediaInfo for non-media
     files, unreadable files, or when ffprobe is missing — a failed probe must
     never fail the offload."""
+    path = Path(path)
+    if path.suffix.lower() == ".braw":
+        return _from_braw(path)
+
     exe = ffprobe_path()
     if exe is None or path.suffix.lower() not in MEDIA_EXTENSIONS:
         return MediaInfo()

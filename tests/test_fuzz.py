@@ -335,20 +335,57 @@ def test_mhl_is_always_well_formed_xml(names: list[str], tmp_path_factory):
     assert root.tag == "hashlist"
 
 
-@settings(max_examples=40, deadline=None)
-@given(names=st.lists(hostile_text, min_size=1, max_size=5))
-def test_html_never_emits_raw_angle_brackets_from_input(names: list[str],
-                                                        tmp_path_factory):
-    out = tmp_path_factory.mktemp("html") / "JobReport.html"
-    write_html(_job([_entry(name or "unnamed") for name in names]), out,
-               thumbnails=False)
-    document = out.read_text(encoding="utf-8")
+def _tag_names(document: str) -> set[str]:
+    from html.parser import HTMLParser
 
-    # Nothing the input contributed may survive as markup.
-    for name in names:
-        if "<" in name:
-            assert name not in document
-    assert document.count("<script") == 0
+    class Collector(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__()
+            self.tags: set[str] = set()
+
+        def handle_starttag(self, tag, attrs):
+            self.tags.add(tag)
+
+    collector = Collector()
+    collector.feed(document)
+    return collector.tags
+
+
+#: Random text almost never forms a valid tag, so a property fed only random
+#: text would pass against a writer with no escaping at all. Mix in payloads
+#: that definitely parse as markup.
+INJECTION_PAYLOADS = [
+    "<script>alert(1)</script>",
+    '<img src=x onerror="1">',
+    '"><b>bold</b>',
+    "</td></tr><tr><td>",
+    "<div><span>nested</span></div>",
+    "<!--comment-->",
+    "<a href='#'>link</a>",
+]
+
+injecting_text = st.one_of(hostile_text, st.sampled_from(INJECTION_PAYLOADS))
+
+
+@settings(max_examples=40, deadline=None)
+@given(names=st.lists(injecting_text, min_size=1, max_size=5))
+def test_html_input_can_never_become_markup(names: list[str], tmp_path_factory):
+    """The real anti-injection property: whatever the filenames contain, the
+    document's element set must be the one the writer chose.
+
+    Asserting `"<" not in document` would be wrong — the page is HTML, and a
+    filename of a single "<" would fail it against `<!doctype html>`.
+    """
+    directory = tmp_path_factory.mktemp("html")
+
+    benign = write_html(_job([_entry("clip.mov") for _ in names]),
+                        directory / "benign.html", thumbnails=False)
+    hostile = write_html(_job([_entry(name or "unnamed") for name in names]),
+                         directory / "hostile.html", thumbnails=False)
+
+    expected = _tag_names(benign.read_text(encoding="utf-8"))
+    actual = _tag_names(hostile.read_text(encoding="utf-8"))
+    assert actual <= expected, f"input introduced elements: {actual - expected}"
 
 
 # --------------------------------------------------------------------- presets

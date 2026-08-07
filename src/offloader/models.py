@@ -62,6 +62,42 @@ class AudioTrack:
 
 
 @dataclass
+class CameraInfo:
+    """What the camera recorded about itself.
+
+    Populated for formats that carry it in-container — BRAW today — and left
+    empty otherwise, so reports can show a camera line only when there is one.
+    """
+
+    model: str | None = None            # "Blackmagic PYXIS 6K"
+    lens: str | None = None
+    reel: str | None = None
+    scene: str | None = None
+    take: str | None = None
+    good_take: bool | None = None
+    camera_number: str | None = None
+    compression: str | None = None      # "8:1"
+    colour_science: str | None = None   # "Gen 5"
+    lut: str | None = None
+    firmware: str | None = None
+    serial: str | None = None
+
+    def slate(self) -> str | None:
+        parts = [f"Reel {self.reel}" if self.reel else None,
+                 f"Scene {self.scene}" if self.scene else None,
+                 f"Take {self.take}" if self.take else None]
+        present = [p for p in parts if p]
+        return " · ".join(present) if present else None
+
+    def summary(self) -> str | None:
+        bits = [b for b in (self.model, self.lens) if b]
+        return "   ".join(bits) if bits else None
+
+    def __bool__(self) -> bool:
+        return any((self.model, self.lens, self.reel, self.scene, self.take))
+
+
+@dataclass
 class MediaInfo:
     """Everything ffprobe told us about a media file. All fields optional:
     non-media files carry an empty MediaInfo and render without a metadata
@@ -76,6 +112,7 @@ class MediaInfo:
     frame_count: int | None = None
     timecode: str | None = None           # "12:54:38:12 NDF"
     audio_tracks: list[AudioTrack] = field(default_factory=list)
+    camera: CameraInfo = field(default_factory=CameraInfo)
 
     @property
     def is_video(self) -> bool:
@@ -107,6 +144,9 @@ class FileEntry:
     checksum: str | None = None
     media: MediaInfo = field(default_factory=MediaInfo)
     thumbnails: list[Path] = field(default_factory=list)
+    #: Set when the contact sheet came from a matching proxy because the
+    #: original could not be decoded.
+    thumbnail_source: Path | None = None
     destinations: list[Destination] = field(default_factory=list)
 
     @property

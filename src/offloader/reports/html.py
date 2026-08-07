@@ -50,6 +50,8 @@ h1 { font-size: 26px; color: var(--muted); margin: 0 0 12px; }
 .clip .meta b { color: var(--fg); font-weight: bold; }
 .strip { display: flex; flex: 1 1 auto; gap: 0; min-width: 0; }
 .strip img { width: 25%; height: auto; object-fit: contain; background: #000; }
+.proxy-note { font-size: 10px; color: var(--muted); font-style: italic;
+              margin-top: 3px; }
 .noimg { flex: 1 1 auto; min-height: 78px; background: #1c1c1c; border-radius: 4px;
          color: #f0a92b; display: flex; align-items: center; justify-content: center;
          font-size: 12px; letter-spacing: 2px; }
@@ -110,6 +112,18 @@ def _clip_meta(job: Job, entry: FileEntry) -> str:
     if timing:
         rows.append("<div>" + " &nbsp; ".join(timing) + "</div>")
 
+    camera = media.camera
+    if camera and camera.summary():
+        rows.append("<div><b>" + _esc(camera.model or "") + "</b> &nbsp; "
+                    + _esc(camera.lens or "") + "</div>")
+    if camera and camera.slate():
+        extras = " &nbsp; ".join(
+            _esc(x) for x in (camera.colour_science,
+                              f"Cam {camera.camera_number}" if camera.camera_number
+                              else None) if x)
+        good = " &nbsp; <b>GOOD TAKE</b>" if camera.good_take else ""
+        rows.append(f"<div><b>{_esc(camera.slate())}</b> &nbsp; {extras}{good}</div>")
+
     if media.audio_tracks:
         track = media.audio_tracks[0]
         count = len(media.audio_tracks)
@@ -158,8 +172,13 @@ def write_html(job: Job, path: Path, *, thumbnails: bool = True, **_options) -> 
         else:
             badge = _esc(entry.source.suffix.lstrip(".").upper() or "FILE")
             strip = f'<div class="noimg">{badge}</div>'
+        provenance = ""
+        if entry.thumbnail_source is not None:
+            provenance = (f'<div class="proxy-note">Frames from proxy: '
+                          f'{_esc(entry.thumbnail_source.name)}</div>')
         clips.append(
-            f'<div class="clip"><div class="meta">{_clip_meta(job, entry)}</div>{strip}</div>'
+            f'<div class="clip"><div class="meta">{_clip_meta(job, entry)}'
+            f'{provenance}</div>{strip}</div>'
         )
 
     rows: list[str] = []

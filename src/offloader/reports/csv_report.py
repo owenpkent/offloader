@@ -29,6 +29,13 @@ COLUMNS = [
     "Duration (sec)",
     "Frames",
     "Timecode",
+    "Camera",
+    "Lens",
+    "Reel",
+    "Scene",
+    "Take",
+    "Good Take",
+    "Colour Science",
     "Error",
 ]
 
@@ -68,6 +75,14 @@ def write_csv(job: Job, path: Path, *, delimiter: str = ",", **_options) -> Path
                 f"{media.duration_sec:.3f}" if media.duration_sec else "",
                 media.frame_count or "",
                 media.timecode or "",
+                media.camera.model or "",
+                media.camera.lens or "",
+                media.camera.reel or "",
+                media.camera.scene or "",
+                media.camera.take or "",
+                ("yes" if media.camera.good_take else
+                 "no" if media.camera.good_take is False else ""),
+                media.camera.colour_science or "",
             ]
 
             if not entry.destinations:

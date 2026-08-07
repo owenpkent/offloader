@@ -17,7 +17,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
 
-from . import integrity
+from . import braw as braw_mod
+from . import companions, integrity
 from . import probe as probe_mod
 from . import sysinfo, thumbs
 from .hashers import get_algorithm, hash_file, new_hasher
@@ -521,6 +522,14 @@ def run(source_root: Path, options: OffloadOptions,
                                counters.job_bytes_done, counters.job_bytes_total))
             entry.media = probe_mod.probe(source)
 
+            if braw_mod.is_braw(source):
+                # A clip whose recording was interrupted has no moov atom. It
+                # copies and verifies perfectly and will not play, so the time
+                # to notice is now, while the card is still in hand.
+                check = braw_mod.check_container(source)
+                if check.is_fatal:
+                    job.warnings.append(f"{source.name}: {check.detail}")
+
             if options.thumbnail_count > 0 and entry.media.is_video:
                 emit(ProgressEvent(index, len(files), source.name, "thumbs",
                                    0, stat.st_size,
@@ -532,8 +541,20 @@ def run(source_root: Path, options: OffloadOptions,
                      if d.status in (FileStatus.VERIFIED, FileStatus.COPIED)),
                     source,
                 )
+                # Camera originals ffmpeg cannot decode borrow the picture from
+                # the proxy the camera recorded alongside them.
+                picture, used_proxy = companions.thumbnail_source(
+                    verified, dest_roots[0] if options.preserve_structure else None)
+                if used_proxy:
+                    entry.thumbnail_source = picture
+                elif companions.needs_proxy(source):
+                    picture, used_proxy = companions.thumbnail_source(
+                        source, source_root)
+                    if used_proxy:
+                        entry.thumbnail_source = picture
+
                 entry.thumbnails = thumbs.extract(
-                    verified, entry.media, thumb_dir, options.thumbnail_count
+                    picture, entry.media, thumb_dir, options.thumbnail_count,
                 )
 
         job.files.append(entry)

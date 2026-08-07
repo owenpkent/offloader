@@ -86,8 +86,10 @@ BAND_HEIGHT = 80.9
 
 TEXT_X = 15.0
 NAME_BASELINE_OFFSET = 8.0
-#: Baselines of the five metadata lines, relative to the row top.
-META_BASELINE_OFFSETS = (19.0, 28.0, 37.0, 46.0, 55.0)
+#: Baselines of the metadata lines, relative to the row top. The reference
+#: report used five; formats that carry camera metadata (BRAW) need two more,
+#: and the row is 80.95pt tall so they fit without disturbing anything above.
+META_BASELINE_OFFSETS = (19.0, 28.0, 37.0, 46.0, 55.0, 64.0, 73.0)
 
 THUMB_X0 = 232.0
 THUMB_X1 = 782.3

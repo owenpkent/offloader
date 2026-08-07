@@ -306,6 +306,30 @@ class PdfReport:
         if timing:
             lines.append(timing)
 
+        camera = media.camera
+        if camera:
+            # Formats that carry the camera's own record of the take — BRAW
+            # today. ffprobe supplies none of this, so it appears nowhere else.
+            if camera.summary():
+                runs = [_label(camera.model or "")]
+                if camera.lens:
+                    runs += [_value(layout.RUN_SEPARATOR), _value(camera.lens)]
+                lines.append(runs)
+
+            slate_runs: list[Run] = []
+            if camera.slate():
+                slate_runs.append(_label(camera.slate()))
+            for extra in (camera.colour_science, camera.camera_number
+                          and f"Cam {camera.camera_number}"):
+                if extra:
+                    if slate_runs:
+                        slate_runs.append(_value(layout.RUN_SEPARATOR))
+                    slate_runs.append(_value(extra))
+            if camera.good_take:
+                slate_runs += [_value(layout.RUN_SEPARATOR), _label("GOOD TAKE")]
+            if slate_runs:
+                lines.append(slate_runs)
+
         for track in media.audio_tracks[:1]:
             name = channel_layout_name(track.channels, track.layout)
             detail = [track.codec]
@@ -317,6 +341,14 @@ class PdfReport:
             lines.append([
                 _label(f"{count} {name} track" + ("s" if count > 1 else "")),
                 _value(layout.RUN_SEPARATOR + layout.RUN_SEPARATOR.join(detail)),
+            ])
+
+        if entry.thumbnail_source is not None:
+            # The contact sheet is not decoded from this file. Say so, or a
+            # reader would take the frames as evidence the original is good.
+            lines.append([
+                _label("Frames from proxy: "),
+                _value(entry.thumbnail_source.name),
             ])
 
         return lines[: len(layout.META_BASELINE_OFFSETS)]
