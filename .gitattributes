@@ -1,0 +1,28 @@
+# Normalise line endings in the repository, check out native on each platform.
+# Without this, every commit from Windows warns about LF -> CRLF conversion and
+# a Linux contributor sees the whole tree as modified.
+* text=auto eol=lf
+
+*.py     text diff=python
+*.md     text
+*.toml   text
+*.yml    text
+*.yaml   text
+*.cfg    text
+*.xsd    text
+*.xml    text
+
+# Binary, never touch.
+*.png    binary
+*.jpg    binary
+*.jpeg   binary
+*.gif    binary
+*.pdf    binary
+*.ico    binary
+*.braw   binary
+*.mov    binary
+*.mp4    binary
+*.mhl    text
+
+# Keep generated/vendored material out of language stats and diffs.
+docs/**  linguist-documentation

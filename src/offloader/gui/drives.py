@@ -197,10 +197,10 @@ class DrivesPanel(QWidget):
         same_set = (
             len(volumes) == len(self._rows)
             and all(existing.matches(new)
-                    for existing, new in zip(self._rows, volumes))
+                    for existing, new in zip(self._rows, volumes, strict=True))
         )
         if same_set:
-            for existing, new in zip(self._rows, volumes):
+            for existing, new in zip(self._rows, volumes, strict=True):
                 existing.update_usage(new)
             return
 

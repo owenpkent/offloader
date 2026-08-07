@@ -9,8 +9,8 @@ from __future__ import annotations
 import datetime as _dt
 import getpass
 import re
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 #: The default matches what a card offload usually wants: the card's own name.
 DEFAULT_TEMPLATE = "{card}"

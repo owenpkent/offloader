@@ -16,8 +16,8 @@ pytest.importorskip("PySide6", reason="GUI extra not installed")
 
 from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
-from offloader.presets import Preset  # noqa: E402
 from offloader.gui import main_window as mw  # noqa: E402
+from offloader.presets import Preset  # noqa: E402
 
 
 @pytest.fixture(scope="session")

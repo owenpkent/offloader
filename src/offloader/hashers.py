@@ -7,9 +7,10 @@ an incremental hasher rather than a whole-file function.
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable, Protocol
+from typing import Protocol
 
 import xxhash
 

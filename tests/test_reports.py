@@ -189,7 +189,7 @@ def test_csv_has_a_row_per_destination(sample_job: Job, tmp_path: Path):
     body = rows[rows.index(header) + 1:]
 
     assert len(body) == sum(len(f.destinations) for f in sample_job.files)
-    record = dict(zip(header, body[0]))
+    record = dict(zip(header, body[0], strict=True))
     assert record["File Name"] == "A001_C001.mov"
     assert record["Source Checksum"] == "cd4990759f33f032"
     assert record["Status"] == "Verified"

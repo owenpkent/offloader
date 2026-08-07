@@ -1,0 +1,12 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Data loss or a wrong verification verdict
+    url: https://github.com/owenpkent/offloader/security/advisories/new
+    about: >
+      Report privately first. This is the most serious class of bug here — see
+      SECURITY.md.
+  - name: How something works
+    url: https://github.com/owenpkent/offloader/blob/main/README.md#documentation
+    about: >
+      The docs/ folder covers the threat model, the PDF layout, benchmarks,
+      BRAW, and ASC MHL. Worth a look before filing.

@@ -403,7 +403,12 @@ def test_camera_metadata_reaches_the_job(tmp_path: Path):
 def test_the_report_records_that_frames_came_from_a_proxy(tmp_path: Path):
     """Frames from a proxy must not read as evidence the original decoded."""
     from offloader.models import (
-        CameraInfo, Destination, FileEntry, FileStatus, Job, MediaInfo,
+        CameraInfo,
+        Destination,
+        FileEntry,
+        FileStatus,
+        Job,
+        MediaInfo,
     )
     from offloader.reports import write_csv, write_html
 

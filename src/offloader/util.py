@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime as _dt
 
+
 def format_size(num_bytes: int) -> str:
     """Format a byte count with the report's variable precision.
 

@@ -19,13 +19,13 @@ pytest.importorskip("PySide6", reason="GUI extra not installed")
 from PySide6.QtCore import QDeadlineTimer, QEventLoop, Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from offloader.models import VerificationMode  # noqa: E402
-from offloader.presets import Preset, PresetStore  # noqa: E402
 from offloader.gui.preset_mode import PresetModePanel  # noqa: E402
 from offloader.gui.queue_view import QueuePanel  # noqa: E402
 from offloader.gui.simple_mode import SimpleModePanel  # noqa: E402
 from offloader.gui.widgets import DestinationList, SourceDropZone  # noqa: E402
 from offloader.gui.worker import JobState, QueueController  # noqa: E402
+from offloader.models import VerificationMode  # noqa: E402
+from offloader.presets import Preset, PresetStore  # noqa: E402
 
 
 @pytest.fixture(scope="session")

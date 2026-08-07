@@ -240,9 +240,10 @@ class PdfReport:
         ]
 
         for (label_x, value_x), rows, value_width in zip(
-            layout.HEADER_COLUMNS, columns, layout.HEADER_VALUE_WIDTHS
+            layout.HEADER_COLUMNS, columns, layout.HEADER_VALUE_WIDTHS, strict=True
         ):
-            for baseline, (label, value) in zip(layout.HEADER_BASELINES, rows):
+            for baseline, (label, value) in zip(layout.HEADER_BASELINES, rows,
+                                                strict=True):
                 if not label and not value:
                     continue
                 self._draw_text(label_x, baseline, label, layout.SIZE_HEADER,
@@ -385,8 +386,10 @@ class PdfReport:
         self._draw_text(text_x, top + layout.NAME_BASELINE_OFFSET, entry.name,
                         layout.SIZE_NAME, bold=True, color=layout.COLOR_LABEL)
 
+        # Deliberately uneven: a clip supplies as many metadata lines as it
+        # has to say, and there are more baseline slots than most rows use.
         for runs, offset in zip(self._metadata_lines(entry),
-                                layout.META_BASELINE_OFFSETS):
+                                layout.META_BASELINE_OFFSETS, strict=False):
             self._draw_flow(text_x, top + offset, runs, layout.SIZE_META,
                             max_width=max_width, minimum=layout.SIZE_META_MIN)
 

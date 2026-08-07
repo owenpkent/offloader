@@ -1,0 +1,77 @@
+name: Bug report
+description: Something behaved incorrectly
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **If this involves data loss or a wrong verification verdict**, please
+        read [SECURITY.md](../blob/main/SECURITY.md) and report it privately
+        first.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you expect, and what did it do instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: >
+        The command you ran, or the steps in the app. Synthetic files are ideal
+        — please don't attach footage.
+      placeholder: |
+        offloader offload --source E:\ --dest D:\archive --verify full
+    validations:
+      required: true
+
+  - type: textarea
+    id: info
+    attributes:
+      label: Output of `offloader info`
+      description: >
+        Reports OS, ffmpeg/ffprobe presence, which font the PDF will use, and
+        whether Windows long-path support is on. These explain most environment
+        differences.
+      render: text
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "`offloader --version`, or the commit you built from"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part
+      multiple: true
+      options:
+        - Copy or verification (engine)
+        - Reports (PDF / CSV / HTML)
+        - MHL or ASC MHL manifests
+        - Blackmagic RAW handling
+        - Desktop app
+        - CLI
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: media
+    attributes:
+      label: Source media, if relevant
+      description: >
+        Camera and format, roughly how many files and how large, and the
+        filesystem on each side (exFAT, NTFS, APFS, SMB share). Filesystem
+        differences cause a surprising number of issues.
+    validations:
+      required: false

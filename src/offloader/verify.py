@@ -13,13 +13,14 @@ a bad cable on the way to the archive.
 from __future__ import annotations
 
 import os
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Callable, Iterator
 from xml.etree import ElementTree as ET
 
-from .ascmhl import ASCMHL_DIRNAME, NAMESPACE as ASCMHL_NAMESPACE
+from .ascmhl import ASCMHL_DIRNAME
+from .ascmhl import NAMESPACE as ASCMHL_NAMESPACE
 from .hashers import ALGORITHMS, hash_file
 from .integrity import evict_from_cache
 

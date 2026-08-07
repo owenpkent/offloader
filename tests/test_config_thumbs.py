@@ -10,7 +10,6 @@ import pytest
 from offloader import config, sysinfo, thumbs
 from offloader.models import MediaInfo
 
-
 # ------------------------------------------------------------------ config
 
 

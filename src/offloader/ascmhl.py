@@ -92,9 +92,9 @@ class _Node:
     #: must still be *recorded* — that is the evidence of where the chain broke
     #: — while being excluded from any directory hash computed over it.
     files: dict[str, tuple[str, str]] = field(default_factory=dict)
-    directories: dict[str, "_Node"] = field(default_factory=dict)
+    directories: dict[str, _Node] = field(default_factory=dict)
 
-    def child(self, name: str) -> "_Node":
+    def child(self, name: str) -> _Node:
         return self.directories.setdefault(name, _Node(name))
 
 

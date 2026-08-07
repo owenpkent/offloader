@@ -14,8 +14,8 @@ from pathlib import Path
 from .config import config_file, read_json, write_json
 from .engine import DEFAULT_EXCLUDES, OffloadOptions
 from .models import VerificationMode
-from .retry import RetryPolicy
 from .naming import DEFAULT_TEMPLATE
+from .retry import RetryPolicy
 
 PRESETS_FILE = "presets.json"
 
@@ -127,7 +127,7 @@ class Preset:
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> "Preset":
+    def from_dict(cls, data: dict) -> Preset:
         try:
             verification = VerificationMode(data.get("verification", "source-only"))
         except ValueError:

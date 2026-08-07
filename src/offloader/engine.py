@@ -13,15 +13,14 @@ import os
 import queue
 import shutil
 import threading
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Iterable, Sequence
 
 from . import braw as braw_mod
-from . import companions, integrity, longpath
-from . import retry as retry_mod
+from . import companions, integrity, longpath, sysinfo, thumbs
 from . import probe as probe_mod
-from . import sysinfo, thumbs
+from . import retry as retry_mod
 from .hashers import get_algorithm, hash_file, new_hasher
 from .models import (
     Destination,
@@ -295,7 +294,7 @@ def _copy_fanout(source: Path, targets: Sequence[Path], algorithm: str,
             if chunk is None:
                 break
             src_hasher.update(chunk)
-            for handle, hasher in zip(handles, dst_hashers):
+            for handle, hasher in zip(handles, dst_hashers, strict=True):
                 handle.write(chunk)
                 hasher.update(chunk)
             on_chunk(len(chunk))
@@ -406,7 +405,7 @@ def run(source_root: Path, options: OffloadOptions,
             t.exists() and t.stat().st_size == stat.st_size for t in targets
         ):
             entry.checksum = None
-            for root, target in zip(dest_roots, targets):
+            for root, target in zip(dest_roots, targets, strict=True):
                 entry.destinations.append(
                     Destination(root=root, path=target, status=FileStatus.SKIPPED)
                 )
@@ -427,30 +426,35 @@ def run(source_root: Path, options: OffloadOptions,
         bytes_at_start = counters.job_bytes_done
 
         try:
-            def on_chunk(n: int, _idx=index, _st=stat) -> None:
+            # These close over the loop variables and are all invoked inside
+            # retry_mod.call below, before the loop advances — but bind them
+            # anyway, so the safety is visible here rather than depending on
+            # when the callee happens to call back.
+            def on_chunk(n: int, _idx=index, _src=source, _st=stat) -> None:
                 counters.job_bytes_done += n
-                emit(ProgressEvent(_idx, len(files), source.name, "copy",
+                emit(ProgressEvent(_idx, len(files), _src.name, "copy",
                                    0, _st.st_size,
                                    counters.job_bytes_done, counters.job_bytes_total))
 
-            def rewind() -> None:
+            def rewind(_partials=partials, _mark=bytes_at_start) -> None:
                 # A retry restarts the file, so discard what the failed attempt
                 # wrote and give back the progress it claimed.
-                _discard(partials)
-                counters.job_bytes_done = bytes_at_start
+                _discard(_partials)
+                counters.job_bytes_done = _mark
 
-            def note_retry(attempt: int, exc: BaseException, pause: float) -> None:
-                emit(ProgressEvent(index, len(files), source.name, "retry",
-                                   0, stat.st_size,
+            def note_retry(attempt: int, exc: BaseException, pause: float,
+                           _idx=index, _src=source, _st=stat) -> None:
+                emit(ProgressEvent(_idx, len(files), _src.name, "retry",
+                                   0, _st.st_size,
                                    counters.job_bytes_done,
                                    counters.job_bytes_total))
                 counters.errors.append(
-                    f"{source.name}: read failed ({exc}); "
+                    f"{_src.name}: read failed ({exc}); "
                     f"attempt {attempt} of {options.retry.attempts}")
 
             (src_sum, dst_sums), used = retry_mod.call(
-                lambda: _copy_fanout(source, partials, options.algorithm,
-                                     on_chunk, control),
+                lambda _src=source, _partials=partials: _copy_fanout(
+                    _src, _partials, options.algorithm, on_chunk, control),
                 options.retry, on_retry=note_retry, before_retry=rewind,
             )
             if used > 1:
@@ -467,7 +471,7 @@ def run(source_root: Path, options: OffloadOptions,
         except (OSError, UnsafeDestination) as exc:
             _discard(partials)
             counters.errors.append(f"{source}: {exc}")
-            for root, target in zip(dest_roots, targets):
+            for root, target in zip(dest_roots, targets, strict=True):
                 entry.destinations.append(
                     Destination(root=root, path=target,
                                 status=FileStatus.FAILED, error=str(exc))
@@ -475,8 +479,10 @@ def run(source_root: Path, options: OffloadOptions,
             job.files.append(entry)
             continue
 
+        # strict: a short dst_sums would silently drop a destination from the
+        # report while its file sat on disk unrecorded.
         for root, target, partial, dst_sum in zip(dest_roots, targets, partials,
-                                                  dst_sums):
+                                                  dst_sums, strict=True):
             destination = Destination(root=root, path=target, checksum=dst_sum or None)
 
             # Mirror source timestamps so the destination reads as an archival

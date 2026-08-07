@@ -1,5 +1,9 @@
 # Offloader
 
+[![CI](https://github.com/owenpkent/offloader/actions/workflows/ci.yml/badge.svg)](https://github.com/owenpkent/offloader/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/downloads/)
+[![Licence](https://img.shields.io/badge/licence-MIT-green)](LICENSE)
+
 Verified media offload for camera cards, with job reports that match the layout
 of [ShotPut Pro][spp]'s `JobReport.pdf`.
 
@@ -334,6 +338,20 @@ Remaining, toward fuller ShotPut Pro parity:
 - BRAW decoding via the Blackmagic RAW SDK, for thumbnails without a proxy
 - Per-job report templates and custom branding presets
 - Windows installer and code signing
+
+## Contributing
+
+Issues and pull requests are welcome. [`CONTRIBUTING.md`](CONTRIBUTING.md)
+covers the setup, how to fake camera hardware in tests, and the one rule that
+shapes everything else: **someone reformats a card because this tool said
+"Verified"**, so anything touching the copy or verification path needs a test
+that fails against the old code.
+
+Found data loss or a wrong verdict? Please read [`SECURITY.md`](SECURITY.md) and
+report it privately first.
+
+- [Code of conduct](CODE_OF_CONDUCT.md)
+- [Changelog](CHANGELOG.md)
 
 ## Licence
 

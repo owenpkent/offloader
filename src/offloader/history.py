@@ -11,9 +11,9 @@ from __future__ import annotations
 
 import datetime as _dt
 import hashlib
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Sequence
 
 from .config import config_file, read_json, write_json
 from .models import Job
@@ -77,7 +77,7 @@ class HistoryEntry:
         return self.__dict__.copy()
 
     @classmethod
-    def from_dict(cls, data: dict) -> "HistoryEntry":
+    def from_dict(cls, data: dict) -> HistoryEntry:
         return cls(
             fingerprint=data.get("fingerprint", ""),
             job_name=data.get("job_name", ""),

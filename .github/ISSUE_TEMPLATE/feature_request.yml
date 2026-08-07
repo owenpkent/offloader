@@ -1,0 +1,42 @@
+name: Feature request
+description: Suggest something the tool should do
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve
+      description: >
+        The workflow it would fix, rather than the feature itself. "I have to
+        re-check three cards by hand before wrap" says more than "add batch
+        verify".
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you have in mind
+    validations:
+      required: false
+
+  - type: textarea
+    id: prior-art
+    attributes:
+      label: How other tools do it
+      description: >
+        If ShotPut Pro, Silverstack, Hedge or YoYotta already solve this, say
+        how. Parity with an established behaviour is an easier argument than a
+        new one.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Data safety
+      options:
+        - label: >
+            This does not make a "Verified" verdict easier to reach, or I have
+            explained why the change is safe.
+          required: false

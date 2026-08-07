@@ -7,8 +7,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import (PRODUCT_NAME, __version__, engine, hashers, longpath,
-               probe, retry, thumbs)
+from . import PRODUCT_NAME, __version__, engine, hashers, longpath, probe, retry, thumbs
 from .models import FileStatus, Job, VerificationMode
 from .reports import WRITERS
 from .util import format_elapsed, format_size
