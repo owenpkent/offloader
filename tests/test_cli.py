@@ -95,3 +95,69 @@ def test_multiple_destinations(source_tree: Path, tmp_path: Path):
     ])
     assert (tmp_path / "d1" / "notes.txt").is_file()
     assert (tmp_path / "d2" / "notes.txt").is_file()
+
+
+# ------------------------------------------------------------------ progress
+
+
+def test_progress_is_silent_when_stderr_is_not_a_tty(capsys):
+    """Piped output must stay clean for logs and CI."""
+    progress = cli._Progress(enabled=True)
+    assert not progress.enabled
+    progress(cli.engine.ProgressEvent(0, 1, "clip.mov", "copy", 0, 10, 5, 10))
+    progress.done()
+    assert capsys.readouterr().err == ""
+
+
+def test_progress_renders_a_throttled_single_line(monkeypatch):
+    written: list[str] = []
+
+    class FakeStderr:
+        @staticmethod
+        def isatty():
+            return True
+
+        @staticmethod
+        def write(text):
+            written.append(text)
+
+        @staticmethod
+        def flush():
+            pass
+
+    monkeypatch.setattr(cli.sys, "stderr", FakeStderr)
+    progress = cli._Progress(enabled=True)
+    assert progress.enabled
+
+    progress(cli.engine.ProgressEvent(0, 2, "clip.mov", "copy", 0, 10, 5, 10))
+    rendered = "".join(written)
+    assert "clip.mov" in rendered
+    assert "50.0%" in rendered
+    assert "1/2" in rendered
+    assert rendered.startswith("\r")
+
+    # A second event inside the throttle window is dropped.
+    before = len(written)
+    progress(cli.engine.ProgressEvent(0, 2, "clip.mov", "copy", 0, 10, 6, 10))
+    assert len(written) == before
+
+    # Completion always renders, throttle or not.
+    progress(cli.engine.ProgressEvent(1, 2, "clip.mov", "copy", 0, 10, 10, 10))
+    assert "100.0%" in "".join(written)
+
+    progress.done()
+    assert "".join(written).endswith("\r")
+
+
+def test_progress_handles_a_zero_byte_job(monkeypatch):
+    class FakeStderr:
+        @staticmethod
+        def isatty():
+            return True
+
+        write = staticmethod(lambda text: None)
+        flush = staticmethod(lambda: None)
+
+    monkeypatch.setattr(cli.sys, "stderr", FakeStderr)
+    progress = cli._Progress(enabled=True)
+    progress(cli.engine.ProgressEvent(0, 1, "empty", "copy", 0, 0, 0, 0))

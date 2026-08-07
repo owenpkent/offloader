@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime as _dt
 import fnmatch
 import os
+import queue
 import shutil
 import threading
 from dataclasses import dataclass, field
@@ -35,6 +36,15 @@ DEFAULT_EXCLUDES = (
 )
 
 CHUNK_SIZE = 8 << 20  # 8 MiB — large enough to keep spinning disks streaming.
+
+#: Chunks the reader may run ahead of the writer. A sequential read-then-write
+#: loop never overlaps the two, so it settles at the harmonic mean of read and
+#: write speed; one thread of read-ahead recovers much of that -- +30% in an
+#: A/B of the two loop shapes on a 4 GB exFAT-to-NVMe offload (see
+#: docs/performance.md, and note the caveats there about absolute figures).
+#: Bounded, so memory stays at READ_AHEAD x CHUNK_SIZE however fast either
+#: side runs.
+READ_AHEAD = 3
 
 
 class JobCancelled(Exception):
@@ -166,26 +176,79 @@ def _copy_fanout(source: Path, targets: Sequence[Path], algorithm: str,
     for target in targets:
         target.parent.mkdir(parents=True, exist_ok=True)
 
-    handles = []
+    chunks: queue.Queue = queue.Queue(maxsize=READ_AHEAD)
+    stop = threading.Event()
+    failure: list[BaseException] = []
+
+    def read_ahead() -> None:
+        """Keep the queue fed so the next read overlaps the current write."""
+        try:
+            with open(source, "rb") as reader:
+                while not stop.is_set():
+                    if control is not None:
+                        control.checkpoint()
+                    chunk = reader.read(CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    # Time-boxed so a consumer that died still lets us exit.
+                    while not stop.is_set():
+                        try:
+                            chunks.put(chunk, timeout=0.2)
+                            break
+                        except queue.Full:
+                            continue
+        except BaseException as exc:      # re-raised on the calling thread
+            failure.append(exc)
+        finally:
+            # The sentinel must be delivered, not attempted: if the queue
+            # happens to be full at EOF a dropped sentinel leaves the consumer
+            # blocked on get() forever. Only give up once `stop` is set, which
+            # means the consumer has already left the loop.
+            while not stop.is_set():
+                try:
+                    chunks.put(None, timeout=0.2)
+                    break
+                except queue.Full:
+                    continue
+
+    thread = threading.Thread(target=read_ahead, name=f"read:{source.name}",
+                              daemon=True)
+    handles: list = []
+    started = False
     try:
         for target in targets:
             handles.append(open(target, "wb"))
-        with open(source, "rb") as reader:
-            while True:
-                if control is not None:
-                    control.checkpoint()
-                chunk = reader.read(CHUNK_SIZE)
-                if not chunk:
-                    break
-                src_hasher.update(chunk)
-                for handle, hasher in zip(handles, dst_hashers):
-                    handle.write(chunk)
-                    hasher.update(chunk)
-                on_chunk(len(chunk))
+        thread.start()
+        started = True
+
+        while True:
+            chunk = chunks.get()
+            if chunk is None:
+                break
+            src_hasher.update(chunk)
+            for handle, hasher in zip(handles, dst_hashers):
+                handle.write(chunk)
+                hasher.update(chunk)
+            on_chunk(len(chunk))
+
+        if failure:
+            raise failure[0]
+
         for handle in handles:
             handle.flush()
+            # Durability is the whole point of an offload: without this the
+            # bytes may still be in the page cache when we declare "Verified",
+            # and a full verification would re-read what it just wrote.
             os.fsync(handle.fileno())
     finally:
+        stop.set()
+        if started:
+            # Drain so a reader parked on a full queue can observe `stop`.
+            while thread.is_alive():
+                try:
+                    chunks.get_nowait()
+                except queue.Empty:
+                    thread.join(timeout=0.05)
         for handle in handles:
             handle.close()
 

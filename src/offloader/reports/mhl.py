@@ -18,6 +18,32 @@ from ..models import Job
 
 _MHL_VERSION = "1.1"
 
+#: XML 1.0 forbids most C0 control characters outright — they cannot even be
+#: written as character references. ElementTree emits them raw, producing a
+#: document no parser will read. One stray control byte in one filename would
+#: therefore strand the verification of the *entire* delivery, so it is
+#: replaced with U+FFFD rather than passed through.
+#: U+FFFD REPLACEMENT CHARACTER.
+_REPLACEMENT = chr(0xFFFD)
+
+
+def _is_xml_char(code: int) -> bool:
+    """The XML 1.0 Char production."""
+    return (
+        code in (0x09, 0x0A, 0x0D)
+        or 0x20 <= code <= 0xD7FF
+        or 0xE000 <= code <= 0xFFFD
+        or 0x10000 <= code <= 0x10FFFF
+    )
+
+
+def _xml_safe(text: object) -> str:
+    """Text ElementTree can serialise and a parser can read back."""
+    return "".join(
+        character if _is_xml_char(ord(character)) else _REPLACEMENT
+        for character in str(text)
+    )
+
 
 def _iso(value: float | _dt.datetime) -> str:
     dt = value if isinstance(value, _dt.datetime) else _dt.datetime.fromtimestamp(value)
@@ -46,9 +72,9 @@ def write_mhl(job: Job, path: Path, *, destination_index: int = 0, **_options) -
     root = ET.Element("hashlist", {"version": _MHL_VERSION})
 
     info = ET.SubElement(root, "creatorinfo")
-    ET.SubElement(info, "name").text = job.name
-    ET.SubElement(info, "username").text = _safe_user()
-    ET.SubElement(info, "hostname").text = platform.node()
+    ET.SubElement(info, "name").text = _xml_safe(job.name)
+    ET.SubElement(info, "username").text = _xml_safe(_safe_user())
+    ET.SubElement(info, "hostname").text = _xml_safe(platform.node())
     ET.SubElement(info, "tool", {"version": __version__}).text = PRODUCT_NAME
     ET.SubElement(info, "startdate").text = _iso(job.started)
     ET.SubElement(info, "finishdate").text = _iso(job.finished or job.started)
@@ -63,10 +89,10 @@ def write_mhl(job: Job, path: Path, *, destination_index: int = 0, **_options) -
             continue
 
         node = ET.SubElement(root, "hash")
-        ET.SubElement(node, "file").text = _relative(file_path, base)
+        ET.SubElement(node, "file").text = _xml_safe(_relative(file_path, base))
         ET.SubElement(node, "size").text = str(entry.size)
         ET.SubElement(node, "lastmodificationdate").text = _iso(entry.modified)
-        ET.SubElement(node, tag).text = checksum
+        ET.SubElement(node, tag).text = _xml_safe(checksum)
         ET.SubElement(node, "hashdate").text = _iso(job.finished or job.started)
 
     ET.indent(root, space="  ")

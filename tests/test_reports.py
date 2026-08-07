@@ -242,3 +242,26 @@ def test_html_escapes_hostile_filenames(sample_job: Job, tmp_path: Path):
     document = write_html(sample_job, tmp_path / "x.html").read_text(encoding="utf-8")
     assert "<script>alert(1)</script>" not in document
     assert "&lt;script&gt;" in document
+
+
+def test_mhl_survives_a_control_character_in_a_filename(sample_job: Job, tmp_path: Path):
+    """XML 1.0 has no way to represent most C0 controls, so ElementTree would
+    emit a document no parser can read — stranding verification of the whole
+    delivery over one bad filename. Found by property-based testing."""
+    sample_job.files[0].destinations[0].path = (
+        sample_job.destination_roots[0] / "clip\x1f\x00.mov"
+    )
+    out = write_mhl(sample_job, tmp_path / "JobReport.mhl")
+
+    root = ET.parse(out).getroot()            # must not raise
+    names = [node.findtext("file") for node in root.findall("hash")]
+    assert any("�" in (name or "") for name in names)
+    assert not any("\x1f" in (name or "") or "\x00" in (name or "") for name in names)
+
+
+def test_mhl_preserves_ordinary_unicode(sample_job: Job, tmp_path: Path):
+    sample_job.files[0].destinations[0].path = (
+        sample_job.destination_roots[0] / "A001_café_日本.mov"
+    )
+    root = ET.parse(write_mhl(sample_job, tmp_path / "j.mhl")).getroot()
+    assert any("café_日本" in (n.findtext("file") or "") for n in root.findall("hash"))

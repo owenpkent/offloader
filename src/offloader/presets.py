@@ -50,6 +50,15 @@ class Preset:
     use_count: int = 0
     last_used: str | None = None
 
+    def __post_init__(self) -> None:
+        # An empty template would render an empty job name, and therefore a
+        # report folder called "_Reports". Normalise here so the value is the
+        # same however the preset was built — constructed, loaded, or edited.
+        if not (self.naming_template or "").strip():
+            self.naming_template = DEFAULT_TEMPLATE
+        if not (self.name or "").strip():
+            self.name = "Untitled"
+
     # ---------------------------------------------------------------- state
     @property
     def in_use(self) -> bool:

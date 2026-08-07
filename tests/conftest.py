@@ -129,3 +129,32 @@ def sample_job(tmp_path: Path) -> Job:
         processors=16,
         system_ram="48 GB",
     )
+
+
+def pytest_addoption(parser):
+    parser.addoption(
+        "--fuzz", action="store_true", default=False,
+        help="run the property-based tests with a much larger example budget",
+    )
+
+
+def pytest_configure(config):
+    """Register hypothesis profiles.
+
+    The default budget keeps the suite fast enough to run on every change;
+    `--fuzz` is the soak profile for hunting the long tail.
+    """
+    try:
+        from hypothesis import HealthCheck, settings
+    except ImportError:
+        return
+
+    settings.register_profile(
+        "ci", max_examples=100, deadline=None,
+        suppress_health_check=[HealthCheck.too_slow],
+    )
+    settings.register_profile(
+        "fuzz", max_examples=3000, deadline=None,
+        suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large],
+    )
+    settings.load_profile("fuzz" if config.getoption("--fuzz") else "ci")

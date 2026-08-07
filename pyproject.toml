@@ -16,7 +16,13 @@ dependencies = [
 
 [project.optional-dependencies]
 gui = ["PySide6>=6.6"]
-dev = ["pytest>=7.4", "pymupdf>=1.24", "ruff>=0.4", "PySide6>=6.6"]
+dev = [
+    "pytest>=7.4",
+    "pymupdf>=1.24",
+    "hypothesis>=6.100",
+    "ruff>=0.4",
+    "PySide6>=6.6",
+]
 
 [project.scripts]
 offloader = "offloader.cli:main"

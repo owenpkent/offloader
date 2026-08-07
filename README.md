@@ -180,17 +180,57 @@ what makes the report layer testable without moving bytes.
 
 ```sh
 pip install -e ".[dev]"
-pytest
+pytest                      # 257 tests, ~27s
+pytest --fuzz               # same suite, 3000 examples per property (~2 min)
 ruff check src tests
+pytest --cov=offloader --cov-report=term-missing
 ```
 
-140 tests cover formatting against the reference's exact strings, checksum
-vectors and streaming equivalence, copy/verify behaviour including simulated
-destination corruption, pause/resume/cancel concurrency, preset and history
-persistence, card detection, PDF geometry read back with PyMuPDF, the CLI, and
-the GUI. The GUI tests run on Qt's offscreen platform and drive the real queue
+257 tests at 81% line coverage. They cover formatting against the reference's
+exact strings, checksum vectors and streaming equivalence, copy/verify
+behaviour including simulated destination corruption, pause/resume/cancel
+concurrency, ffprobe parsing, preset and history persistence, card detection,
+PDF geometry read back with PyMuPDF, the CLI, and the GUI.
+
+The GUI tests run on Qt's offscreen platform and drive the real queue
 controller — the worker thread actually copies files — so they cover the wiring
 between interface and engine, not just that the modules import.
+
+### Property-based testing
+
+`tests/test_fuzz.py` uses [Hypothesis][hyp] to assert invariants over generated
+input rather than over a handful of fixtures. Filenames come off camera cards,
+which in practice means any Unicode at all — accented takes, CJK slates, emoji
+from a naming macro, and the occasional control character from a corrupt
+directory entry.
+
+The properties worth knowing about:
+
+- Every report writer survives arbitrary filenames. The PDF must never draw
+  outside the page; the CSV must keep its column count whatever commas, quotes
+  or newlines a name contains; the MHL must stay parseable; the HTML must never
+  let input become markup.
+- Chunked hashing equals whole-buffer hashing for every algorithm at arbitrary
+  chunk boundaries — the engine's boundaries fall wherever a read lands.
+- `sanitize()` always returns a legal filename, and `build()` never collides
+  with a name already taken.
+- Presets survive a JSON round trip, and load from arbitrary garbage without
+  raising — a hand-edited or version-skewed config must not brick the app.
+
+This found a real bug: XML 1.0 cannot represent most C0 control characters even
+as character references, so a control byte in one filename produced an MHL that
+no parser would read — stranding verification of the entire delivery, not just
+that file. Names are now sanitised into the XML character range.
+
+[hyp]: https://hypothesis.readthedocs.io/
+
+### Copy performance
+
+[`docs/performance.md`](docs/performance.md) covers why the engine does not
+shell out to robocopy, with measurements: robocopy copies ~1.9x faster but emits
+no checksums, so the verified workflow it implies makes two extra passes over
+the data. Hashing in flight beats a faster copy primitive. The one thing worth
+borrowing — overlapping reads with writes — is now in the engine.
 
 ## Roadmap
 
@@ -201,6 +241,9 @@ protection).
 
 Remaining, toward fuller ShotPut Pro parity:
 
+- Long-path support on Windows (the `\\?\` prefix) — a deep destination tree can
+  still fail today, where robocopy handles it natively
+- Retry on transient read errors, for marginal cards and readers
 - ASC-MHL sealing alongside classic MHL
 - Email/SMS notification on completion
 - C4 ID checksums

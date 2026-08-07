@@ -150,3 +150,111 @@ def test_rescan_flags_a_missing_destination(source_tree: Path, tmp_path: Path):
     job = engine.rescan(source_tree, [tmp_path / "never-written"], _options(tmp_path))
     assert all(d.status is FileStatus.SKIPPED
                for f in job.files for d in f.destinations)
+
+
+# ------------------------------------------------------- overlapped read-ahead
+
+
+def test_read_ahead_thread_does_not_leak(source_tree: Path, tmp_path: Path):
+    import threading
+
+    before = threading.active_count()
+    engine.run(source_tree, _options(tmp_path))
+    assert threading.active_count() == before
+
+
+def test_large_file_copies_byte_identically(tmp_path: Path):
+    """Spans many chunks, so the queue actually cycles."""
+    import os as _os
+
+    source = tmp_path / "card"
+    source.mkdir()
+    payload = _os.urandom(engine.CHUNK_SIZE * 3 + 12345)
+    (source / "big.bin").write_bytes(payload)
+
+    job = engine.run(source, _options(tmp_path))
+    copied = (tmp_path / "dest" / "big.bin").read_bytes()
+
+    assert copied == payload
+    assert job.files[0].checksum == hashers.hash_file(source / "big.bin", "xxh3-64")
+    assert job.final_status == "Verified"
+
+
+def test_a_write_failure_surfaces_and_does_not_hang(tmp_path: Path, monkeypatch):
+    """If the consumer dies the reader must observe it and exit, rather than
+    parking forever on a queue nobody is draining."""
+    import builtins
+    import threading
+    import time
+
+    source = tmp_path / "big.bin"
+    source.write_bytes(b"\0" * (engine.CHUNK_SIZE * 5))
+    real_open = builtins.open
+
+    class ExplodingHandle:
+        def __init__(self) -> None:
+            self.writes = 0
+
+        def write(self, data):
+            self.writes += 1
+            if self.writes > 1:
+                raise OSError("destination full")
+
+        def flush(self):
+            pass
+
+        def close(self):
+            pass
+
+    def fake_open(path, mode="r", *args, **kwargs):
+        if "w" in str(mode):
+            return ExplodingHandle()
+        return real_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", fake_open)
+
+    before = threading.active_count()
+    started = time.monotonic()
+    with pytest.raises(OSError, match="destination full"):
+        engine._copy_fanout(source, [tmp_path / "out.bin"], "xxh3-64", lambda n: None)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 10, "reader thread was not released promptly"
+    assert threading.active_count() == before
+
+
+def test_read_ahead_is_bounded(tmp_path: Path):
+    """Memory must stay at READ_AHEAD x CHUNK_SIZE however fast the source is."""
+    assert 1 <= engine.READ_AHEAD <= 8
+    assert engine.READ_AHEAD * engine.CHUNK_SIZE <= 64 << 20
+
+
+def test_sentinel_is_delivered_even_when_the_queue_is_full(tmp_path: Path,
+                                                           monkeypatch):
+    """Regression: the reader's end-of-file sentinel used to be posted with
+    put_nowait, so if the queue happened to be full at EOF it was dropped and
+    the consumer blocked on get() forever. A slow consumer keeps the queue full
+    and reproduces it deterministically."""
+    import threading
+    import time
+
+    monkeypatch.setattr(engine, "READ_AHEAD", 1)
+    source = tmp_path / "big.bin"
+    source.write_bytes(b"\0" * (engine.CHUNK_SIZE * 3))
+
+    def slow(_n: int) -> None:
+        time.sleep(0.3)          # guarantees the reader outruns the writer
+
+    result: dict[str, object] = {}
+
+    def run() -> None:
+        result["digest"] = engine._copy_fanout(
+            source, [tmp_path / "out.bin"], "xxh3-64", slow)
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(timeout=30)
+
+    assert not worker.is_alive(), "copy deadlocked waiting for the sentinel"
+    assert (tmp_path / "out.bin").stat().st_size == engine.CHUNK_SIZE * 3
+    assert result["digest"][0] == hashers.hash_file(source, "xxh3-64")

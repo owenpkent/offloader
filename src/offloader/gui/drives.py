@@ -29,15 +29,27 @@ class _ScanSignals(QObject):
 
 
 class _ScanTask(QRunnable):
-    def __init__(self) -> None:
+    """One volume scan on a pool thread.
+
+    The signals object belongs to the watcher, not to this task: a QRunnable's
+    Python wrapper can be collected the moment `start()` returns, and a signals
+    object owned by it would be destroyed out from under the running thread.
+    """
+
+    def __init__(self, signals: _ScanSignals) -> None:
         super().__init__()
-        self.signals = _ScanSignals()
+        self._signals = signals
 
     def run(self) -> None:  # noqa: D102 - QRunnable entry point
         try:
-            self.signals.done.emit(list_volumes())
+            volumes = list_volumes()
         except Exception:
-            self.signals.done.emit([])
+            volumes = []
+        try:
+            self._signals.done.emit(volumes)
+        except RuntimeError:
+            # The window closed while this scan was in flight; nothing to tell.
+            pass
 
 
 class VolumeWatcher(QObject):
@@ -49,27 +61,37 @@ class VolumeWatcher(QObject):
         super().__init__(parent)
         self._volumes: list[Volume] = []
         self._busy = False
+        self._stopped = False
+        # Parented, so its lifetime is the watcher's rather than a task's.
+        self._signals = _ScanSignals(self)
+        self._signals.done.connect(self._on_scanned)
         self._timer = QTimer(self)
         self._timer.setInterval(REFRESH_MS)
         self._timer.timeout.connect(self.refresh)
 
     def start(self) -> None:
+        self._stopped = False
         self.refresh()
         self._timer.start()
 
-    def stop(self) -> None:
+    def stop(self, wait_ms: int = 2000) -> None:
+        """Stop polling and let any in-flight scan finish, so teardown cannot
+        race a pool thread that is still touching this object."""
+        self._stopped = True
         self._timer.stop()
+        if self._busy:
+            QThreadPool.globalInstance().waitForDone(wait_ms)
 
     def refresh(self) -> None:
-        if self._busy:
+        if self._busy or self._stopped:
             return
         self._busy = True
-        task = _ScanTask()
-        task.signals.done.connect(self._on_scanned)
-        QThreadPool.globalInstance().start(task)
+        QThreadPool.globalInstance().start(_ScanTask(self._signals))
 
     def _on_scanned(self, volumes: list) -> None:
         self._busy = False
+        if self._stopped:
+            return
         self._volumes = volumes
         self.volumesChanged.emit(volumes)
 
