@@ -11,6 +11,7 @@ import datetime as _dt
 import fnmatch
 import os
 import shutil
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
@@ -34,6 +35,52 @@ DEFAULT_EXCLUDES = (
 )
 
 CHUNK_SIZE = 8 << 20  # 8 MiB — large enough to keep spinning disks streaming.
+
+
+class JobCancelled(Exception):
+    """Raised inside the copy loop when the caller cancels."""
+
+
+class JobControl:
+    """Cooperative pause/resume/cancel for a running offload.
+
+    Checked once per chunk, so a pause takes effect within one 8 MiB read and a
+    cancel never leaves a half-written file behind — `run()` deletes partial
+    destinations on the way out.
+    """
+
+    def __init__(self) -> None:
+        self._resume = threading.Event()
+        self._resume.set()
+        self._cancelled = threading.Event()
+
+    def pause(self) -> None:
+        self._resume.clear()
+
+    def resume(self) -> None:
+        self._resume.set()
+
+    def cancel(self) -> None:
+        # Release any pause first, or a paused job would never see the cancel.
+        self._cancelled.set()
+        self._resume.set()
+
+    @property
+    def paused(self) -> bool:
+        return not self._resume.is_set()
+
+    @property
+    def cancelled(self) -> bool:
+        return self._cancelled.is_set()
+
+    def checkpoint(self) -> None:
+        """Block while paused; raise `JobCancelled` if cancelled."""
+        if self._cancelled.is_set():
+            raise JobCancelled()
+        if not self._resume.is_set():
+            self._resume.wait()
+        if self._cancelled.is_set():
+            raise JobCancelled()
 
 
 @dataclass
@@ -106,7 +153,8 @@ def _destination_for(source: Path, source_root: Path, dest_root: Path,
 
 
 def _copy_fanout(source: Path, targets: Sequence[Path], algorithm: str,
-                 on_chunk: Callable[[int], None]) -> tuple[str, list[str]]:
+                 on_chunk: Callable[[int], None],
+                 control: JobControl | None = None) -> tuple[str, list[str]]:
     """Stream `source` into every target at once.
 
     Returns the source checksum plus one checksum per target, computed from the
@@ -124,6 +172,8 @@ def _copy_fanout(source: Path, targets: Sequence[Path], algorithm: str,
             handles.append(open(target, "wb"))
         with open(source, "rb") as reader:
             while True:
+                if control is not None:
+                    control.checkpoint()
                 chunk = reader.read(CHUNK_SIZE)
                 if not chunk:
                     break
@@ -142,9 +192,25 @@ def _copy_fanout(source: Path, targets: Sequence[Path], algorithm: str,
     return src_hasher.hexdigest(), [h.hexdigest() for h in dst_hashers]
 
 
+def _discard(targets: Iterable[Path]) -> None:
+    """Delete half-written destinations. A partial file that looks complete is
+    worse than no file at all."""
+    for target in targets:
+        try:
+            Path(target).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def run(source_root: Path, options: OffloadOptions,
-        progress: ProgressCallback | None = None) -> Job:
-    """Execute an offload and return the finished Job."""
+        progress: ProgressCallback | None = None,
+        control: JobControl | None = None) -> Job:
+    """Execute an offload and return the finished Job.
+
+    Pass a `JobControl` to allow pausing or cancelling mid-flight; a cancelled
+    job returns normally, with `Job.cancelled` set and the files it did finish
+    intact.
+    """
     source_root = Path(source_root)
     if not source_root.exists():
         raise FileNotFoundError(f"source not found: {source_root}")
@@ -177,6 +243,14 @@ def run(source_root: Path, options: OffloadOptions,
             progress(event)
 
     for index, source in enumerate(files):
+        # Between files is the cheapest place to honour a pause or cancel.
+        if control is not None:
+            try:
+                control.checkpoint()
+            except JobCancelled:
+                job.cancelled = True
+                break
+
         stat = source.stat()
         entry = FileEntry(
             source=source,
@@ -214,8 +288,13 @@ def run(source_root: Path, options: OffloadOptions,
                                    0, _st.st_size,
                                    counters.job_bytes_done, counters.job_bytes_total))
 
-            src_sum, dst_sums = _copy_fanout(source, targets, options.algorithm, on_chunk)
+            src_sum, dst_sums = _copy_fanout(
+                source, targets, options.algorithm, on_chunk, control)
             entry.checksum = src_sum or None
+        except JobCancelled:
+            _discard(targets)
+            job.cancelled = True
+            break
         except OSError as exc:
             counters.errors.append(f"{source}: {exc}")
             for root, target in zip(dest_roots, targets):
@@ -296,6 +375,11 @@ def run(source_root: Path, options: OffloadOptions,
         job.files.append(entry)
 
     job.finished = _dt.datetime.now()
+    if job.cancelled:
+        not_attempted = len(files) - len(job.files)
+        if not_attempted > 0:
+            counters.errors.append(
+                f"cancelled — {not_attempted} file(s) not attempted")
     job.notes = "; ".join(counters.errors)
     return job
 

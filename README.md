@@ -12,8 +12,7 @@ page.
 
 ## Status
 
-Milestone 1 — engine, CLI and reports — is complete and tested. The PySide6 GUI
-is next; see [Roadmap](#roadmap).
+Engine, CLI, reports and the desktop interface are complete and tested.
 
 The PDF is built against measurements taken from a real ShotPut Pro 2021.2.6
 report, documented in [`docs/report-layout.md`](docs/report-layout.md) and
@@ -37,6 +36,50 @@ Check what was found:
 ```sh
 offloader info
 ```
+
+## The desktop app
+
+```sh
+pip install -e ".[gui]"
+offloader-gui          # or: offloader gui
+```
+
+Two modes, switched from the header:
+
+- **Preset mode** — saved workflows, each with its own destinations, checksum,
+  verification depth, reports and colour. Drop a card straight onto a preset row
+  to queue it, or pick both and press **Add to queue**. Sort by name, colour or
+  how often a preset gets used.
+- **Simple mode** — source, destinations and options on one screen, for a
+  one-off where building a preset would be more work than the job.
+
+Down the left is the **drive panel**: every mounted volume with a capacity bar
+(amber past 80 %, red past 95 %) and one-click *Source* / *Destination* buttons.
+Volumes that look like camera media are badged `CARD` and sorted to the top —
+detected by the marker directories cameras write (`DCIM`, `PRIVATE`, `XDROOT`
+and friends) or by a root full of camera originals, since a Blackmagic card
+writes clips straight to the root and a reader in a dock reports as a fixed
+disk.
+
+Along the bottom is the **queue**. Jobs run one at a time — offloads are I/O
+bound, and running two at once against the same bus makes both slower and the
+progress readout meaningless. Each row shows live throughput and ETA, and the
+transport controls pause, resume, cancel, reprioritise, and open the reports
+folder. Pause takes effect within one 8 MiB chunk; cancel deletes the partial
+destination file rather than leaving something that looks complete.
+
+Two guards run before anything is queued:
+
+- **Duplicate offload protection.** The source's file listing — names and sizes,
+  never contents — is fingerprinted and checked against past offloads. Re-pulling
+  a card you already have gets a warning naming the earlier job and when it ran.
+  Only successful offloads count; a cancelled attempt is a reason to run again.
+- **Space and containment checks.** A destination inside the source is refused
+  outright; one without room prompts before queueing.
+
+Presets, history and settings live in `%APPDATA%\Offloader` (or
+`~/.config/offloader`). A corrupt config file is treated as an empty one — it
+must never stand between someone and their card.
 
 ## Use
 
@@ -138,26 +181,31 @@ what makes the report layer testable without moving bytes.
 ```sh
 pip install -e ".[dev]"
 pytest
+ruff check src tests
 ```
 
-74 tests cover formatting against the reference's exact strings, checksum
+140 tests cover formatting against the reference's exact strings, checksum
 vectors and streaming equivalence, copy/verify behaviour including simulated
-destination corruption, PDF geometry read back with PyMuPDF, and the CLI.
+destination corruption, pause/resume/cancel concurrency, preset and history
+persistence, card detection, PDF geometry read back with PyMuPDF, the CLI, and
+the GUI. The GUI tests run on Qt's offscreen platform and drive the real queue
+controller — the worker thread actually copies files — so they cover the wiring
+between interface and engine, not just that the modules import.
 
 ## Roadmap
 
-Milestone 1 (done) — engine, CLI, PDF/CSV/MHL/HTML reports.
+Done — engine, CLI, PDF/CSV/MHL/HTML reports, and the desktop app (Simple and
+Preset modes, job queue with pause/resume/priority, drive panel with card
+detection, preset colour coding and sorting, auto-naming, duplicate-offload
+protection).
 
-Next, toward fuller ShotPut Pro parity:
+Remaining, toward fuller ShotPut Pro parity:
 
-- PySide6 GUI: Simple and Preset modes, job queue, drive panels
-- Presets with colour coding and sorting
-- Pause/resume, and offload priority sequencing
-- Duplicate-offload detection ("human error protection")
-- Advanced offload-identification naming schemes
 - ASC-MHL sealing alongside classic MHL
 - Email/SMS notification on completion
 - C4 ID checksums
+- Per-job report templates and custom branding presets
+- Windows installer and code signing
 
 ## Licence
 

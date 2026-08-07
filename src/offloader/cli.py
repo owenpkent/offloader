@@ -160,6 +160,7 @@ def build_parser() -> argparse.ArgumentParser:
     _common_options(report)
 
     sub.add_parser("info", help="show tool and environment status")
+    sub.add_parser("gui", help="launch the desktop interface")
     return parser
 
 
@@ -235,9 +236,16 @@ def cmd_info(_args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_gui(_args: argparse.Namespace) -> int:
+    from .gui.app import main as gui_main
+
+    return gui_main([sys.argv[0]])
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    handlers = {"offload": cmd_offload, "report": cmd_report, "info": cmd_info}
+    handlers = {"offload": cmd_offload, "report": cmd_report,
+                "info": cmd_info, "gui": cmd_gui}
     try:
         return handlers[args.command](args)
     except KeyboardInterrupt:

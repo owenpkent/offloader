@@ -1,0 +1,282 @@
+"""GUI tests, run against Qt's offscreen platform.
+
+These drive the real widgets and the real queue controller — the worker thread
+actually copies files — so they cover the wiring between the interface and the
+engine, not just that the modules import.
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+import pytest
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+pytest.importorskip("PySide6", reason="GUI extra not installed")
+
+from PySide6.QtCore import QDeadlineTimer, QEventLoop, Qt  # noqa: E402
+from PySide6.QtWidgets import QApplication  # noqa: E402
+
+from offloader.models import VerificationMode  # noqa: E402
+from offloader.presets import Preset, PresetStore  # noqa: E402
+from offloader.gui.preset_mode import PresetModePanel  # noqa: E402
+from offloader.gui.queue_view import QueuePanel  # noqa: E402
+from offloader.gui.simple_mode import SimpleModePanel  # noqa: E402
+from offloader.gui.widgets import DestinationList, SourceDropZone  # noqa: E402
+from offloader.gui.worker import JobState, QueueController  # noqa: E402
+
+
+@pytest.fixture(scope="session")
+def qapp():
+    app = QApplication.instance() or QApplication([])
+    yield app
+
+
+@pytest.fixture
+def controller(qapp, tmp_path, monkeypatch):
+    """A queue controller whose history is written to the temp dir, never the
+    user's real configuration."""
+    from offloader import history as history_module
+
+    controller = QueueController()
+    controller.history = history_module.History(tmp_path / "history.json")
+    yield controller
+    controller.shutdown(2000)
+
+
+def _pump(app, controller, predicate, timeout_ms: int = 60_000) -> bool:
+    """Spin the event loop until `predicate` holds."""
+    deadline = QDeadlineTimer(timeout_ms)
+    while not predicate():
+        if deadline.hasExpired():
+            return False
+        app.processEvents(QEventLoop.AllEvents, 50)
+    return True
+
+
+def _preset(tmp_path: Path, **overrides) -> Preset:
+    values = dict(
+        name="test",
+        destinations=[tmp_path / "dest"],
+        algorithm="xxh3-64",
+        verification=VerificationMode.FULL,
+        thumbnail_count=0,
+        reports=["csv"],
+    )
+    values.update(overrides)
+    return Preset(**values)
+
+
+# ------------------------------------------------------------------ queue
+
+
+def test_queue_runs_a_job_to_completion(qapp, controller, source_tree, tmp_path):
+    item = controller.enqueue(source_tree, _preset(tmp_path), "A001")
+
+    assert _pump(qapp, controller, lambda: item.state.is_terminal), "job never finished"
+    assert item.state is JobState.DONE
+    assert item.job is not None and item.job.final_status == "Verified"
+    assert item.fraction == pytest.approx(1.0)
+    assert (tmp_path / "dest" / "Clips" / "A001_C001.mov").is_file()
+
+
+def test_reports_are_written_beside_the_media(qapp, controller, source_tree, tmp_path):
+    item = controller.enqueue(source_tree, _preset(tmp_path, reports=["csv", "mhl"]),
+                              "A001")
+    assert _pump(qapp, controller, lambda: item.state.is_terminal)
+
+    reports = tmp_path / "dest" / "A001_Reports"
+    assert {p.name for p in reports.iterdir()} == {"JobReport.csv", "JobReport.mhl"}
+    assert {p.name for p in item.reports} == {"JobReport.csv", "JobReport.mhl"}
+
+
+def test_finished_job_is_recorded_in_history(qapp, controller, source_tree, tmp_path):
+    item = controller.enqueue(source_tree, _preset(tmp_path), "A001")
+    assert _pump(qapp, controller, lambda: item.state.is_terminal)
+    assert len(controller.history.entries) == 1
+    assert controller.history.entries[0].job_name == "A001"
+
+
+def test_preset_use_count_increments_on_success(qapp, controller, source_tree, tmp_path):
+    preset = _preset(tmp_path)
+    item = controller.enqueue(source_tree, preset, "A001")
+    assert _pump(qapp, controller, lambda: item.state.is_terminal)
+    assert preset.use_count == 1
+
+
+def test_cancelling_a_running_job(qapp, controller, tmp_path):
+    source = tmp_path / "card"
+    source.mkdir()
+    for index in range(12):
+        (source / f"clip{index:02d}.mov").write_bytes(b"\0" * 400_000)
+
+    item = controller.enqueue(source, _preset(tmp_path), "A001")
+    assert _pump(qapp, controller, lambda: item.fraction > 0.05, 20_000)
+    controller.cancel(item.identifier)
+
+    assert _pump(qapp, controller, lambda: item.state.is_terminal)
+    assert item.state is JobState.CANCELLED
+    assert item.reports == []          # no paperwork for an incomplete offload
+    assert not controller.history.entries
+
+
+def test_cancelling_a_queued_job_never_starts_it(qapp, controller, source_tree,
+                                                 tmp_path):
+    first = controller.enqueue(source_tree, _preset(tmp_path), "first")
+    second = controller.enqueue(source_tree, _preset(tmp_path), "second")
+
+    controller.cancel(second.identifier)
+    assert second.state is JobState.CANCELLED
+
+    assert _pump(qapp, controller, lambda: first.state.is_terminal)
+    assert first.state is JobState.DONE
+
+
+def test_jobs_run_one_at_a_time_then_drain(qapp, controller, source_tree, tmp_path):
+    items = [
+        controller.enqueue(source_tree, _preset(tmp_path, destinations=[tmp_path / f"d{i}"]),
+                           f"job{i}")
+        for i in range(3)
+    ]
+    running = [i for i in items if i.state is JobState.RUNNING]
+    assert len(running) <= 1
+
+    assert _pump(qapp, controller,
+                 lambda: all(i.state.is_terminal for i in items), 90_000)
+    assert all(i.state is JobState.DONE for i in items)
+    assert [i.name for i in items] == ["job0", "job1", "job2"]
+
+
+def test_queued_jobs_can_be_reordered(qapp, controller, source_tree, tmp_path):
+    controller._auto_start = False
+    first = controller.enqueue(source_tree, _preset(tmp_path), "first")
+    second = controller.enqueue(source_tree, _preset(tmp_path), "second")
+
+    controller.move(second.identifier, -1)
+    assert [i.name for i in controller.items] == ["second", "first"]
+    controller.move(second.identifier, 5)      # clamps at the end
+    assert [i.name for i in controller.items] == ["first", "second"]
+    assert first.state is JobState.QUEUED
+
+
+def test_auto_naming_avoids_collisions(qapp, controller, source_tree, tmp_path):
+    controller._auto_start = False
+    preset = _preset(tmp_path, naming_template="{card}")
+    first = controller.enqueue(source_tree, preset)
+    second = controller.enqueue(source_tree, preset)
+
+    assert first.name == source_tree.name
+    assert second.name != first.name
+
+
+def test_a_failing_job_surfaces_its_error(qapp, controller, source_tree, tmp_path):
+    item = controller.enqueue(source_tree, _preset(tmp_path, destinations=[]), "bad")
+    assert _pump(qapp, controller, lambda: item.state.is_terminal)
+    assert item.state is JobState.FAILED
+    assert "destination" in (item.error or "")
+
+
+def test_clear_finished_keeps_pending_work(qapp, controller, source_tree, tmp_path):
+    done = controller.enqueue(source_tree, _preset(tmp_path), "done")
+    assert _pump(qapp, controller, lambda: done.state.is_terminal)
+
+    controller._auto_start = False
+    pending = controller.enqueue(source_tree, _preset(tmp_path), "pending")
+    controller.clear_finished()
+    assert controller.items == [pending]
+
+
+# ------------------------------------------------------------------ widgets
+
+
+def test_queue_panel_tracks_the_controller(qapp, controller, source_tree, tmp_path):
+    panel = QueuePanel(controller)
+    assert panel.model.rowCount() == 0
+
+    item = controller.enqueue(source_tree, _preset(tmp_path), "A001")
+    assert panel.model.rowCount() == 1
+    assert panel.model.index(0, 0).data(Qt.DisplayRole) == "A001"
+
+    assert _pump(qapp, controller, lambda: item.state.is_terminal)
+    assert panel.model.index(0, 3).data(Qt.DisplayRole) == "Verified"
+    assert panel.model.index(0, 4).data(Qt.UserRole) == pytest.approx(1.0)
+
+
+def test_destination_list_rejects_duplicates(qapp, tmp_path):
+    widget = DestinationList()
+    assert widget.add_path(tmp_path / "a")
+    assert not widget.add_path(tmp_path / "a")
+    assert widget.paths() == [tmp_path / "a"]
+
+
+def test_simple_mode_blocks_a_destination_inside_the_source(qapp, tmp_path):
+    source = tmp_path / "card"
+    (source / "inner").mkdir(parents=True)
+    panel = SimpleModePanel()
+    panel.set_source(source)
+    panel.add_destination(source / "inner")
+    assert not panel._start.isEnabled()
+
+    panel.destinations.set_paths([tmp_path / "outside"])
+    assert panel._start.isEnabled()
+
+
+def test_simple_mode_requires_source_and_destination(qapp, tmp_path):
+    panel = SimpleModePanel()
+    assert not panel._start.isEnabled()
+    panel.set_source(tmp_path / "card")
+    assert not panel._start.isEnabled()
+    panel.add_destination(tmp_path / "dest")
+    assert panel._start.isEnabled()
+
+
+def test_simple_mode_builds_a_preset_from_its_controls(qapp, tmp_path):
+    panel = SimpleModePanel()
+    panel.set_source(tmp_path / "card")
+    panel.add_destination(tmp_path / "dest")
+    preset = panel.build_preset()
+
+    assert preset.destinations == [tmp_path / "dest"]
+    assert preset.reports == ["pdf"]
+    assert preset.verification is VerificationMode.SOURCE_ONLY
+
+
+def test_preset_panel_disables_run_for_a_preset_without_destinations(qapp, tmp_path):
+    store = PresetStore(tmp_path / "presets.json")
+    store.presets.clear()
+    store.add(Preset(name="no destinations"))
+    store.add(Preset(name="ready", destinations=[tmp_path / "d"]))
+
+    panel = PresetModePanel(store)
+    panel.set_source(tmp_path / "card")
+
+    panel._list.setCurrentRow([p.name for p in panel._visible].index("no destinations"))
+    assert not panel._run.isEnabled()
+
+    panel._list.setCurrentRow([p.name for p in panel._visible].index("ready"))
+    assert panel._run.isEnabled()
+
+
+def test_preset_panel_emits_the_selected_preset(qapp, tmp_path):
+    store = PresetStore(tmp_path / "presets.json")
+    store.presets.clear()
+    store.add(Preset(name="ready", destinations=[tmp_path / "d"]))
+
+    panel = PresetModePanel(store)
+    panel.set_source(tmp_path / "card")
+    panel._list.setCurrentRow(0)
+
+    captured = []
+    panel.runRequested.connect(lambda source, preset: captured.append((source, preset)))
+    panel._run_selected()
+
+    assert captured == [(tmp_path / "card", store.presets[0])]
+
+
+def test_source_drop_zone_reports_its_path(qapp, tmp_path):
+    zone = SourceDropZone()
+    assert zone.path is None
+    zone.set_path(tmp_path / "A001")
+    assert zone.path == tmp_path / "A001"

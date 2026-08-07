@@ -38,6 +38,18 @@ class FileStatus(str, Enum):
     COPIED = "Copied"
     FAILED = "Failed"
     SKIPPED = "Skipped"
+    CANCELLED = "Cancelled"
+
+
+#: Worst-to-best. `FileEntry.status` reports the weakest copy, so a file is
+#: never described more favourably than its least reliable destination.
+_STATUS_ORDER = (
+    FileStatus.FAILED,
+    FileStatus.CANCELLED,
+    FileStatus.SKIPPED,
+    FileStatus.COPIED,
+    FileStatus.VERIFIED,
+)
 
 
 @dataclass
@@ -114,8 +126,7 @@ class FileEntry:
         weakest copy."""
         if not self.destinations:
             return FileStatus.SKIPPED
-        order = [FileStatus.FAILED, FileStatus.SKIPPED, FileStatus.COPIED, FileStatus.VERIFIED]
-        return min((d.status for d in self.destinations), key=order.index)
+        return min((d.status for d in self.destinations), key=_STATUS_ORDER.index)
 
     @property
     def is_video(self) -> bool:
@@ -138,6 +149,7 @@ class Job:
     processors: int = 0
     system_ram: str = ""
     notes: str = ""
+    cancelled: bool = False
 
     @property
     def total_bytes(self) -> int:
@@ -161,6 +173,8 @@ class Job:
     def final_status(self) -> str:
         if any(f.status is FileStatus.FAILED for f in self.files):
             return "Failed"
+        if self.cancelled:
+            return "Cancelled"
         if self.verification is VerificationMode.NONE:
             return "Copied"
         if all(f.status is FileStatus.VERIFIED for f in self.files) and self.files:
