@@ -1,0 +1,373 @@
+"""The offload pipeline: scan, copy to N destinations, verify, collect metadata.
+
+Source bytes are read exactly once and fanned out to every destination in the
+same pass, so adding a second destination costs write bandwidth but not read
+bandwidth.
+"""
+
+from __future__ import annotations
+
+import datetime as _dt
+import fnmatch
+import os
+import shutil
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Callable, Iterable, Sequence
+
+from . import probe as probe_mod
+from . import sysinfo, thumbs
+from .hashers import get_algorithm, hash_file, new_hasher
+from .models import (
+    Destination,
+    FileEntry,
+    FileStatus,
+    Job,
+    VerificationMode,
+)
+
+#: Junk that camera cards and operating systems leave behind. Copying these
+#: would inflate file counts and pollute the report.
+DEFAULT_EXCLUDES = (
+    ".DS_Store", "._*", "Thumbs.db", "desktop.ini", ".Spotlight-V100",
+    ".Trashes", ".fseventsd", "$RECYCLE.BIN", "System Volume Information",
+)
+
+CHUNK_SIZE = 8 << 20  # 8 MiB — large enough to keep spinning disks streaming.
+
+
+@dataclass
+class ProgressEvent:
+    """Emitted as the job runs, for CLI progress bars and (later) the GUI."""
+
+    file_index: int
+    file_total: int
+    file_name: str
+    stage: str                 # "copy" | "verify" | "probe" | "thumbs"
+    bytes_done: int = 0
+    bytes_total: int = 0
+    job_bytes_done: int = 0
+    job_bytes_total: int = 0
+
+
+ProgressCallback = Callable[[ProgressEvent], None]
+
+
+@dataclass
+class OffloadOptions:
+    destinations: Sequence[Path]
+    algorithm: str = "xxh3-64"
+    verification: VerificationMode = VerificationMode.SOURCE_ONLY
+    thumbnail_count: int = 4
+    excludes: Sequence[str] = DEFAULT_EXCLUDES
+    #: Preserve the source tree under each destination root.
+    preserve_structure: bool = True
+    #: Skip files that already exist at the destination with a matching size.
+    skip_existing: bool = False
+    job_name: str | None = None
+    thumbnail_dir: Path | None = None
+    extra_probe: bool = True
+
+
+@dataclass
+class _Counters:
+    job_bytes_total: int = 0
+    job_bytes_done: int = 0
+    errors: list[str] = field(default_factory=list)
+
+
+def is_excluded(path: Path, patterns: Iterable[str]) -> bool:
+    name = path.name
+    return any(fnmatch.fnmatch(name, pattern) for pattern in patterns)
+
+
+def scan(root: Path, excludes: Iterable[str] = DEFAULT_EXCLUDES) -> list[Path]:
+    """Every file under `root`, sorted, with junk filtered out."""
+    patterns = tuple(excludes)
+    found: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        here = Path(dirpath)
+        dirnames[:] = sorted(d for d in dirnames if not is_excluded(here / d, patterns))
+        for filename in sorted(filenames):
+            candidate = here / filename
+            if not is_excluded(candidate, patterns):
+                found.append(candidate)
+    return found
+
+
+def _destination_for(source: Path, source_root: Path, dest_root: Path,
+                     preserve: bool) -> Path:
+    if preserve:
+        try:
+            return dest_root / source.relative_to(source_root)
+        except ValueError:
+            pass
+    return dest_root / source.name
+
+
+def _copy_fanout(source: Path, targets: Sequence[Path], algorithm: str,
+                 on_chunk: Callable[[int], None]) -> tuple[str, list[str]]:
+    """Stream `source` into every target at once.
+
+    Returns the source checksum plus one checksum per target, computed from the
+    bytes actually handed to each write() call.
+    """
+    src_hasher = new_hasher(algorithm)
+    dst_hashers = [new_hasher(algorithm) for _ in targets]
+
+    for target in targets:
+        target.parent.mkdir(parents=True, exist_ok=True)
+
+    handles = []
+    try:
+        for target in targets:
+            handles.append(open(target, "wb"))
+        with open(source, "rb") as reader:
+            while True:
+                chunk = reader.read(CHUNK_SIZE)
+                if not chunk:
+                    break
+                src_hasher.update(chunk)
+                for handle, hasher in zip(handles, dst_hashers):
+                    handle.write(chunk)
+                    hasher.update(chunk)
+                on_chunk(len(chunk))
+        for handle in handles:
+            handle.flush()
+            os.fsync(handle.fileno())
+    finally:
+        for handle in handles:
+            handle.close()
+
+    return src_hasher.hexdigest(), [h.hexdigest() for h in dst_hashers]
+
+
+def run(source_root: Path, options: OffloadOptions,
+        progress: ProgressCallback | None = None) -> Job:
+    """Execute an offload and return the finished Job."""
+    source_root = Path(source_root)
+    if not source_root.exists():
+        raise FileNotFoundError(f"source not found: {source_root}")
+
+    algorithm = get_algorithm(options.algorithm)
+    dest_roots = [Path(d) for d in options.destinations]
+    if not dest_roots:
+        raise ValueError("at least one destination is required")
+
+    files = scan(source_root, options.excludes)
+    counters = _Counters(job_bytes_total=sum(p.stat().st_size for p in files))
+
+    host = sysinfo.collect()
+    job = Job(
+        name=options.job_name or source_root.name,
+        source_root=source_root,
+        destination_roots=dest_roots,
+        verification=options.verification,
+        hash_label=algorithm.label,
+        started=_dt.datetime.now(),
+        os_version=host.os_version,
+        processors=host.processors,
+        system_ram=host.system_ram,
+    )
+
+    thumb_dir = options.thumbnail_dir or (dest_roots[0] / f"{job.name}_Reports" / "thumbs")
+
+    def emit(event: ProgressEvent) -> None:
+        if progress:
+            progress(event)
+
+    for index, source in enumerate(files):
+        stat = source.stat()
+        entry = FileEntry(
+            source=source,
+            source_root=source_root,
+            size=stat.st_size,
+            created=getattr(stat, "st_birthtime", stat.st_ctime),
+            modified=stat.st_mtime,
+        )
+
+        targets = [
+            _destination_for(source, source_root, root, options.preserve_structure)
+            for root in dest_roots
+        ]
+
+        emit(ProgressEvent(index, len(files), source.name, "copy",
+                           0, stat.st_size,
+                           counters.job_bytes_done, counters.job_bytes_total))
+
+        if options.skip_existing and all(
+            t.exists() and t.stat().st_size == stat.st_size for t in targets
+        ):
+            entry.checksum = None
+            for root, target in zip(dest_roots, targets):
+                entry.destinations.append(
+                    Destination(root=root, path=target, status=FileStatus.SKIPPED)
+                )
+            counters.job_bytes_done += stat.st_size
+            job.files.append(entry)
+            continue
+
+        try:
+            def on_chunk(n: int, _idx=index, _st=stat) -> None:
+                counters.job_bytes_done += n
+                emit(ProgressEvent(_idx, len(files), source.name, "copy",
+                                   0, _st.st_size,
+                                   counters.job_bytes_done, counters.job_bytes_total))
+
+            src_sum, dst_sums = _copy_fanout(source, targets, options.algorithm, on_chunk)
+            entry.checksum = src_sum or None
+        except OSError as exc:
+            counters.errors.append(f"{source}: {exc}")
+            for root, target in zip(dest_roots, targets):
+                entry.destinations.append(
+                    Destination(root=root, path=target,
+                                status=FileStatus.FAILED, error=str(exc))
+                )
+            job.files.append(entry)
+            continue
+
+        for root, target, dst_sum in zip(dest_roots, targets, dst_sums):
+            destination = Destination(root=root, path=target, checksum=dst_sum or None)
+
+            # Mirror source timestamps so the destination reads as an archival
+            # copy, not a fresh file.
+            try:
+                shutil.copystat(source, target)
+            except OSError:
+                pass
+
+            if options.verification is VerificationMode.NONE:
+                destination.status = FileStatus.COPIED
+            else:
+                if options.verification is VerificationMode.FULL:
+                    emit(ProgressEvent(index, len(files), source.name, "verify",
+                                       0, stat.st_size,
+                                       counters.job_bytes_done,
+                                       counters.job_bytes_total))
+                    try:
+                        dst_sum = hash_file(target, options.algorithm)
+                        destination.checksum = dst_sum or None
+                    except OSError as exc:
+                        destination.status = FileStatus.FAILED
+                        destination.error = str(exc)
+                        counters.errors.append(f"{target}: {exc}")
+                        entry.destinations.append(destination)
+                        continue
+
+                size_ok = target.exists() and target.stat().st_size == stat.st_size
+                sum_ok = (src_sum == dst_sum) if src_sum else True
+                if size_ok and sum_ok:
+                    destination.status = FileStatus.VERIFIED
+                else:
+                    destination.status = FileStatus.FAILED
+                    destination.error = "checksum mismatch" if not sum_ok else "size mismatch"
+                    counters.errors.append(f"{target}: {destination.error}")
+
+            try:
+                dst_stat = target.stat()
+                destination.created = getattr(dst_stat, "st_birthtime", dst_stat.st_ctime)
+                destination.modified = dst_stat.st_mtime
+            except OSError:
+                pass
+
+            entry.destinations.append(destination)
+
+        if options.extra_probe:
+            emit(ProgressEvent(index, len(files), source.name, "probe",
+                               0, stat.st_size,
+                               counters.job_bytes_done, counters.job_bytes_total))
+            entry.media = probe_mod.probe(source)
+
+            if options.thumbnail_count > 0 and entry.media.is_video:
+                emit(ProgressEvent(index, len(files), source.name, "thumbs",
+                                   0, stat.st_size,
+                                   counters.job_bytes_done, counters.job_bytes_total))
+                # Read thumbnails from the destination: it is the copy we are
+                # certifying, and on a card offload it is also the faster disk.
+                verified = next(
+                    (d.path for d in entry.destinations
+                     if d.status in (FileStatus.VERIFIED, FileStatus.COPIED)),
+                    source,
+                )
+                entry.thumbnails = thumbs.extract(
+                    verified, entry.media, thumb_dir, options.thumbnail_count
+                )
+
+        job.files.append(entry)
+
+    job.finished = _dt.datetime.now()
+    job.notes = "; ".join(counters.errors)
+    return job
+
+
+def rescan(source_root: Path, destination_roots: Sequence[Path],
+           options: OffloadOptions,
+           progress: ProgressCallback | None = None) -> Job:
+    """Build a Job from an already-offloaded tree without copying anything.
+
+    This is what `offloader report` uses: it re-hashes and re-probes in place so
+    a report can be regenerated (or a delivery audited) after the fact.
+    """
+    source_root = Path(source_root)
+    files = scan(source_root, options.excludes)
+    algorithm = get_algorithm(options.algorithm)
+    host = sysinfo.collect()
+
+    job = Job(
+        name=options.job_name or source_root.name,
+        source_root=source_root,
+        destination_roots=[Path(d) for d in destination_roots] or [source_root],
+        verification=options.verification,
+        hash_label=algorithm.label,
+        started=_dt.datetime.now(),
+        os_version=host.os_version,
+        processors=host.processors,
+        system_ram=host.system_ram,
+    )
+    thumb_dir = options.thumbnail_dir or (source_root / f"{job.name}_Reports" / "thumbs")
+    total = sum(p.stat().st_size for p in files)
+    done = 0
+
+    for index, source in enumerate(files):
+        stat = source.stat()
+        entry = FileEntry(
+            source=source,
+            source_root=source_root,
+            size=stat.st_size,
+            created=getattr(stat, "st_birthtime", stat.st_ctime),
+            modified=stat.st_mtime,
+        )
+        if progress:
+            progress(ProgressEvent(index, len(files), source.name, "verify",
+                                   0, stat.st_size, done, total))
+        if algorithm.factory is not None:
+            try:
+                entry.checksum = hash_file(source, options.algorithm)
+            except OSError:
+                entry.checksum = None
+        done += stat.st_size
+
+        for root in job.destination_roots:
+            target = _destination_for(source, source_root, root, options.preserve_structure)
+            exists = target.exists()
+            entry.destinations.append(
+                Destination(
+                    root=root,
+                    path=target,
+                    status=FileStatus.VERIFIED if exists else FileStatus.SKIPPED,
+                    checksum=entry.checksum if exists else None,
+                    created=entry.created if exists else None,
+                    modified=entry.modified if exists else None,
+                )
+            )
+
+        if options.extra_probe:
+            entry.media = probe_mod.probe(source)
+            if options.thumbnail_count > 0 and entry.media.is_video:
+                entry.thumbnails = thumbs.extract(
+                    source, entry.media, thumb_dir, options.thumbnail_count
+                )
+        job.files.append(entry)
+
+    job.finished = _dt.datetime.now()
+    return job
