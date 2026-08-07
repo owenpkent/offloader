@@ -23,6 +23,7 @@ REPORT_FILENAMES = {
     "pdf": "JobReport.pdf",
     "csv": "JobReport.csv",
     "mhl": "JobReport.mhl",
+    "ascmhl": "ascmhl",
     "html": "JobReport.html",
 }
 
@@ -143,6 +144,15 @@ class _Runner(QThread):
             except Exception:
                 # A report that fails to render must not invalidate a good copy.
                 continue
+
+        if "ascmhl" in preset.reports:
+            from ..ascmhl import write_manifest
+            for index, root in enumerate(job.destination_roots[1:], start=1):
+                try:
+                    written.append(write_manifest(job, root,
+                                                  destination_index=index))
+                except Exception:
+                    continue
 
         if "mhl" in preset.reports:
             # Each copy needs its own manifest, or the second destination has

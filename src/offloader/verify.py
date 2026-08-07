@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Callable, Iterator
 from xml.etree import ElementTree as ET
 
+from .ascmhl import ASCMHL_DIRNAME, NAMESPACE as ASCMHL_NAMESPACE
 from .hashers import ALGORITHMS, hash_file
 from .integrity import evict_from_cache
 
@@ -102,16 +103,40 @@ _TAG_TO_ALGORITHM = {
 
 
 def find_manifests(root: Path) -> list[Path]:
-    """Every MHL under `root`, newest last."""
-    found = sorted(Path(root).rglob("*.mhl"), key=lambda p: p.stat().st_mtime)
-    return found
+    """Every manifest worth checking under `root`, newest last.
+
+    An ASC MHL history holds one manifest per generation, all covering the same
+    files. Only the newest is returned, so verifying a three-generation history
+    hashes the media once rather than three times.
+    """
+    root = Path(root)
+    histories: dict[Path, list[Path]] = {}
+    standalone: list[Path] = []
+
+    for candidate in root.rglob("*.mhl"):
+        if candidate.parent.name == ASCMHL_DIRNAME:
+            histories.setdefault(candidate.parent, []).append(candidate)
+        else:
+            standalone.append(candidate)
+
+    newest = [max(generation, key=lambda p: p.name)
+              for generation in histories.values()]
+    return sorted(standalone + newest, key=lambda p: p.stat().st_mtime)
 
 
 def _entries(manifest: Path) -> Iterator[tuple[Path, str | None, str | None, int | None]]:
-    """(path, algorithm key, expected digest, expected size) per manifest entry."""
-    base = manifest.parent
-    root = ET.parse(manifest).getroot()
+    """(path, algorithm key, expected digest, expected size) per manifest entry.
 
+    Handles both classic MHL 1.1 (`<hash><file>`) and ASC MHL v2
+    (`<hash><path>`, namespaced, and living in an `ascmhl/` folder so its paths
+    are relative to the folder above).
+    """
+    root = ET.parse(manifest).getroot()
+    if root.tag == f"{{{ASCMHL_NAMESPACE}}}hashlist":
+        yield from _ascmhl_entries(manifest, root)
+        return
+
+    base = manifest.parent
     for node in root.iter("hash"):
         relative = node.findtext("file")
         if not relative:
@@ -185,10 +210,43 @@ def verify_manifest(
         for candidate in _described_root(manifest, listed).rglob("*"):
             if not candidate.is_file() or candidate.suffix.lower() == ".mhl":
                 continue
+            # The history's own bookkeeping is not managed data.
+            if ASCMHL_DIRNAME in candidate.parts:
+                continue
             if candidate.resolve() not in listed:
                 report.unlisted.append(candidate)
 
     return report
+
+
+def _ascmhl_entries(manifest: Path, root: ET.Element):
+    """ASC MHL paths are relative to the root of the managed data, which is the
+    parent of the `ascmhl` folder the manifest sits in."""
+    base = manifest.parent.parent
+    tag_prefix = f"{{{ASCMHL_NAMESPACE}}}"
+
+    for node in root.iter(f"{tag_prefix}hash"):
+        path_element = node.find(f"{tag_prefix}path")
+        if path_element is None or not path_element.text:
+            continue
+        try:
+            size = int(path_element.get("size", ""))
+        except ValueError:
+            size = None
+
+        algorithm_key = digest = None
+        for child in node:
+            name = child.tag.split("}")[-1]
+            if name == "path" or not child.text:
+                continue
+            # A hash the manifest itself marked failed is not a reference.
+            if child.get("action") == "failed":
+                continue
+            if name in _TAG_TO_ALGORITHM:
+                algorithm_key = _TAG_TO_ALGORITHM[name]
+                digest = child.text.strip()
+                break
+        yield (base / path_element.text.strip()), algorithm_key, digest, size
 
 
 def _described_root(manifest: Path, listed: set[Path]) -> Path:

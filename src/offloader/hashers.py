@@ -32,6 +32,38 @@ class Algorithm:
         return self.factory() if self.factory else None
 
 
+#: Base58 alphabet used by C4 (SMPTE ST 2114) — no 0, O, I or l.
+_C4_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+
+
+class C4Hasher:
+    """C4 ID: a SHA-512 digest in base58, prefixed "c4", always 90 characters.
+
+    Required by ASC MHL, which identifies each manifest in its chain file by the
+    C4 of the manifest's bytes.
+    """
+
+    def __init__(self) -> None:
+        self._sha = hashlib.sha512()
+
+    def update(self, data: bytes) -> None:
+        self._sha.update(data)
+
+    def hexdigest(self) -> str:
+        value = int.from_bytes(self._sha.digest(), "big")
+        encoded = ""
+        while value:
+            value, remainder = divmod(value, 58)
+            encoded = _C4_ALPHABET[remainder] + encoded
+        return "c4" + encoded.rjust(88, _C4_ALPHABET[0])
+
+
+def c4_of_bytes(data: bytes) -> str:
+    hasher = C4Hasher()
+    hasher.update(data)
+    return hasher.hexdigest()
+
+
 class _NullHasher:
     def update(self, data: bytes) -> None:  # noqa: D102
         pass
@@ -48,6 +80,7 @@ ALGORITHMS: dict[str, Algorithm] = {
     "md5": Algorithm("md5", "MD5", hashlib.md5, "md5"),
     "sha1": Algorithm("sha1", "SHA-1", hashlib.sha1, "sha1"),
     "sha256": Algorithm("sha256", "SHA-256", hashlib.sha256, "sha256"),
+    "c4": Algorithm("c4", "C4", C4Hasher, "c4"),
     "none": Algorithm("none", "None", None, None),
 }
 

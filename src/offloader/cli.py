@@ -18,6 +18,7 @@ REPORT_FILENAMES = {
     "pdf": "JobReport.pdf",
     "csv": "JobReport.csv",
     "mhl": "JobReport.mhl",
+    "ascmhl": "ascmhl",
     "html": "JobReport.html",
 }
 
@@ -82,6 +83,8 @@ def _write_reports(job: Job, formats: list[str], out_dir: Path,
 
     if "mhl" in formats:
         written.extend(_write_extra_manifests(job, out_dir))
+    if "ascmhl" in formats:
+        written.extend(_write_extra_histories(job))
     return written
 
 
@@ -100,6 +103,19 @@ def _write_extra_manifests(job: Job, primary_dir: Path) -> list[Path]:
             written.append(WRITERS["mhl"](job, target, destination_index=index))
         except Exception as exc:
             print(f"  ! MHL for {root} failed: {exc}", file=sys.stderr)
+    return written
+
+
+def _write_extra_histories(job: Job) -> list[Path]:
+    """An ASC MHL history belongs at the root of every copy, not just the first."""
+    from .ascmhl import write_manifest
+
+    written: list[Path] = []
+    for index, root in enumerate(job.destination_roots[1:], start=1):
+        try:
+            written.append(write_manifest(job, root, destination_index=index))
+        except Exception as exc:
+            print(f"  ! ASC MHL for {root} failed: {exc}", file=sys.stderr)
     return written
 
 

@@ -169,9 +169,9 @@ offloader report --source D:\video\080426\A001 --report pdf,html
 | --- | --- |
 | `--source PATH` | card or folder to offload |
 | `--dest PATH` | destination root; repeat for multiple copies |
-| `--hash ALGO` | `xxh3-64` (default), `xxh3-128`, `xxh64`, `xxh64be`, `md5`, `sha1`, `sha256`, `none` |
+| `--hash ALGO` | `xxh3-64` (default), `xxh3-128`, `xxh64`, `xxh64be`, `md5`, `sha1`, `sha256`, `c4`, `none` |
 | `--verify MODE` | `source-only` (default), `full`, `none` |
-| `--report FMT[,FMT]` | `pdf` (default), `csv`, `mhl`, `html` |
+| `--report FMT[,FMT]` | `pdf` (default), `csv`, `mhl`, `ascmhl`, `html` |
 | `--report-dir PATH` | override the report location |
 | `--thumbs N` | frames per clip, 0 to disable (default 4) |
 | `--name NAME` | job name; defaults to the source folder name |
@@ -206,6 +206,12 @@ the destination, at the cost of reading everything twice.
   and status. For spreadsheets and ingest scripts.
 - **MHL** — Media Hash List 1.1, paths relative to the file's own directory so
   it travels with the media. Written per destination.
+- **ASC MHL** — the format the ASC publishes and ARRI recommends. A numbered
+  history in an `ascmhl/` folder with a C4-identified chain file, directory and
+  root hashes, and every hash labelled `original`, `verified` or `failed` so a
+  delivery shows *where* in the chain a file stopped matching. See
+  [`docs/ascmhl.md`](docs/ascmhl.md) — validated byte-for-byte against the
+  reference implementation's worked example.
 - **HTML** — self-contained; thumbnails inlined as data URIs, light and dark
   themes, no external requests.
 
@@ -239,13 +245,13 @@ what makes the report layer testable without moving bytes.
 
 ```sh
 pip install -e ".[dev]"
-pytest                      # 368 tests, ~26s
+pytest                      # 394 tests, ~25s
 pytest --fuzz               # same suite, 3000 examples per property (~2 min)
 ruff check src tests
 pytest --cov=offloader --cov-report=term-missing
 ```
 
-368 tests at 82% line coverage. They cover formatting against the reference's
+394 tests at 83% line coverage. They cover formatting against the reference's
 exact strings, checksum vectors and streaming equivalence, copy/verify
 behaviour including simulated destination corruption, pause/resume/cancel
 concurrency, ffprobe parsing, preset and history persistence, card detection,
@@ -300,7 +306,6 @@ protection).
 
 Remaining, toward fuller ShotPut Pro parity:
 
-- ASC-MHL sealing alongside classic MHL
 - Email/SMS notification on completion
 - C4 ID checksums
 - Per-job report templates and custom branding presets
