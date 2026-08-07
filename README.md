@@ -81,6 +81,39 @@ Presets, history and settings live in `%APPDATA%\Offloader` (or
 `~/.config/offloader`). A corrupt config file is treated as an empty one — it
 must never stand between someone and their card.
 
+## Data safety
+
+The tool is held to one standard: someone reformats a card because it said
+"Verified". [`docs/data-safety.md`](docs/data-safety.md) is the threat model —
+what is guaranteed, what is not, and two real bugs that were found and fixed
+(the engine could destroy the card it was copying, and a failed copy could
+destroy the good archive copy it was replacing).
+
+The short version:
+
+- A destination equal to, inside, or duplicating another destination is refused
+  by the engine, so the CLI, GUI and library callers cannot disagree about it.
+- Files are written under a `.offloader-partial` name and only moved into place
+  once complete and verified. A failed or interrupted copy never damages what
+  was already there and never leaves a plausible-looking filename.
+- `--verify full` evicts each file from the page cache before reading it back,
+  because a read straight after a write is otherwise served from memory and
+  proves nothing about the device.
+- Empty files, and verifications that may have been served from cache, are
+  reported as warnings rather than folded into a "Verified" verdict.
+
+Before you erase a card:
+
+```sh
+offloader verify D:\video\080426\A001
+```
+
+Re-hashes everything the MHL lists, catches a single flipped bit in a file whose
+size never changed, and exits non-zero so a format script can gate on it. Run it
+again on the archive months later to catch bit rot. An MHL is written beside
+*each* destination, with relative paths, so every copy can be checked on its own
+wherever it ends up mounted.
+
 ## Use
 
 Offload a card to two destinations, verifying both off the platter:
@@ -125,7 +158,7 @@ offloader report --source D:\video\080426\A001 --report pdf,html
 | `--no-probe` | skip ffprobe metadata and thumbnails |
 
 Exit status is `0` on success, `1` if any file failed verification, `2` on a
-usage or I/O error.
+usage or I/O error, `3` if a destination was refused as unsafe.
 
 ### Verification modes
 
@@ -180,13 +213,13 @@ what makes the report layer testable without moving bytes.
 
 ```sh
 pip install -e ".[dev]"
-pytest                      # 257 tests, ~27s
+pytest                      # 294 tests, ~26s
 pytest --fuzz               # same suite, 3000 examples per property (~2 min)
 ruff check src tests
 pytest --cov=offloader --cov-report=term-missing
 ```
 
-257 tests at 81% line coverage. They cover formatting against the reference's
+294 tests at 82% line coverage. They cover formatting against the reference's
 exact strings, checksum vectors and streaming equivalence, copy/verify
 behaviour including simulated destination corruption, pause/resume/cancel
 concurrency, ffprobe parsing, preset and history persistence, card detection,

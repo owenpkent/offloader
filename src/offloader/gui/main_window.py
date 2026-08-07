@@ -237,21 +237,10 @@ class MainWindow(QMainWindow):
             return False
 
         try:
-            resolved_source = Path(source).resolve()
-        except OSError:
-            resolved_source = Path(source)
-
-        for destination in preset.destinations:
-            try:
-                resolved = Path(destination).resolve()
-            except OSError:
-                continue
-            if resolved == resolved_source or resolved_source in resolved.parents:
-                QMessageBox.warning(
-                    self, "Destination inside source",
-                    f"{destination} sits inside the source folder. "
-                    "Choose a destination outside it.")
-                return False
+            engine.assert_safe_destinations(source, preset.destinations)
+        except engine.UnsafeDestination as exc:
+            QMessageBox.warning(self, "Unsafe destination", str(exc))
+            return False
 
         try:
             paths = engine.scan(source, preset.to_options().excludes)
@@ -335,6 +324,18 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"“{item.name}” failed", 10000)
         elif item.state is JobState.CANCELLED:
             self.statusBar().showMessage(f"“{item.name}” cancelled", 6000)
+        elif item.job is not None and item.job.warnings:
+            shown = item.job.warnings[:12]
+            body = "\n".join(f"• {warning}" for warning in shown)
+            if len(item.job.warnings) > len(shown):
+                body += f"\n… and {len(item.job.warnings) - len(shown)} more"
+            QMessageBox.warning(
+                self, "Offload finished with warnings",
+                f"“{item.name}” completed, but with "
+                f"{len(item.job.warnings)} warning(s):\n\n{body}")
+            self.statusBar().showMessage(
+                f"“{item.name}” {item.job.final_status.lower()} with "
+                f"{len(item.job.warnings)} warning(s)", 10000)
         elif item.job is not None:
             self.statusBar().showMessage(
                 f"“{item.name}” {item.job.final_status.lower()} — "

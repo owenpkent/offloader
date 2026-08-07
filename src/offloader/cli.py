@@ -78,6 +78,27 @@ def _write_reports(job: Job, formats: list[str], out_dir: Path,
             written.append(WRITERS[key](job, target, logo=logo, footer=footer))
         except Exception as exc:  # a bad report must not mask a good offload
             print(f"  ! {key} report failed: {exc}", file=sys.stderr)
+
+    if "mhl" in formats:
+        written.extend(_write_extra_manifests(job, out_dir))
+    return written
+
+
+def _write_extra_manifests(job: Job, primary_dir: Path) -> list[Path]:
+    """One MHL per destination, written beside that copy.
+
+    A manifest that lives only with the first copy cannot re-verify the second.
+    Each copy needs its own chain of custody.
+    """
+    written: list[Path] = []
+    for index, root in enumerate(job.destination_roots[1:], start=1):
+        target = root / f"{job.name}_Reports" / REPORT_FILENAMES["mhl"]
+        if target.parent == primary_dir:
+            continue
+        try:
+            written.append(WRITERS["mhl"](job, target, destination_index=index))
+        except Exception as exc:
+            print(f"  ! MHL for {root} failed: {exc}", file=sys.stderr)
     return written
 
 
@@ -93,6 +114,13 @@ def _summarize(job: Job, reports: list[Path]) -> None:
         print(f"  -> {destination}")
     for report in reports:
         print(f"  report: {report}")
+    if job.warnings:
+        print(file=sys.stderr)
+        print(f"  {len(job.warnings)} warning(s):", file=sys.stderr)
+        for warning in job.warnings[:20]:
+            print(f"    - {warning}", file=sys.stderr)
+        if len(job.warnings) > 20:
+            print(f"    ... and {len(job.warnings) - 20} more", file=sys.stderr)
     if failed:
         print(f"\n  {len(failed)} FAILED:", file=sys.stderr)
         for entry in failed:
@@ -159,6 +187,17 @@ def build_parser() -> argparse.ArgumentParser:
                         help="destinations are flat, not structure-preserving")
     _common_options(report)
 
+    verify = sub.add_parser(
+        "verify",
+        help="re-check an offloaded tree against its MHL — run this before "
+             "erasing a card, and again later to catch bit rot")
+    verify.add_argument("path", type=Path,
+                        help="an .mhl file, or a folder to search for them")
+    verify.add_argument("--allow-cache", action="store_true",
+                        help="do not evict files before reading (faster, and "
+                             "may verify memory rather than the device)")
+    verify.add_argument("--quiet", action="store_true", help="suppress progress")
+
     sub.add_parser("info", help="show tool and environment status")
     sub.add_parser("gui", help="launch the desktop interface")
     return parser
@@ -218,6 +257,59 @@ def cmd_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_verify(args: argparse.Namespace) -> int:
+    """Re-hash a tree against its manifests.
+
+    Exit 0 only when every listed file matched. This is meant to be the gate a
+    format script checks.
+    """
+    from . import verify as verify_mod
+
+    target = Path(args.path)
+    if target.is_file():
+        manifests = [target]
+    else:
+        manifests = verify_mod.find_manifests(target)
+    if not manifests:
+        print(f"error: no .mhl manifest found under {target}", file=sys.stderr)
+        return 2
+
+    show = not args.quiet and sys.stderr.isatty()
+
+    def progress(index: int, total: int, path: Path) -> None:
+        if show:
+            sys.stderr.write('\r' + f"  [{index + 1}/{total}] {path.name[:70]:<70}")
+            sys.stderr.flush()
+
+    worst = 0
+    for manifest in manifests:
+        try:
+            report = verify_mod.verify_manifest(
+                manifest, progress=progress, bypass_cache=not args.allow_cache)
+        except Exception as exc:
+            print(f"error: could not read {manifest}: {exc}", file=sys.stderr)
+            worst = max(worst, 2)
+            continue
+        if show:
+            sys.stderr.write('\r' + " " * 90 + '\r')
+
+        print('\n' + str(manifest))
+        print(f"  {report.summary()}")
+        for verdict in report.failures:
+            print(f"  {verdict.describe()}")
+        for extra in report.unlisted[:20]:
+            print(f"  not in manifest: {extra}")
+        if len(report.unlisted) > 20:
+            print(f"  ... and {len(report.unlisted) - 20} more not in manifest")
+        if not report.passed:
+            worst = max(worst, 1)
+
+    print()
+    print("VERIFIED — safe to erase the source" if worst == 0
+          else "NOT VERIFIED — do not erase the source")
+    return worst
+
+
 def cmd_info(_args: argparse.Namespace) -> int:
     from . import sysinfo
     from .reports import fonts
@@ -245,12 +337,15 @@ def cmd_gui(_args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     handlers = {"offload": cmd_offload, "report": cmd_report,
-                "info": cmd_info, "gui": cmd_gui}
+                "verify": cmd_verify, "info": cmd_info, "gui": cmd_gui}
     try:
         return handlers[args.command](args)
     except KeyboardInterrupt:
         print("\ninterrupted", file=sys.stderr)
         return 130
+    except engine.UnsafeDestination as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        return 3
     except (OSError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

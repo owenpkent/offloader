@@ -70,9 +70,14 @@ def test_full_verification_detects_a_corrupted_destination(
     source_tree: Path, tmp_path: Path, monkeypatch
 ):
     """Corrupt the destination after it is written but before it is re-read,
-    which is precisely what full verification exists to catch."""
+    which is precisely what full verification exists to catch.
+
+    The injection point is the in-flight partial, because a file only takes its
+    final name once it has been proven.
+    """
     real_hash_file = engine.hash_file
-    victim = tmp_path / "dest" / "Clips" / "A001_C001.mov"
+    victim = (tmp_path / "dest" / "Clips"
+              / ("A001_C001.mov" + engine.PARTIAL_SUFFIX))
 
     def corrupting_hash_file(path: Path, algorithm: str, **kwargs):
         if Path(path) == victim and victim.exists():

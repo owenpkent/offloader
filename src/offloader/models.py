@@ -150,6 +150,10 @@ class Job:
     system_ram: str = ""
     notes: str = ""
     cancelled: bool = False
+    #: Things that did not fail the job but that a human should see before
+    #: erasing a card — empty files, verifications that may have been served
+    #: from cache.
+    warnings: list[str] = field(default_factory=list)
 
     @property
     def total_bytes(self) -> int:

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import getpass
+import os
 import platform
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -51,10 +52,19 @@ def _iso(value: float | _dt.datetime) -> str:
 
 
 def _relative(target: Path, base: Path) -> str:
+    """Path to `target` as seen from the MHL's own directory.
+
+    Must stay relative even when the media sits beside or above the manifest
+    rather than beneath it — reports live in `<name>_Reports/`, so the clips are
+    typically one level up. `Path.relative_to` cannot express that and would
+    silently fall back to an absolute path, which pins the manifest to one
+    machine and one drive letter and stops it travelling with the media.
+    """
     try:
-        return target.relative_to(base).as_posix()
+        return Path(os.path.relpath(target, base)).as_posix()
     except ValueError:
-        return target.as_posix()
+        # Different drives on Windows: no relative path exists.
+        return Path(target).as_posix()
 
 
 def write_mhl(job: Job, path: Path, *, destination_index: int = 0, **_options) -> Path:

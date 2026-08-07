@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
 
+from . import integrity
 from . import probe as probe_mod
 from . import sysinfo, thumbs
 from .hashers import get_algorithm, hash_file, new_hasher
@@ -47,8 +48,58 @@ CHUNK_SIZE = 8 << 20  # 8 MiB — large enough to keep spinning disks streaming.
 READ_AHEAD = 3
 
 
+#: Extension worn by a copy that is still in flight. A destination file only
+#: takes its real name once it is complete — and, under full verification, once
+#: it has been proven — so an interrupted offload can never leave something that
+#: looks like finished media.
+PARTIAL_SUFFIX = ".offloader-partial"
+
+
 class JobCancelled(Exception):
     """Raised inside the copy loop when the caller cancels."""
+
+
+class UnsafeDestination(ValueError):
+    """A destination that could destroy the source it is copying."""
+
+
+def assert_safe_destinations(source_root: Path, destinations: Sequence[Path]) -> None:
+    """Refuse destinations that can eat the source.
+
+    Two real ways to lose the only copy of a day's footage:
+
+    * A destination equal to, or inside, the source. Opening the target for
+      writing truncates it, and if that target *is* a source file the original
+      is gone before it is ever read — with the checksum of an empty file
+      dutifully recorded.
+    * Two destinations resolving to the same directory, which would have two
+      writers fighting over one file.
+
+    Enforced here rather than in the interface so the CLI, the GUI and any
+    library caller are all covered.
+    """
+    source = Path(source_root).resolve()
+    seen: dict[Path, Path] = {}
+
+    for destination in destinations:
+        resolved = Path(destination).resolve()
+
+        if resolved == source:
+            raise UnsafeDestination(
+                f"destination {destination} is the source itself; "
+                "copying a card onto itself would destroy it"
+            )
+        if source in resolved.parents:
+            raise UnsafeDestination(
+                f"destination {destination} is inside the source {source_root}; "
+                "choose a destination outside it"
+            )
+        if resolved in seen:
+            raise UnsafeDestination(
+                f"destinations {seen[resolved]} and {destination} are the same "
+                "directory"
+            )
+        seen[resolved] = Path(destination)
 
 
 class JobControl:
@@ -167,13 +218,26 @@ def _copy_fanout(source: Path, targets: Sequence[Path], algorithm: str,
                  control: JobControl | None = None) -> tuple[str, list[str]]:
     """Stream `source` into every target at once.
 
+    `targets` are the *in-flight* paths — the caller renames them into place
+    once it is satisfied. Nothing here ever opens a final destination name, so a
+    copy that fails or is interrupted cannot damage a good file already sitting
+    there.
+
     Returns the source checksum plus one checksum per target, computed from the
     bytes actually handed to each write() call.
     """
+    source = Path(source)
     src_hasher = new_hasher(algorithm)
     dst_hashers = [new_hasher(algorithm) for _ in targets]
 
     for target in targets:
+        # Last line of defence: opening a target with "wb" truncates it, so a
+        # target that *is* the source would destroy the original before a byte
+        # of it was read. assert_safe_destinations should have caught this long
+        # before now; refuse anyway rather than trust that it did.
+        if Path(target).resolve() == source.resolve():
+            raise UnsafeDestination(
+                f"refusing to write {target}: it is the source file")
         target.parent.mkdir(parents=True, exist_ok=True)
 
     chunks: queue.Queue = queue.Queue(maxsize=READ_AHEAD)
@@ -282,6 +346,7 @@ def run(source_root: Path, options: OffloadOptions,
     dest_roots = [Path(d) for d in options.destinations]
     if not dest_roots:
         raise ValueError("at least one destination is required")
+    assert_safe_destinations(source_root, dest_roots)
 
     files = scan(source_root, options.excludes)
     counters = _Counters(job_bytes_total=sum(p.stat().st_size for p in files))
@@ -344,6 +409,16 @@ def run(source_root: Path, options: OffloadOptions,
             job.files.append(entry)
             continue
 
+        if stat.st_size == 0:
+            # Legitimate for a sidecar, alarming for a clip. Say so rather than
+            # report "Verified" on a file that contains nothing.
+            job.warnings.append(f"{source.name} is empty (0 bytes)")
+
+        # Write under a temporary name and only rename once the copy is proven.
+        # An existing good file at the destination is never opened, so a failed
+        # or interrupted attempt cannot take it down with it.
+        partials = [t.with_name(t.name + PARTIAL_SUFFIX) for t in targets]
+
         try:
             def on_chunk(n: int, _idx=index, _st=stat) -> None:
                 counters.job_bytes_done += n
@@ -352,13 +427,14 @@ def run(source_root: Path, options: OffloadOptions,
                                    counters.job_bytes_done, counters.job_bytes_total))
 
             src_sum, dst_sums = _copy_fanout(
-                source, targets, options.algorithm, on_chunk, control)
+                source, partials, options.algorithm, on_chunk, control)
             entry.checksum = src_sum or None
         except JobCancelled:
-            _discard(targets)
+            _discard(partials)
             job.cancelled = True
             break
-        except OSError as exc:
+        except (OSError, UnsafeDestination) as exc:
+            _discard(partials)
             counters.errors.append(f"{source}: {exc}")
             for root, target in zip(dest_roots, targets):
                 entry.destinations.append(
@@ -368,13 +444,14 @@ def run(source_root: Path, options: OffloadOptions,
             job.files.append(entry)
             continue
 
-        for root, target, dst_sum in zip(dest_roots, targets, dst_sums):
+        for root, target, partial, dst_sum in zip(dest_roots, targets, partials,
+                                                  dst_sums):
             destination = Destination(root=root, path=target, checksum=dst_sum or None)
 
             # Mirror source timestamps so the destination reads as an archival
             # copy, not a fresh file.
             try:
-                shutil.copystat(source, target)
+                shutil.copystat(source, partial)
             except OSError:
                 pass
 
@@ -386,17 +463,25 @@ def run(source_root: Path, options: OffloadOptions,
                                        0, stat.st_size,
                                        counters.job_bytes_done,
                                        counters.job_bytes_total))
+                    # Evict first, or the read-back is served from the page
+                    # cache and verifies our own memory against itself.
+                    if not integrity.evict_from_cache(partial):
+                        job.warnings.append(
+                            f"could not evict {partial.name} from the page cache; "
+                            "its verification may have been served from memory"
+                        )
                     try:
-                        dst_sum = hash_file(target, options.algorithm)
+                        dst_sum = hash_file(partial, options.algorithm)
                         destination.checksum = dst_sum or None
                     except OSError as exc:
                         destination.status = FileStatus.FAILED
                         destination.error = str(exc)
                         counters.errors.append(f"{target}: {exc}")
+                        _discard([partial])
                         entry.destinations.append(destination)
                         continue
 
-                size_ok = target.exists() and target.stat().st_size == stat.st_size
+                size_ok = partial.exists() and partial.stat().st_size == stat.st_size
                 sum_ok = (src_sum == dst_sum) if src_sum else True
                 if size_ok and sum_ok:
                     destination.status = FileStatus.VERIFIED
@@ -404,6 +489,22 @@ def run(source_root: Path, options: OffloadOptions,
                     destination.status = FileStatus.FAILED
                     destination.error = "checksum mismatch" if not sum_ok else "size mismatch"
                     counters.errors.append(f"{target}: {destination.error}")
+
+            if destination.status is FileStatus.FAILED:
+                # Leave whatever was already at the destination untouched.
+                _discard([partial])
+                entry.destinations.append(destination)
+                continue
+
+            try:
+                os.replace(partial, target)     # atomic within a filesystem
+            except OSError as exc:
+                destination.status = FileStatus.FAILED
+                destination.error = f"could not put the file in place: {exc}"
+                counters.errors.append(f"{target}: {exc}")
+                _discard([partial])
+                entry.destinations.append(destination)
+                continue
 
             try:
                 dst_stat = target.stat()

@@ -161,3 +161,85 @@ def test_progress_handles_a_zero_byte_job(monkeypatch):
     monkeypatch.setattr(cli.sys, "stderr", FakeStderr)
     progress = cli._Progress(enabled=True)
     progress(cli.engine.ProgressEvent(0, 1, "empty", "copy", 0, 0, 0, 0))
+
+
+# ------------------------------------------------------------------ safety
+
+
+def test_offloading_a_card_onto_itself_is_refused(source_tree: Path, capsys):
+    code = cli.main(["offload", "--source", str(source_tree),
+                     "--dest", str(source_tree), "--no-probe", "--quiet"])
+    assert code == 3
+    assert "refused" in capsys.readouterr().err
+    assert (source_tree / "notes.txt").read_text(encoding="utf-8") == "slate notes"
+
+
+def test_warnings_are_printed(tmp_path: Path, capsys):
+    card = tmp_path / "card"
+    card.mkdir()
+    (card / "empty.mov").write_bytes(b"")
+    (card / "real.mov").write_bytes(b"x" * 100)
+
+    cli.main(["offload", "--source", str(card), "--dest", str(tmp_path / "d"),
+              "--verify", "full", "--no-probe", "--quiet"])
+    err = capsys.readouterr().err
+    assert "warning(s)" in err
+    assert "empty.mov" in err
+
+
+def test_an_mhl_is_written_beside_every_copy(source_tree: Path, tmp_path: Path):
+    cli.main(["offload", "--source", str(source_tree),
+              "--dest", str(tmp_path / "d1"), "--dest", str(tmp_path / "d2"),
+              "--name", "A001", "--report", "mhl", "--no-probe", "--quiet"])
+    assert (tmp_path / "d1" / "A001_Reports" / "JobReport.mhl").is_file()
+    assert (tmp_path / "d2" / "A001_Reports" / "JobReport.mhl").is_file()
+
+
+# ------------------------------------------------------------------ verify
+
+
+def test_verify_passes_on_a_clean_tree(source_tree: Path, tmp_path: Path, capsys):
+    destination = tmp_path / "d1"
+    cli.main(["offload", "--source", str(source_tree), "--dest", str(destination),
+              "--name", "A001", "--verify", "full", "--report", "mhl",
+              "--no-probe", "--quiet"])
+    capsys.readouterr()
+
+    assert cli.main(["verify", str(destination), "--quiet"]) == 0
+    out = capsys.readouterr().out
+    assert "safe to erase" in out
+
+
+def test_verify_fails_on_a_flipped_bit(source_tree: Path, tmp_path: Path, capsys):
+    destination = tmp_path / "d1"
+    cli.main(["offload", "--source", str(source_tree), "--dest", str(destination),
+              "--name", "A001", "--verify", "full", "--report", "mhl",
+              "--no-probe", "--quiet"])
+    capsys.readouterr()
+
+    victim = destination / "Clips" / "A001_C001.mov"
+    payload = bytearray(victim.read_bytes())
+    payload[10] ^= 0x01
+    victim.write_bytes(bytes(payload))
+
+    assert cli.main(["verify", str(destination), "--quiet"]) == 1
+    out = capsys.readouterr().out
+    assert "MISMATCH" in out
+    assert "do not erase" in out
+
+
+def test_verify_fails_on_a_missing_file(source_tree: Path, tmp_path: Path, capsys):
+    destination = tmp_path / "d1"
+    cli.main(["offload", "--source", str(source_tree), "--dest", str(destination),
+              "--name", "A001", "--verify", "full", "--report", "mhl",
+              "--no-probe", "--quiet"])
+    capsys.readouterr()
+    (destination / "Clips" / "A001_C002.mov").unlink()
+
+    assert cli.main(["verify", str(destination), "--quiet"]) == 1
+    assert "MISSING" in capsys.readouterr().out
+
+
+def test_verify_reports_a_missing_manifest(tmp_path: Path, capsys):
+    assert cli.main(["verify", str(tmp_path), "--quiet"]) == 2
+    assert "no .mhl manifest" in capsys.readouterr().err

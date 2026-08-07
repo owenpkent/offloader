@@ -143,6 +143,19 @@ class _Runner(QThread):
             except Exception:
                 # A report that fails to render must not invalidate a good copy.
                 continue
+
+        if "mhl" in preset.reports:
+            # Each copy needs its own manifest, or the second destination has
+            # nothing to re-verify itself against.
+            for index, root in enumerate(job.destination_roots[1:], start=1):
+                target = root / f"{job.name}_Reports" / REPORT_FILENAMES["mhl"]
+                if target.parent == out_dir:
+                    continue
+                try:
+                    written.append(WRITERS["mhl"](job, target,
+                                                  destination_index=index))
+                except Exception:
+                    continue
         return written
 
 
