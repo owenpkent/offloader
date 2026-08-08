@@ -27,6 +27,7 @@ from .models import (
     FileEntry,
     FileStatus,
     Job,
+    Profile,
     VerificationMode,
 )
 
@@ -176,9 +177,22 @@ class OffloadOptions:
     job_name: str | None = None
     thumbnail_dir: Path | None = None
     extra_probe: bool = True
+    #: The workflow this offload is. `Profile.DATA` is a generic large-data
+    #: transfer: no file is treated as media, so ffprobe, thumbnails and the
+    #: BRAW check are all switched off regardless of the media-only knobs above.
+    profile: Profile = Profile.MEDIA
     #: How hard to try again when a read fails for a transient-looking reason.
     #: Marginal cards and readers routinely succeed on a second attempt.
     retry: retry_mod.RetryPolicy = field(default_factory=retry_mod.RetryPolicy)
+
+    def __post_init__(self) -> None:
+        # The data profile is defined by the absence of media work, so enforce
+        # it here rather than trusting every caller to zero the media knobs.
+        # A library caller that sets only `profile=Profile.DATA` gets a clean
+        # generic transfer; the CLI and presets get the same guarantee.
+        if self.profile is Profile.DATA:
+            self.extra_probe = False
+            self.thumbnail_count = 0
 
 
 @dataclass
@@ -361,6 +375,7 @@ def run(source_root: Path, options: OffloadOptions,
         source_root=source_root,
         destination_roots=dest_roots,
         verification=options.verification,
+        profile=options.profile,
         hash_label=algorithm.label,
         started=_dt.datetime.now(),
         os_version=host.os_version,
@@ -640,6 +655,7 @@ def rescan(source_root: Path, destination_roots: Sequence[Path],
         source_root=source_root,
         destination_roots=[Path(d) for d in destination_roots] or [source_root],
         verification=options.verification,
+        profile=options.profile,
         hash_label=algorithm.label,
         started=_dt.datetime.now(),
         os_version=host.os_version,

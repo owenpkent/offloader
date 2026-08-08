@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 
 from . import PRODUCT_NAME, __version__, engine, hashers, longpath, probe, retry, thumbs
-from .models import FileStatus, Job, VerificationMode
+from .models import FileStatus, Job, Profile, VerificationMode
 from .reports import WRITERS
 from .util import format_elapsed, format_size
 
@@ -122,9 +122,12 @@ def _summarize(job: Job, reports: list[Path]) -> None:
     failed = [f for f in job.files if f.status is FileStatus.FAILED]
     print()
     print(f"  {job.name}: {job.final_status}")
+    # The video count is meaningful only when media was probed; a generic
+    # data transfer never looks inside a file, so reporting "0 video" would
+    # be noise rather than information.
+    video = f"  ({job.video_files} video)" if job.profile.probes_media else ""
     print(f"  {job.total_files} files, {format_size(job.total_bytes)}"
-          f" in {format_elapsed(job.elapsed_sec)}"
-          f"  ({job.video_files} video)")
+          f" in {format_elapsed(job.elapsed_sec)}{video}")
     print(f"  Verification: {job.verification_label}")
     for destination in job.destination_roots:
         print(f"  -> {destination}")
@@ -169,6 +172,14 @@ def _common_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--retry-wait", type=float, default=2.0, metavar="SECONDS",
                         help="pause before the first retry, backing off after "
                              "(default: %(default)s)")
+    parser.add_argument("--profile", choices=[p.value for p in Profile],
+                        default=Profile.MEDIA.value,
+                        help="'media' (default) offloads camera cards with "
+                             "ffprobe metadata, thumbnails and the BRAW check; "
+                             "'data' is a generic large-data transfer that "
+                             "copies and verifies but skips all media probing")
+    parser.add_argument("--generic", action="store_true",
+                        help="shorthand for --profile data")
     parser.add_argument("--no-probe", action="store_true",
                         help="skip ffprobe metadata and thumbnails")
     parser.add_argument("--quiet", action="store_true", help="suppress progress")
@@ -177,7 +188,8 @@ def _common_options(parser: argparse.ArgumentParser) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="offloader",
-        description=f"{PRODUCT_NAME} — verified media offload with job reports.",
+        description=f"{PRODUCT_NAME} — verified copy for large data transfers, "
+                    f"with camera-card offload and job reports built in.",
     )
     parser.add_argument("--version", action="version",
                         version=f"{PRODUCT_NAME} {__version__}")
@@ -226,6 +238,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _options_from(args: argparse.Namespace, destinations: list[Path]) -> engine.OffloadOptions:
+    profile = Profile.DATA if getattr(args, "generic", False) else Profile(args.profile)
     return engine.OffloadOptions(
         destinations=destinations,
         algorithm=args.hash,
@@ -236,6 +249,7 @@ def _options_from(args: argparse.Namespace, destinations: list[Path]) -> engine.
         skip_existing=getattr(args, "skip_existing", False),
         job_name=args.name,
         extra_probe=not args.no_probe,
+        profile=profile,
         retry=retry.RetryPolicy(attempts=max(1, args.retries),
                                 delay=max(0.0, args.retry_wait)),
     )
@@ -356,6 +370,8 @@ def cmd_info(_args: argparse.Namespace) -> int:
               f" {prefix} prefix {note}")
     print(f"  checksums:   {', '.join(sorted(hashers.algorithm_keys()))}")
     print(f"  reports:     {', '.join(WRITERS)}")
+    print(f"  profiles:    {', '.join(p.value for p in Profile)} "
+          f"(--profile; 'data' skips media probing for generic transfers)")
     return 0
 
 

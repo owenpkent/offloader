@@ -105,9 +105,13 @@ already does the stem-matching this needs.
 
 ## Not planned
 
-- **A general-purpose file sync tool.** The design assumes camera originals:
-  written once, never modified, verified once and archived. Two-way sync,
-  conflict resolution and partial-file updates would compromise that.
+- **A general-purpose file *sync* tool.** The `data` profile generalises the
+  engine to any large *one-way* transfer — written once, never modified,
+  verified once, archived — because that assumption is exactly what makes the
+  "Verified" verdict meaningful, and it holds for a dataset or a disk image as
+  well as a camera card. What stays out is everything that *breaks* it:
+  two-way reconciliation, conflict resolution and partial-file updates. Those
+  turn a copy you can prove into a merge you have to trust.
 - **Metadata fidelity beyond timestamps** — ACLs, alternate data streams,
   junctions. robocopy does these well and they do not apply to camera media.
 - **Replacing the copy loop with robocopy.** Measured and rejected; see

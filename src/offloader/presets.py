@@ -14,7 +14,7 @@ from pathlib import Path
 from .config import config_file, read_json, write_json
 from .engine import DEFAULT_EXCLUDES, OffloadOptions
 from .hashers import ALGORITHMS
-from .models import VerificationMode
+from .models import Profile, VerificationMode
 from .naming import DEFAULT_TEMPLATE
 from .retry import RetryPolicy
 
@@ -40,6 +40,7 @@ class Preset:
     destinations: list[Path] = field(default_factory=list)
     algorithm: str = "xxh3-64"
     verification: VerificationMode = VerificationMode.SOURCE_ONLY
+    profile: Profile = Profile.MEDIA
     thumbnail_count: int = 4
     reports: list[str] = field(default_factory=lambda: ["pdf"])
     preserve_structure: bool = True
@@ -81,7 +82,10 @@ class Preset:
             VerificationMode.SOURCE_ONLY: "source-only verify",
             VerificationMode.FULL: "full verify",
         }[self.verification]
-        return f"{where} · {self.algorithm} · {verify} · {', '.join(self.reports) or 'no reports'}"
+        parts = [where, self.algorithm, verify, ", ".join(self.reports) or "no reports"]
+        if self.profile is Profile.DATA:
+            parts.insert(0, "data")
+        return " · ".join(parts)
 
     def mark_used(self) -> None:
         self.use_count += 1
@@ -99,8 +103,11 @@ class Preset:
             skip_existing=self.skip_existing,
             job_name=job_name,
             # Metadata is cheap next to the copy itself and useful even when
-            # thumbnails are switched off, so it is always collected.
+            # thumbnails are switched off, so it is always collected — unless
+            # this is a data-transfer preset, where OffloadOptions turns media
+            # probing off for the profile.
             extra_probe=True,
+            profile=self.profile,
             retry=RetryPolicy(attempts=max(1, self.retry_attempts),
                               delay=max(0.0, self.retry_wait)),
         )
@@ -112,6 +119,7 @@ class Preset:
             "destinations": [str(p) for p in self.destinations],
             "algorithm": self.algorithm,
             "verification": self.verification.value,
+            "profile": self.profile.value,
             "thumbnail_count": self.thumbnail_count,
             "reports": list(self.reports),
             "preserve_structure": self.preserve_structure,
@@ -161,6 +169,11 @@ class Preset:
         except (ValueError, TypeError):
             verification = VerificationMode.SOURCE_ONLY
 
+        try:
+            profile = Profile(value("profile", "media"))
+        except (ValueError, TypeError):
+            profile = Profile.MEDIA
+
         algorithm = value("algorithm", "xxh3-64")
         if algorithm not in ALGORITHMS:
             algorithm = "xxh3-64"
@@ -170,6 +183,7 @@ class Preset:
             destinations=[Path(p) for p in as_list("destinations")],
             algorithm=algorithm,
             verification=verification,
+            profile=profile,
             thumbnail_count=as_int("thumbnail_count", 4),
             # An explicitly empty list is a real choice — offload without
             # paperwork — so only a missing or null key falls back to the
