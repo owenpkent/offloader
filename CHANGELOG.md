@@ -24,6 +24,19 @@ Found by adding CI on Linux and macOS — the suite had only ever run on Windows
 - **The page-cache warning repeated once per file on macOS**, which has no
   `posix_fadvise`, burying the warnings that were about actual media. Now said
   once per job.
+- **BRAW timing could have been read off the audio track.** `_read_timing` took
+  the first track carrying samples, which worked only because every file to hand
+  listed `vide` first. A real clip also has a `soun` track whose sample count is
+  one per *audio* sample — 34,242,000 for an 11-minute take — so an audio-first
+  file would have reported 34 million "frames" and a duration to match. The
+  video track is now chosen by handler type. Found by running the parser over
+  510 real clips, 2.84 TB, from two camera bodies.
+
+### Changed
+
+- ASC MHL v2.0 output, C4 checksums, retry on transient read failures, and
+  Windows long-path support all landed after 0.1.0 was tagged and will ship in
+  the next release.
 
 ## [0.1.0] — 2026-08-07
 

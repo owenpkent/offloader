@@ -239,6 +239,7 @@ general-purpose tool reports a filename, a size, and a placeholder icon.
 
 | Document | What is in it |
 | --- | --- |
+| [`ROADMAP.md`](ROADMAP.md) | What is next, why, and what this will not become |
 | [`docs/data-safety.md`](docs/data-safety.md) | Threat model: what is guaranteed, what is not, and the bugs behind each guarantee |
 | [`docs/report-layout.md`](docs/report-layout.md) | Every coordinate of the PDF, measured off the reference report |
 | [`docs/performance.md`](docs/performance.md) | Why not robocopy, with benchmarks and the confounds that made the first run worthless |
@@ -327,17 +328,14 @@ that file. Names are now sanitised into the XML character range.
 
 ## Roadmap
 
-Done — engine, CLI, all five report formats, and the desktop app (Simple and
-Preset modes, job queue with pause/resume/priority, drive panel with card
-detection, preset colour coding and sorting, auto-naming, duplicate-offload
-protection).
+[`ROADMAP.md`](ROADMAP.md) is prioritised by one question — does this make the
+"Verified" verdict more trustworthy? — and every item on it comes from a limit
+already documented in `docs/`, not from a wishlist. It also says what this
+deliberately will **not** become.
 
-Remaining, toward fuller ShotPut Pro parity:
-
-- Email/SMS notification on completion
-- BRAW decoding via the Blackmagic RAW SDK, for thumbnails without a proxy
-- Per-job report templates and custom branding presets
-- Windows installer and code signing
+Nearest up: verifying the ASC MHL directory hashes that are already written (so
+a rename is a mismatch rather than a footnote), an optional second read of the
+source, and chunk-level rather than whole-file retry for marginal cards.
 
 ## Contributing
 
