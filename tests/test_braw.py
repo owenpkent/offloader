@@ -51,6 +51,19 @@ def _stts(sample_count: int, delta: int) -> bytes:
     return _atom(b"stts", struct.pack(">IIII", 0, 1, sample_count, delta))
 
 
+def _hdlr(handler: bytes) -> bytes:
+    """A handler-reference atom: version+flags, pre_defined, handler type."""
+    return _atom(b"hdlr", struct.pack(">II", 0, 0) + handler + bytes(12))
+
+
+def _trak(handler: bytes, timescale: int, duration: int,
+          samples: int, delta: int) -> bytes:
+    stbl = _atom(b"stbl", _stts(samples, delta))
+    minf = _atom(b"minf", stbl)
+    mdia = _atom(b"mdia", _mdhd(timescale, duration) + _hdlr(handler) + minf)
+    return _atom(b"trak", mdia)
+
+
 def write_braw(path: Path, *, width: float = 6048.0, height: float = 4032.0,
                fps: int = 24, frames: int = 240,
                camera: str = "Blackmagic PYXIS 6K",
@@ -59,7 +72,7 @@ def write_braw(path: Path, *, width: float = 6048.0, height: float = 4032.0,
                good_take: str = "false", compression: str = "8:1",
                bitrate: int = 923661952, gain: float = 1.0,
                colour_gen: int = 5, include_moov: bool = True,
-               mdat_bytes: int = 4096) -> Path:
+               mdat_bytes: int = 4096, audio_first: bool = False) -> Path:
     """A minimal but structurally faithful BRAW file."""
     names = [
         "camera_type", "lens_type", "reel_name", "scene", "take", "good_take",
@@ -89,12 +102,14 @@ def write_braw(path: Path, *, width: float = 6048.0, height: float = 4032.0,
         (17, utf8, b"2026:08:04"),
     ]
 
-    stbl = _atom(b"stbl", _stts(frames, 1000))
-    minf = _atom(b"minf", stbl)
-    mdia = _atom(b"mdia", _mdhd(fps * 1000, frames * 1000) + minf)
-    trak = _atom(b"trak", mdia)
+    video = _trak(b"vide", fps * 1000, frames * 1000, frames, 1000)
+    # Real BRAW carries an audio track too, with one sample per *audio* sample:
+    # tens of millions of them. 48 kHz for the clip's duration.
+    audio = _trak(b"soun", 48000, int(frames / fps * 48000),
+                  int(frames / fps * 48000), 1)
+    traks = (audio + video) if audio_first else (video + audio)
     meta = _atom(b"meta", _keys(names) + _ilst(values))
-    moov = _atom(b"moov", trak + meta)
+    moov = _atom(b"moov", traks + meta)
 
     body = _atom(b"wide", b"") + _atom(b"mdat", b"\0" * mdat_bytes)
     if include_moov:
@@ -448,3 +463,24 @@ def test_the_report_records_that_frames_came_from_a_proxy(tmp_path: Path):
     assert "Blackmagic PYXIS 6K" in csv_text
     assert "Sigma 24-70mm" in csv_text
     assert ",yes," in csv_text          # good take
+
+
+def test_the_video_track_is_chosen_by_handler_not_position(tmp_path: Path):
+    """REGRESSION, found against real 79 GB clips. A BRAW file carries a `soun`
+    track alongside the picture, with one sample per *audio* sample — tens of
+    millions of them. Taking whichever track came first worked only because
+    `vide` happened to be first in every file to hand; an audio-first file would
+    have reported 34 million "frames" and a duration to match."""
+    audio_first = write_braw(tmp_path / "audio_first.braw", frames=240, fps=24,
+                             audio_first=True)
+    info = braw.read_info(audio_first)
+
+    assert info.frame_count == 240
+    assert info.fps == pytest.approx(24.0)
+    assert info.duration_sec == pytest.approx(10.0)
+
+
+def test_track_order_does_not_change_the_result(tmp_path: Path):
+    first = braw.read_info(write_braw(tmp_path / "a.braw", audio_first=False))
+    second = braw.read_info(write_braw(tmp_path / "b.braw", audio_first=True))
+    assert (first.frame_count, first.fps, first.duration_sec) ==            (second.frame_count, second.fps, second.duration_sec)

@@ -301,10 +301,28 @@ def _read_metadata_pairs(moov: bytes) -> dict[str, Any]:
     return values
 
 
+def _handler_type(moov: bytes, start: int, end: int) -> bytes:
+    """The trak's handler type: `vide`, `soun`, `tmcd`, `meta`."""
+    hdlr = _descend(moov, start, end, b"hdlr")
+    if not hdlr:
+        return b""
+    # hdlr body: version+flags(4), pre_defined(4), handler_type(4)
+    offset = hdlr[0] + 8 + 8
+    return moov[offset:offset + 4]
+
+
 def _read_timing(moov: bytes) -> tuple[float | None, float | None, int | None]:
-    """(fps, duration seconds, frame count) from the first video track."""
+    """(fps, duration seconds, frame count) from the video track.
+
+    The video track is selected by handler type, not by position. A real BRAW
+    clip also carries a `soun` track whose sample count runs into the tens of
+    millions (one per audio sample, not per frame) — taking whichever track
+    came first would report that as the frame count and the duration with it.
+    """
     for offset, size, atom_type, header_length in _walk(moov, 0, len(moov)):
         if atom_type != b"trak":
+            continue
+        if _handler_type(moov, offset + header_length, offset + size) != b"vide":
             continue
         stts = _descend(moov, offset + header_length, offset + size, b"stts")
         mdhd = _descend(moov, offset + header_length, offset + size, b"mdhd")

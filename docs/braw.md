@@ -110,16 +110,52 @@ footage. A synthetic fixture that only matches itself is worthless, so one test
 runs the same assertions against a real PYXIS file when one is present and skips
 cleanly when it is not.
 
+### Validated against real footage
+
+The parser was developed against a single 5 MB still, then run over a working
+drive: **510 clips, 2.84 TB**, from two camera bodies it had never seen.
+
+| | |
+| --- | --- |
+| Structurally sound | 510 of 510 |
+| Time to check all of them | 45 s, about 88 ms per clip |
+| Largest clip parsed | 79 GB, reading 646 KB of it |
+| Bodies | Blackmagic Pocket Cinema Camera 6K (fw 7.3), PYXIS 6K (fw 10.2) |
+| Frame counts | 1,744 to 23,858 |
+
+Both bodies parsed with no expected key missing, including a difference the
+5 MB sample could not have shown: the Pocket 6K records at **constant quality**
+(`Q3`) where the PYXIS records at a **ratio** (`8:1`). Both appear correctly as
+the codec label.
+
+That sweep also fixed a real bug — see below.
+
+### The bug real clips found
+
+`_read_timing` took the first track that had samples. Every file to hand happened
+to list `vide` first, so it worked.
+
+A real BRAW clip also carries a `soun` track, and its sample count is one per
+*audio* sample: 34,242,000 for an 11-minute take. An audio-first file would have
+reported 34 million "frames" and a duration to match — a wrong number in the
+report, with nothing to flag it as wrong.
+
+The video track is now selected by handler type. The test synthesiser can emit
+tracks in either order, and a regression test asserts the result does not depend
+on it.
+
 ## Limits
 
 - **No decoding.** Frames come from the proxy or not at all. Real BRAW decoding
   needs the Blackmagic RAW SDK, which is a separate, platform-specific
   dependency.
 - **Timecode** is reported as a start of `00:00:00:00` derived from the frame
-  rate. The real start timecode lives in the timecode track's sample data, which
-  is not parsed yet.
+  rate. The real start timecode lives in the `tmcd` track's sample data, which
+  is not parsed yet — the track is present and located, only its payload is
+  unread.
 - **Audio tracks** inside BRAW are not enumerated; the clip line shows picture
-  metadata only.
+  metadata only. The `soun` track is found and deliberately skipped, so the
+  information is a parse away.
 - **Spanned clips** (a single take split across files) are treated as separate
   files. Blackmagic does not normally span, but a very long take can.
 - **`.sidecar` files** are copied like any other file but are not linked to
