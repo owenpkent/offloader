@@ -59,7 +59,7 @@ class SimpleModePanel(QWidget):
         for mode, text in VERIFICATION_LABELS.items():
             self._verification.addItem(text, mode.value)
         self._verification.setCurrentIndex(
-            max(0, self._verification.findData(VerificationMode.SOURCE_ONLY.value)))
+            max(0, self._verification.findData(VerificationMode.FULL.value)))
 
         self._profile = QComboBox()
         self._profile.addItem("Media â€” camera card", Profile.MEDIA.value)

@@ -39,7 +39,7 @@ class Preset:
     name: str
     destinations: list[Path] = field(default_factory=list)
     algorithm: str = "xxh3-64"
-    verification: VerificationMode = VerificationMode.SOURCE_ONLY
+    verification: VerificationMode = VerificationMode.FULL
     profile: Profile = Profile.MEDIA
     thumbnail_count: int = 4
     reports: list[str] = field(default_factory=lambda: ["pdf"])
@@ -169,9 +169,9 @@ class Preset:
             return list(got) if isinstance(got, (list, tuple)) else []
 
         try:
-            verification = VerificationMode(value("verification", "source-only"))
+            verification = VerificationMode(value("verification", "full"))
         except (ValueError, TypeError):
-            verification = VerificationMode.SOURCE_ONLY
+            verification = VerificationMode.FULL
 
         try:
             profile = Profile(value("profile", "media"))

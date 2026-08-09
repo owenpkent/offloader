@@ -38,7 +38,7 @@ DEFAULT_EXCLUDES = (
     ".Trashes", ".fseventsd", "$RECYCLE.BIN", "System Volume Information",
 )
 
-CHUNK_SIZE = 8 << 20  # 8 MiB — large enough to keep spinning disks streaming.
+CHUNK_SIZE = 8 << 20  # 8 MiB â€” large enough to keep spinning disks streaming.
 
 #: Chunks the reader may run ahead of the writer. A sequential read-then-write
 #: loop never overlaps the two, so it settles at the harmonic mean of read and
@@ -51,8 +51,8 @@ READ_AHEAD = 3
 
 
 #: Extension worn by a copy that is still in flight. A destination file only
-#: takes its real name once it is complete — and, under full verification, once
-#: it has been proven — so an interrupted offload can never leave something that
+#: takes its real name once it is complete â€” and, under full verification, once
+#: it has been proven â€” so an interrupted offload can never leave something that
 #: looks like finished media.
 PARTIAL_SUFFIX = ".offloader-partial"
 
@@ -72,7 +72,7 @@ def assert_safe_destinations(source_root: Path, destinations: Sequence[Path]) ->
 
     * A destination equal to, or inside, the source. Opening the target for
       writing truncates it, and if that target *is* a source file the original
-      is gone before it is ever read — with the checksum of an empty file
+      is gone before it is ever read â€” with the checksum of an empty file
       dutifully recorded.
     * Two destinations resolving to the same directory, which would have two
       writers fighting over one file.
@@ -108,7 +108,7 @@ class JobControl:
     """Cooperative pause/resume/cancel for a running offload.
 
     Checked once per chunk, so a pause takes effect within one 8 MiB read and a
-    cancel never leaves a half-written file behind — `run()` deletes partial
+    cancel never leaves a half-written file behind â€” `run()` deletes partial
     destinations on the way out.
     """
 
@@ -167,7 +167,11 @@ ProgressCallback = Callable[[ProgressEvent], None]
 class OffloadOptions:
     destinations: Sequence[Path]
     algorithm: str = "xxh3-64"
-    verification: VerificationMode = VerificationMode.SOURCE_ONLY
+    # FULL by default: the read-back is the only mode that proves what is on
+    # the destination device, and an offload tool's default should be the one
+    # whose "Verified" means the most. The cost is one extra read of each copy
+    # at the destination's own speed; anyone racing a deadline can opt down.
+    verification: VerificationMode = VerificationMode.FULL
     thumbnail_count: int = 4
     excludes: Sequence[str] = DEFAULT_EXCLUDES
     #: Preserve the source tree under each destination root.
@@ -268,7 +272,7 @@ def _copy_fanout(source: Path, targets: Sequence[Path], algorithm: str,
                  retry: retry_mod.RetryPolicy = retry_mod.NO_RETRY) -> _CopyResult:
     """Stream `source` into every target at once.
 
-    `targets` are the *in-flight* paths — the caller renames them into place
+    `targets` are the *in-flight* paths â€” the caller renames them into place
     once it is satisfied. Nothing here ever opens a final destination name, so a
     copy that fails or is interrupted cannot damage a good file already sitting
     there.
@@ -304,8 +308,8 @@ def _copy_fanout(source: Path, targets: Sequence[Path], algorithm: str,
         """Keep the queue fed so the next read overlaps the current write.
 
         A transient read failure is retried *here*, at the chunk that failed,
-        rather than by restarting the file. Nothing has been hashed yet — the
-        hashers only ever see a chunk once it has been delivered whole — so
+        rather than by restarting the file. Nothing has been hashed yet â€” the
+        hashers only ever see a chunk once it has been delivered whole â€” so
         there is no checksum state to unwind, and recovering a bad sector costs
         one 8 MiB re-read instead of a re-read of everything before it. On a
         79 GB clip that is the difference between seconds and a quarter of an
@@ -419,7 +423,7 @@ def _confirm_source(source: Path, expected: str, algorithm: str) -> bool:
     The gap this closes: a read that returns wrong bytes *without raising*. The
     checksum is computed from whatever was read, so a bad read produces a
     destination that faithfully matches a corrupted source and verifies clean at
-    every level — file hashes, directory hashes, the lot. Nothing but reading
+    every level â€” file hashes, directory hashes, the lot. Nothing but reading
     twice can see it.
 
     Raises `UnstableRead` on a disagreement rather than choosing a winner: there
@@ -433,7 +437,7 @@ def _confirm_source(source: Path, expected: str, algorithm: str) -> bool:
     again = hash_file(source, algorithm)
     if again != expected:
         raise retry_mod.UnstableRead(
-            f"two reads of {source.name} disagreed ({expected} then {again}) — "
+            f"two reads of {source.name} disagreed ({expected} then {again}) â€” "
             "the source did not return the same bytes twice"
         )
     return evicted
@@ -481,7 +485,7 @@ def _warn_on_split_companions(job: Job) -> None:
         if clip is None or clip.status is FileStatus.FAILED:
             continue
         job.warnings.append(
-            f"{entry.name} did not copy but {clip.name} did — the clip has "
+            f"{entry.name} did not copy but {clip.name} did â€” the clip has "
             "been separated from a file that belongs with it"
         )
 
@@ -608,7 +612,7 @@ def run(source_root: Path, options: OffloadOptions,
 
         try:
             # These close over the loop variables and are all invoked inside
-            # retry_mod.call below, before the loop advances — but bind them
+            # retry_mod.call below, before the loop advances â€” but bind them
             # anyway, so the safety is visible here rather than depending on
             # when the callee happens to call back.
             def on_chunk(n: int, _idx=index, _src=source, _st=stat) -> None:
@@ -655,7 +659,7 @@ def run(source_root: Path, options: OffloadOptions,
                     job.warnings.append(
                         "could not evict files from the page cache on this "
                         "platform, so the second read may have come from memory "
-                        "rather than the device — --paranoid proved less than "
+                        "rather than the device â€” --paranoid proved less than "
                         "it appears to"
                     )
                 return result
@@ -670,16 +674,16 @@ def run(source_root: Path, options: OffloadOptions,
                 # to stop using.
                 job.warnings.append(
                     f"{source.name} copied on attempt {used} of "
-                    f"{options.retry.attempts} — the source may be failing")
+                    f"{options.retry.attempts} â€” the source may be failing")
             if result.recovered_reads:
                 # Recovered without restarting the file, which is why the copy
-                # succeeded at all — but the sectors that needed it are real.
+                # succeeded at all â€” but the sectors that needed it are real.
                 # Said once per file: a card failing over a contiguous stretch
                 # produces one of these every 8 MiB, and a warning list that
                 # long is one nobody reads to the end.
                 job.warnings.append(
                     f"{source.name}: {_describe_recovery(result.recovered_reads)}"
-                    " — the source may be failing")
+                    " â€” the source may be failing")
             entry.checksum = src_sum or None
         except JobCancelled:
             _discard(partials)
@@ -734,7 +738,7 @@ def run(source_root: Path, options: OffloadOptions,
                         if verify_attempts > 1:
                             job.warnings.append(
                                 f"{target.name} verified on attempt "
-                                f"{verify_attempts} — the destination may be "
+                                f"{verify_attempts} â€” the destination may be "
                                 "failing")
                         destination.checksum = dst_sum or None
                     except OSError as exc:
@@ -827,7 +831,7 @@ def run(source_root: Path, options: OffloadOptions,
         not_attempted = len(files) - len(job.files)
         if not_attempted > 0:
             counters.errors.append(
-                f"cancelled — {not_attempted} file(s) not attempted")
+                f"cancelled â€” {not_attempted} file(s) not attempted")
     _warn_on_split_companions(job)
     job.notes = "; ".join(counters.errors)
     return job

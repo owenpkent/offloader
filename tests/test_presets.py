@@ -186,7 +186,7 @@ def test_nonsense_types_fall_back_rather_than_raise():
     assert preset.retry_attempts == 3
     assert preset.excludes == []
     assert preset.algorithm in ALGORITHMS
-    assert preset.verification is VerificationMode.SOURCE_ONLY
+    assert preset.verification is VerificationMode.FULL
 
 
 def test_an_explicitly_empty_report_list_is_respected():

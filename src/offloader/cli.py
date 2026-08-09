@@ -153,7 +153,7 @@ def _common_options(parser: argparse.ArgumentParser) -> None:
                         choices=sorted(hashers.algorithm_keys()),
                         help="checksum algorithm (default: %(default)s; the "
                              "engine hashes every byte on the copy path, so a "
-                             "slow choice caps copy speed â€” md5 is ~40x slower "
+                             "slow choice caps copy speed — md5 is ~40x slower "
                              "than the default; see 'offloader info')")
     parser.add_argument("--report", type=_parse_reports, default=DEFAULT_REPORTS,
                         metavar="FMT[,FMT...]",
@@ -192,7 +192,7 @@ def _common_options(parser: argparse.ArgumentParser) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="offloader",
-        description=f"{PRODUCT_NAME} â€” verified copy for large data transfers, "
+        description=f"{PRODUCT_NAME} — verified copy for large data transfers, "
                     f"with camera-card offload and job reports built in.",
     )
     parser.add_argument("--version", action="version",
@@ -205,7 +205,7 @@ def build_parser() -> argparse.ArgumentParser:
     offload.add_argument("--dest", type=Path, action="append", required=True,
                          dest="destinations", metavar="PATH",
                          help="destination root (repeat for multiple copies)")
-    offload.add_argument("--verify", default=VerificationMode.SOURCE_ONLY.value,
+    offload.add_argument("--verify", default=VerificationMode.FULL.value,
                          choices=[m.value for m in VerificationMode],
                          help="verification depth (default: %(default)s)")
     offload.add_argument("--flat", action="store_true",
@@ -231,7 +231,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     verify = sub.add_parser(
         "verify",
-        help="re-check an offloaded tree against its MHL â€” run this before "
+        help="re-check an offloaded tree against its MHL — run this before "
              "erasing a card, and again later to catch bit rot")
     verify.add_argument("path", type=Path,
                         help="an .mhl file, or a folder to search for them")
@@ -250,7 +250,7 @@ def _options_from(args: argparse.Namespace, destinations: list[Path]) -> engine.
     return engine.OffloadOptions(
         destinations=destinations,
         algorithm=args.hash,
-        verification=VerificationMode(getattr(args, "verify", "source-only")),
+        verification=VerificationMode(getattr(args, "verify", "full")),
         thumbnail_count=0 if args.no_probe else max(0, args.thumbs),
         excludes=tuple(engine.DEFAULT_EXCLUDES) + tuple(args.exclude),
         preserve_structure=not args.flat,
@@ -354,8 +354,8 @@ def cmd_verify(args: argparse.Namespace) -> int:
             worst = max(worst, 1)
 
     print()
-    print("VERIFIED â€” safe to erase the source" if worst == 0
-          else "NOT VERIFIED â€” do not erase the source")
+    print("VERIFIED — safe to erase the source" if worst == 0
+          else "NOT VERIFIED — do not erase the source")
     return worst
 
 
@@ -371,7 +371,7 @@ def cmd_info(_args: argparse.Namespace) -> int:
     print(f"  ffprobe:     {probe.ffprobe_path() or 'NOT FOUND (metadata disabled)'}")
     print(f"  ffmpeg:      {thumbs.ffmpeg_path() or 'NOT FOUND (thumbnails disabled)'}")
     print(f"  report font: {fonts.describe()}"
-          f"{'' if fonts.using_reference_fonts() else '  (Verdana missing â€” metrics differ)'}")
+          f"{'' if fonts.using_reference_fonts() else '  (Verdana missing — metrics differ)'}")
     enabled = longpath.os_long_paths_enabled()
     if enabled is not None:
         prefix = "\\\\?\\"

@@ -1,7 +1,7 @@
 """GUI tests, run against Qt's offscreen platform.
 
-These drive the real widgets and the real queue controller â€” the worker thread
-actually copies files â€” so they cover the wiring between the interface and the
+These drive the real widgets and the real queue controller — the worker thread
+actually copies files — so they cover the wiring between the interface and the
 engine, not just that the modules import.
 """
 
@@ -249,7 +249,7 @@ def test_simple_mode_builds_a_preset_from_its_controls(qapp, tmp_path):
 
     assert preset.destinations == [tmp_path / "dest"]
     assert preset.reports == ["pdf"]
-    assert preset.verification is VerificationMode.SOURCE_ONLY
+    assert preset.verification is VerificationMode.FULL
 
 
 def test_preset_panel_disables_run_for_a_preset_without_destinations(qapp, tmp_path):
@@ -364,7 +364,7 @@ def test_rate_is_windowed_not_a_lifetime_average(monkeypatch):
         item.bytes_done += 100_000_000
         item.record_progress(item.bytes_done)
 
-    lifetime = item.bytes_done / item.elapsed          # 50 MB/s â€” the old lie
+    lifetime = item.bytes_done / item.elapsed          # 50 MB/s — the old lie
     windowed = item.rate_bytes_per_sec
     assert windowed == pytest.approx(100_000_000, rel=0.05)
     assert windowed > 1.8 * lifetime
