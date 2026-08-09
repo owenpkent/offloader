@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..hashers import ALGORITHMS
-from ..models import VerificationMode
+from ..models import Profile, VerificationMode
 from ..naming import TOKENS
 from ..presets import PRESET_COLORS, Preset
 from ..reports import WRITERS
@@ -85,11 +85,21 @@ class PresetEditor(QDialog):
         self._verification.setCurrentIndex(
             max(0, self._verification.findData(self._source.verification.value)))
 
+        self._profile = QComboBox()
+        self._profile.addItem("Media — camera card (ffprobe, thumbnails, BRAW)",
+                              Profile.MEDIA.value)
+        self._profile.addItem("Data — any large transfer (copy and verify only)",
+                              Profile.DATA.value)
+        self._profile.setCurrentIndex(
+            max(0, self._profile.findData(self._source.profile.value)))
+        self._profile.currentIndexChanged.connect(self._on_profile_changed)
+
         self._thumbnails = QSpinBox()
         self._thumbnails.setRange(0, 8)
         self._thumbnails.setValue(self._source.thumbnail_count)
         self._thumbnails.setSuffix(" per clip")
         self._thumbnails.setSpecialValueText("Off")
+        self._thumbnails.setEnabled(self._source.profile is Profile.MEDIA)
 
         self._reports: dict[str, QCheckBox] = {}
         report_row = []
@@ -130,6 +140,7 @@ class PresetEditor(QDialog):
         form.addRow("Colour", self._color)
         form.addRow("Destinations", self._destinations)
         form.addRow("", row(add, remove, None))
+        form.addRow("Profile", self._profile)
         form.addRow("Checksum", self._algorithm)
         form.addRow("Verification", self._verification)
         form.addRow("Thumbnails", self._thumbnails)
@@ -152,6 +163,11 @@ class PresetEditor(QDialog):
         layout.addLayout(form)
         layout.addWidget(buttons)
 
+    def _on_profile_changed(self) -> None:
+        # A data transfer never decodes a file, so contact-sheet thumbnails do
+        # not apply — disable the control rather than let it imply otherwise.
+        self._thumbnails.setEnabled(self._profile.currentData() == Profile.MEDIA.value)
+
     def _choose_logo(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self, "Choose a logo", "", "Images (*.png *.jpg *.jpeg *.gif)")
@@ -171,6 +187,7 @@ class PresetEditor(QDialog):
             destinations=self._destinations.paths(),
             algorithm=self._algorithm.currentData(),
             verification=VerificationMode(self._verification.currentData()),
+            profile=Profile(self._profile.currentData()),
             thumbnail_count=self._thumbnails.value(),
             reports=[key for key, box in self._reports.items() if box.isChecked()],
             naming_template=self._naming.text().strip() or "{card}",

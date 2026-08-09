@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..hashers import ALGORITHMS
-from ..models import VerificationMode
+from ..models import Profile, VerificationMode
 from ..presets import Preset
 from ..reports import WRITERS
 from .preset_editor import VERIFICATION_LABELS
@@ -60,6 +60,13 @@ class SimpleModePanel(QWidget):
         self._verification.setCurrentIndex(
             max(0, self._verification.findData(VerificationMode.SOURCE_ONLY.value)))
 
+        self._profile = QComboBox()
+        self._profile.addItem("Media — camera card", Profile.MEDIA.value)
+        self._profile.addItem("Data — any large transfer", Profile.DATA.value)
+        self._profile.setCurrentIndex(
+            max(0, self._profile.findData(Profile.MEDIA.value)))
+        self._profile.currentIndexChanged.connect(self._on_profile_changed)
+
         self._thumbnails = QSpinBox()
         self._thumbnails.setRange(0, 8)
         self._thumbnails.setValue(4)
@@ -82,6 +89,7 @@ class SimpleModePanel(QWidget):
         form.setSpacing(10)
         form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
         form.addRow("Job name", self._name)
+        form.addRow("Profile", self._profile)
         form.addRow("Checksum", self._algorithm)
         form.addRow("Verification", self._verification)
         form.addRow("Thumbnails", self._thumbnails)
@@ -146,12 +154,20 @@ class SimpleModePanel(QWidget):
             return False
         return source == destination or source in destination.parents
 
+    def _on_profile_changed(self) -> None:
+        # Thumbnails are contact-sheet frames from a clip — meaningless for a
+        # generic data transfer, which never decodes a file. Grey the control
+        # so the disabled state explains itself.
+        is_media = self._profile.currentData() == Profile.MEDIA.value
+        self._thumbnails.setEnabled(is_media)
+
     def build_preset(self) -> Preset:
         return Preset(
             name="Simple mode",
             destinations=self.destinations.paths(),
             algorithm=self._algorithm.currentData(),
             verification=VerificationMode(self._verification.currentData()),
+            profile=Profile(self._profile.currentData()),
             thumbnail_count=self._thumbnails.value(),
             reports=[key for key, box in self._reports.items() if box.isChecked()],
             preserve_structure=self._preserve.isChecked(),

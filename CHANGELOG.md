@@ -8,6 +8,20 @@ project uses [semantic versioning][semver].
 
 ## [Unreleased]
 
+### Added
+
+- **A `data` profile for generic large-data transfers.** The verified copy
+  engine was never camera-specific — it reads every byte once, checksums it,
+  fans it out to N destinations and reads it back — but the metadata layer
+  assumed camera originals. `--profile data` (or the shorthand `--generic`)
+  turns that layer off: no ffprobe, no thumbnails, no BRAW check, so a dataset,
+  disk image, render output or backup is copied, checksummed, verified and
+  documented (CSV, MHL, ASC MHL, PDF, HTML) with nothing depending on ffmpeg.
+  The default stays `media`, so the camera-card workflow is unchanged. The
+  profile is a first-class field on `OffloadOptions`, `Job` and saved presets,
+  and is selectable in the desktop app's Simple mode and preset editor. This is
+  a one-way verified transfer, not two-way sync — see `ROADMAP.md`.
+
 ### Fixed
 
 Found by adding CI on Linux and macOS — the suite had only ever run on Windows.

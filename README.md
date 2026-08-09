@@ -4,13 +4,18 @@
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/downloads/)
 [![Licence](https://img.shields.io/badge/licence-MIT-green)](LICENSE)
 
-Verified media offload for camera cards, with job reports that match the layout
-of [ShotPut Pro][spp]'s `JobReport.pdf`.
+Verified copy for large data transfers. Read every byte once, checksum it, fan
+it out to one or more destinations, and read it back to prove what landed —
+then produce the paperwork: a CSV manifest, MHL and ASC MHL manifests for
+re-verification downstream, and a self-contained HTML page.
 
-Copy a card to one or more destinations, checksum every byte, and produce the
-paperwork a post house expects: a PDF contact sheet with per-clip metadata, a
-CSV manifest, MHL and ASC MHL manifests for re-verification downstream, and a
-self-contained HTML page.
+The flagship use is camera-card offload, with job reports that match the layout
+of [ShotPut Pro][spp]'s `JobReport.pdf` — a PDF contact sheet with per-clip
+metadata, ffprobe media details and Blackmagic RAW container checks. But that
+media layer is a profile, not the engine: `--profile data` (shorthand
+`--generic`) offloads any large one-way transfer — datasets, disk images,
+render output, backups — with the same verified copy and manifests, and nothing
+depending on ffmpeg. See [Generic data transfers](#generic-data-transfers).
 
 [spp]: https://www.imagineproducts.com/product/shotput-pro/windows
 
@@ -86,6 +91,8 @@ offloader verify D:\video\080426\A001
 | `--dest PATH` | destination root; repeat for multiple copies |
 | `--hash ALGO` | `xxh3-64` (default), `xxh3-128`, `xxh64`, `xxh64be`, `md5`, `sha1`, `sha256`, `c4`, `none` |
 | `--verify MODE` | `source-only` (default), `full`, `none` |
+| `--profile P` | `media` (default: ffprobe, thumbnails, BRAW) or `data` (generic transfer, no media probing) |
+| `--generic` | shorthand for `--profile data` |
 | `--report FMT[,FMT]` | `pdf` (default), `csv`, `mhl`, `ascmhl`, `html` |
 | `--report-dir PATH` | override the report location |
 | `--thumbs N` | frames per clip, 0 to disable (default 4) |
@@ -142,6 +149,39 @@ the destination, at the cost of reading everything twice.
   [`docs/ascmhl.md`](docs/ascmhl.md).
 - **HTML** — self-contained; thumbnails inlined as data URIs, light and dark
   themes, no external requests.
+
+## Generic data transfers
+
+The copy engine has never been camera-specific: it streams the source once,
+checksums it, writes N destinations in the same pass, evicts the page cache and
+reads each copy back off the platter. Everything that made this a *camera* tool
+— ffprobe metadata, contact-sheet thumbnails, the BRAW container check — sits in
+a layer above it.
+
+`--profile data` (or `--generic`) switches that layer off:
+
+```sh
+offloader offload \
+  --source /mnt/instrument/run_1440 \
+  --dest /archive/2026/run_1440 \
+  --dest /nas/cold/run_1440 \
+  --generic \
+  --verify full \
+  --hash sha256 \
+  --report csv,ascmhl
+```
+
+Nothing is treated as a clip, ffmpeg is never invoked, and the run does not need
+it installed. What you still get is the whole point of the tool: every byte
+read once and fanned out, both copies verified off disk, a checksum manifest
+beside each one, and `offloader verify` to re-check the archive months later for
+bit rot. The PDF, CSV, MHL, ASC MHL and HTML reports all render a plain file
+listing — the per-clip metadata block simply does not appear.
+
+This is a **one-way, write-once** transfer: the same model the tool has always
+assumed, now stated for any large data rather than only camera originals. It is
+deliberately not a sync tool — no two-way reconciliation, conflict resolution or
+partial-file updates. See [`ROADMAP.md`](ROADMAP.md).
 
 ## The desktop app
 
@@ -276,13 +316,13 @@ what makes the report layer testable without moving bytes.
 
 ```sh
 pip install -e ".[dev]"
-pytest                      # 400 tests, ~33s
+pytest                      # 409 tests, ~33s
 pytest --fuzz               # same suite, 3000 examples per property (~2 min)
 ruff check src tests
 pytest --cov=offloader --cov-report=term-missing
 ```
 
-400 tests at 83% line coverage. They cover formatting against the reference's
+409 tests at 82% line coverage. They cover formatting against the reference's
 exact strings, checksum vectors and streaming equivalence, copy/verify
 behaviour including simulated destination corruption, pause/resume/cancel
 concurrency, retry discrimination, BRAW container parsing, ffprobe parsing,

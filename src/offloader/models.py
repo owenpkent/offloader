@@ -13,6 +13,34 @@ from enum import Enum
 from pathlib import Path
 
 
+class Profile(str, Enum):
+    """What kind of source is being offloaded.
+
+    The verified copy engine is identical for both — every byte is read once,
+    checksummed, fanned out and (optionally) read back. The profile only
+    decides how much *media-specific* work runs on top of that:
+
+    - `MEDIA` (default): the camera-card workflow. ffprobe metadata, contact-
+      sheet thumbnails and the BRAW container check, with camera originals in
+      mind.
+    - `DATA`: any large one-way transfer — datasets, disk images, backups,
+      render output. Skips media probing entirely, so nothing depends on
+      ffmpeg and no file is treated as a clip. The copy, the checksums, the
+      verification and the MHL/CSV/PDF paperwork are exactly the same.
+    """
+
+    MEDIA = "media"
+    DATA = "data"
+
+    @property
+    def label(self) -> str:
+        return {Profile.MEDIA: "Media", Profile.DATA: "Data"}[self]
+
+    @property
+    def probes_media(self) -> bool:
+        return self is Profile.MEDIA
+
+
 class VerificationMode(str, Enum):
     """How much re-reading the engine does to prove the copy landed intact."""
 
@@ -181,6 +209,9 @@ class Job:
     source_root: Path
     destination_roots: list[Path]
     verification: VerificationMode = VerificationMode.SOURCE_ONLY
+    #: Which workflow produced this job. `DATA` means no media metadata was
+    #: collected, so reports show a plain file listing rather than clip rows.
+    profile: Profile = Profile.MEDIA
     hash_label: str = "XXHash3-64"
     started: _dt.datetime = field(default_factory=_dt.datetime.now)
     finished: _dt.datetime | None = None

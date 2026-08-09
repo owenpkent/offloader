@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "offloader"
 version = "0.1.0"
-description = "Verified media offload for camera cards, with ShotPut Pro-compatible reports, ASC MHL, and Blackmagic RAW support"
+description = "Verified copy for large data transfers, with camera-card offload, ShotPut Pro-compatible reports, ASC MHL, and Blackmagic RAW support"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
