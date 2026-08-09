@@ -191,7 +191,9 @@ offloader offload \
 ```
 
 Nothing is treated as a clip, ffmpeg is never invoked, and the run does not need
-it installed. What you still get is the whole point of the tool: every byte
+it installed — including the sidecar and proxy grouping above, which links a
+file to the clip it belongs to by stem and would otherwise announce that
+`capture.xmp` belongs to `capture.h5` on no more evidence than a shared name. What you still get is the whole point of the tool: every byte
 read once and fanned out, both copies verified off disk, a checksum manifest
 beside each one, and `offloader verify` to re-check the archive months later for
 bit rot. The PDF, CSV, MHL, ASC MHL and HTML reports all render a plain file

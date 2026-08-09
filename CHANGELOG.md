@@ -39,6 +39,9 @@ project uses [semantic versioning][semver].
   unlinked rather than guessed at. A clip that copies while a file belonging to
   it does not is now a job warning instead of two rows twenty lines apart. The
   HTML report shows them together and the CSV gains a `Companion Of` column.
+  Media profile only: a companion is a file belonging to a *clip*, and under
+  `--profile data` nothing is a clip, so a dataset is not told that
+  `capture.xmp` belongs to `capture.h5` on the strength of a shared stem.
 - **`offloader verify` now re-checks the ASC MHL directory hashes**, which were
   written from the start and never read back. A rename or a moved file leaves
   every individual file hashing exactly as recorded, so no file-level check can
@@ -79,6 +82,16 @@ project uses [semantic versioning][semver].
   destination at a length the copy loop does not know. Once a chunk has had
   every attempt the policy allows, the whole-file retry no longer repeats them
   against the same fault.
+- **A verify report that failed only on its directory hashes says so first.**
+  It used to open with the file tally — `3 checked: 3 ok` — on a report that did
+  not pass, which reads as a pass to anyone scanning. That combination is now
+  stated as what it is: the bytes are intact and the tree is not. Reports with
+  file failures are unchanged; they already led with them.
+- **Recovered reads are reported once per file, not once per chunk.** A card
+  failing over a contiguous stretch produced one warning every 8 MiB, burying
+  every other warning in the job. A single bad sector still names its offset
+  exactly, because there the byte is the useful fact; a run of them is bounded
+  by the first and the last, because there it is not.
 
 ### Fixed
 
