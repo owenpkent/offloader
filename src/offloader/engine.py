@@ -557,6 +557,10 @@ def run(source_root: Path, options: OffloadOptions,
         if progress:
             progress(event)
 
+    # One memo per job: the first clip of a suffix this ffmpeg cannot decode
+    # pays the failed extraction, the remaining clips skip it.
+    thumb_memo = thumbs.DecoderMemo()
+
     for index, source in enumerate(files):
         # Between files is the cheapest place to honour a pause or cancel.
         if control is not None:
@@ -822,6 +826,7 @@ def run(source_root: Path, options: OffloadOptions,
 
                 entry.thumbnails = thumbs.extract(
                     picture, entry.media, thumb_dir, options.thumbnail_count,
+                    memo=thumb_memo,
                 )
 
         job.files.append(entry)
@@ -863,6 +868,7 @@ def rescan(source_root: Path, destination_roots: Sequence[Path],
         system_ram=host.system_ram,
     )
     thumb_dir = options.thumbnail_dir or (source_root / f"{job.name}_Reports" / "thumbs")
+    thumb_memo = thumbs.DecoderMemo()
     total = sum(p.stat().st_size for p in files)
     done = 0
 
@@ -912,7 +918,8 @@ def rescan(source_root: Path, destination_roots: Sequence[Path],
             entry.media = probe_mod.probe(source)
             if options.thumbnail_count > 0 and entry.media.is_video:
                 entry.thumbnails = thumbs.extract(
-                    source, entry.media, thumb_dir, options.thumbnail_count
+                    source, entry.media, thumb_dir, options.thumbnail_count,
+                    memo=thumb_memo,
                 )
         job.files.append(entry)
 
