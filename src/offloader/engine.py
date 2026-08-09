@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import braw as braw_mod
-from . import companions, integrity, longpath, sysinfo, thumbs
+from . import companions, integrity, longpath, sysinfo, thumbs, volumes
 from . import probe as probe_mod
 from . import retry as retry_mod
 from .hashers import get_algorithm, hash_file, new_hasher
@@ -167,7 +167,11 @@ ProgressCallback = Callable[[ProgressEvent], None]
 class OffloadOptions:
     destinations: Sequence[Path]
     algorithm: str = "xxh3-64"
-    verification: VerificationMode = VerificationMode.SOURCE_ONLY
+    # FULL by default: the read-back is the only mode that proves what is on
+    # the destination device, and an offload tool's default should be the one
+    # whose "Verified" means the most. The cost is one extra read of each copy
+    # at the destination's own speed; anyone racing a deadline can opt down.
+    verification: VerificationMode = VerificationMode.FULL
     thumbnail_count: int = 4
     excludes: Sequence[str] = DEFAULT_EXCLUDES
     #: Preserve the source tree under each destination root.
@@ -184,6 +188,10 @@ class OffloadOptions:
     #: How hard to try again when a read fails for a transient-looking reason.
     #: Marginal cards and readers routinely succeed on a second attempt.
     retry: retry_mod.RetryPolicy = field(default_factory=retry_mod.RetryPolicy)
+    #: Read every source file a second time and compare. Costs a full extra
+    #: pass over the card, and is the only thing that catches a read which
+    #: returned wrong bytes without the operating system noticing.
+    paranoid: bool = False
 
     def __post_init__(self) -> None:
         # The data profile is defined by the absence of media work, so enforce
@@ -231,9 +239,37 @@ def _destination_for(source: Path, source_root: Path, dest_root: Path,
     return dest_root / source.name
 
 
+def _close_quietly(handle: object | None) -> None:
+    """Close a file handle, swallowing anything it raises.
+
+    Deliberately not just `OSError`. This runs on the way out of a failure and
+    must never *become* the failure: a raise from here would skip the sentinel
+    the reader thread owes its consumer, and the copy would hang rather than
+    report the error that actually happened.
+    """
+    if handle is None:
+        return
+    try:
+        handle.close()
+    except Exception:
+        pass
+
+
+@dataclass
+class _CopyResult:
+    """What one pass of `_copy_fanout` produced."""
+
+    source_checksum: str
+    destination_checksums: list[str]
+    #: (offset, attempts) for every chunk that did not read first time. The copy
+    #: succeeded, but a card that needs these is a card on its way out.
+    recovered_reads: list[tuple[int, int]] = field(default_factory=list)
+
+
 def _copy_fanout(source: Path, targets: Sequence[Path], algorithm: str,
                  on_chunk: Callable[[int], None],
-                 control: JobControl | None = None) -> tuple[str, list[str]]:
+                 control: JobControl | None = None,
+                 retry: retry_mod.RetryPolicy = retry_mod.NO_RETRY) -> _CopyResult:
     """Stream `source` into every target at once.
 
     `targets` are the *in-flight* paths — the caller renames them into place
@@ -243,6 +279,11 @@ def _copy_fanout(source: Path, targets: Sequence[Path], algorithm: str,
 
     Returns the source checksum plus one checksum per target, computed from the
     bytes actually handed to each write() call.
+
+    `retry` applies to *source reads only*, chunk by chunk. Writes are left to
+    the caller's whole-file retry: a write that fails part-way leaves the
+    destination at a length nothing here knows, whereas a failed read has
+    produced nothing at all.
     """
     source = Path(source)
     src_hasher = new_hasher(algorithm)
@@ -261,27 +302,64 @@ def _copy_fanout(source: Path, targets: Sequence[Path], algorithm: str,
     chunks: queue.Queue = queue.Queue(maxsize=READ_AHEAD)
     stop = threading.Event()
     failure: list[BaseException] = []
+    recovered: list[tuple[int, int]] = []
 
     def read_ahead() -> None:
-        """Keep the queue fed so the next read overlaps the current write."""
+        """Keep the queue fed so the next read overlaps the current write.
+
+        A transient read failure is retried *here*, at the chunk that failed,
+        rather than by restarting the file. Nothing has been hashed yet — the
+        hashers only ever see a chunk once it has been delivered whole — so
+        there is no checksum state to unwind, and recovering a bad sector costs
+        one 8 MiB re-read instead of a re-read of everything before it. On a
+        79 GB clip that is the difference between seconds and a quarter of an
+        hour.
+        """
+        reader = None
+        offset = 0
         try:
-            with longpath.open_binary(source, "rb") as reader:
+            reader = longpath.open_binary(source, "rb")
+
+            def read_one() -> bytes:
+                return reader.read(CHUNK_SIZE)
+
+            def recover() -> None:
+                # Reopen rather than seek alone: a reader that dropped off the
+                # bus needs its handle re-established, which restarting the
+                # whole file used to get for free.
+                nonlocal reader
+                _close_quietly(reader)
+                reader = longpath.open_binary(source, "rb")
+                reader.seek(offset)
+
+            while not stop.is_set():
+                if control is not None:
+                    control.checkpoint()
+                try:
+                    chunk, attempts = retry_mod.call(read_one, retry,
+                                                     before_retry=recover)
+                except OSError as exc:
+                    if retry.enabled and retry_mod.is_transient(exc):
+                        raise retry_mod.Exhausted(
+                            f"read failed at offset {offset} after "
+                            f"{retry.attempts} attempts: {exc}") from exc
+                    raise
+                if attempts > 1:
+                    recovered.append((offset, attempts))
+                if not chunk:
+                    break
+                offset += len(chunk)
+                # Time-boxed so a consumer that died still lets us exit.
                 while not stop.is_set():
-                    if control is not None:
-                        control.checkpoint()
-                    chunk = reader.read(CHUNK_SIZE)
-                    if not chunk:
+                    try:
+                        chunks.put(chunk, timeout=0.2)
                         break
-                    # Time-boxed so a consumer that died still lets us exit.
-                    while not stop.is_set():
-                        try:
-                            chunks.put(chunk, timeout=0.2)
-                            break
-                        except queue.Full:
-                            continue
+                    except queue.Full:
+                        continue
         except BaseException as exc:      # re-raised on the calling thread
             failure.append(exc)
         finally:
+            _close_quietly(reader)
             # The sentinel must be delivered, not attempted: if the queue
             # happens to be full at EOF a dropped sentinel leaves the consumer
             # blocked on get() forever. Only give up once `stop` is set, which
@@ -334,7 +412,82 @@ def _copy_fanout(source: Path, targets: Sequence[Path], algorithm: str,
         for handle in handles:
             handle.close()
 
-    return src_hasher.hexdigest(), [h.hexdigest() for h in dst_hashers]
+    return _CopyResult(src_hasher.hexdigest(),
+                       [h.hexdigest() for h in dst_hashers],
+                       recovered)
+
+
+def _confirm_source(source: Path, expected: str, algorithm: str) -> bool:
+    """Read `source` a second time and insist it hashes the same.
+
+    The gap this closes: a read that returns wrong bytes *without raising*. The
+    checksum is computed from whatever was read, so a bad read produces a
+    destination that faithfully matches a corrupted source and verifies clean at
+    every level — file hashes, directory hashes, the lot. Nothing but reading
+    twice can see it.
+
+    Raises `UnstableRead` on a disagreement rather than choosing a winner: there
+    is no basis for deciding which of the two reads was the true one.
+
+    Returns whether the page cache was actually dropped first. A second read
+    served out of memory compares the first read against itself, so a caller
+    that cannot evict has to say so rather than claim the guarantee.
+    """
+    evicted = integrity.evict_from_cache(source)
+    again = hash_file(source, algorithm)
+    if again != expected:
+        raise retry_mod.UnstableRead(
+            f"two reads of {source.name} disagreed ({expected} then {again}) — "
+            "the source did not return the same bytes twice"
+        )
+    return evicted
+
+
+def _describe_recovery(recovered: list[tuple[int, int]]) -> str:
+    """What a file's recovered reads amount to, in one line.
+
+    A single bad sector is worth naming exactly; a run of them is worth
+    bounding, because the useful fact stops being *which* byte and becomes how
+    much of the file would not read first time.
+    """
+    if len(recovered) == 1:
+        offset, attempts = recovered[0]
+        return f"recovered a failed read at byte {offset} on attempt {attempts}"
+    offsets = [offset for offset, _ in recovered]
+    worst = max(attempts for _, attempts in recovered)
+    return (f"recovered {len(recovered)} failed reads between byte "
+            f"{min(offsets)} and byte {max(offsets)}, the worst on "
+            f"attempt {worst}")
+
+
+def _invert_companions(belongs_to: dict[Path, Path]) -> dict[Path, list[Path]]:
+    """clip -> its companions, from companion -> its clip."""
+    owns: dict[Path, list[Path]] = {}
+    for companion, clip in belongs_to.items():
+        owns.setdefault(clip, []).append(companion)
+    for paths in owns.values():
+        paths.sort()
+    return owns
+
+
+def _warn_on_split_companions(job: Job) -> None:
+    """A clip and the files that belong to it have to share a fate.
+
+    A graded BRAW delivered without its `.sidecar` has lost the grade, and a
+    per-file table showing one Verified row and one Failed row twenty lines
+    apart is not how anyone finds that out.
+    """
+    by_source = {entry.source: entry for entry in job.files}
+    for entry in job.files:
+        if entry.companion_of is None or entry.status is not FileStatus.FAILED:
+            continue
+        clip = by_source.get(entry.companion_of)
+        if clip is None or clip.status is FileStatus.FAILED:
+            continue
+        job.warnings.append(
+            f"{entry.name} did not copy but {clip.name} did — the clip has "
+            "been separated from a file that belongs with it"
+        )
 
 
 def _discard(targets: Iterable[Path]) -> None:
@@ -371,7 +524,10 @@ def run(source_root: Path, options: OffloadOptions,
 
     host = sysinfo.collect()
     job = Job(
-        name=options.job_name or source_root.name,
+        # A card offloaded from its root has no folder name; its volume
+        # label is what the operator calls it.
+        name=(options.job_name or source_root.name
+              or volumes.volume_label(source_root) or "Offload"),
         source_root=source_root,
         destination_roots=dest_roots,
         verification=options.verification,
@@ -381,16 +537,32 @@ def run(source_root: Path, options: OffloadOptions,
         os_version=host.os_version,
         processors=host.processors,
         system_ram=host.system_ram,
+        paranoid=options.paranoid,
     )
 
     thumb_dir = options.thumbnail_dir or (dest_roots[0] / f"{job.name}_Reports" / "thumbs")
 
+    # A sidecar belongs to a *clip*. Under the data profile nothing is a clip,
+    # so stem-matching a dataset would announce that `run_1440.xmp` belongs to
+    # `run_1440.h5` on no evidence beyond a shared name.
+    belongs_to = (companions.group(files) if options.profile.probes_media
+                  else {})
+    owns = _invert_companions(belongs_to)
+
     #: Whether the "cache could not be evicted" limitation has been reported.
+    #: Said once per job, not once per clip: where the platform has no eviction
+    #: call at all (macOS has no posix_fadvise), repeating it per file would
+    #: bury the warnings that are about actual media.
     evict_noted = False
+    reread_noted = False
 
     def emit(event: ProgressEvent) -> None:
         if progress:
             progress(event)
+
+    # One memo per job: the first clip of a suffix this ffmpeg cannot decode
+    # pays the failed extraction, the remaining clips skip it.
+    thumb_memo = thumbs.DecoderMemo()
 
     for index, source in enumerate(files):
         # Between files is the cheapest place to honour a pause or cancel.
@@ -408,6 +580,8 @@ def run(source_root: Path, options: OffloadOptions,
             size=stat.st_size,
             created=getattr(stat, "st_birthtime", stat.st_ctime),
             modified=stat.st_mtime,
+            companion_of=belongs_to.get(source),
+            companions=owns.get(source, []),
         )
 
         targets = [
@@ -470,17 +644,53 @@ def run(source_root: Path, options: OffloadOptions,
                     f"{_src.name}: read failed ({exc}); "
                     f"attempt {attempt} of {options.retry.attempts}")
 
-            (src_sum, dst_sums), used = retry_mod.call(
-                lambda _src=source, _partials=partials: _copy_fanout(
-                    _src, _partials, options.algorithm, on_chunk, control),
-                options.retry, on_retry=note_retry, before_retry=rewind,
+            def copy_once(_src=source, _partials=partials, _idx=index,
+                          _st=stat) -> _CopyResult:
+                nonlocal reread_noted
+                result = _copy_fanout(_src, _partials, options.algorithm,
+                                      on_chunk, control, options.retry)
+                if not options.paranoid:
+                    return result
+                emit(ProgressEvent(_idx, len(files), _src.name, "reread",
+                                   0, _st.st_size,
+                                   counters.job_bytes_done,
+                                   counters.job_bytes_total))
+                # Raises UnstableRead on a disagreement, which the retry around
+                # this call treats as transient: the honest response to a source
+                # that read differently twice is to read it again, not to guess
+                # which of the two was right.
+                evicted = _confirm_source(_src, result.source_checksum,
+                                          options.algorithm)
+                if not evicted and not reread_noted:
+                    reread_noted = True
+                    job.warnings.append(
+                        "could not evict files from the page cache on this "
+                        "platform, so the second read may have come from memory "
+                        "rather than the device — --paranoid proved less than "
+                        "it appears to"
+                    )
+                return result
+
+            result, used = retry_mod.call(
+                copy_once, options.retry,
+                on_retry=note_retry, before_retry=rewind,
             )
+            src_sum, dst_sums = result.source_checksum, result.destination_checksums
             if used > 1:
                 # Not a failure, but a card that needs retries today is a card
                 # to stop using.
                 job.warnings.append(
                     f"{source.name} copied on attempt {used} of "
                     f"{options.retry.attempts} — the source may be failing")
+            if result.recovered_reads:
+                # Recovered without restarting the file, which is why the copy
+                # succeeded at all — but the sectors that needed it are real.
+                # Said once per file: a card failing over a contiguous stretch
+                # produces one of these every 8 MiB, and a warning list that
+                # long is one nobody reads to the end.
+                job.warnings.append(
+                    f"{source.name}: {_describe_recovery(result.recovered_reads)}"
+                    " — the source may be failing")
             entry.checksum = src_sum or None
         except JobCancelled:
             _discard(partials)
@@ -521,10 +731,6 @@ def run(source_root: Path, options: OffloadOptions,
                     # Evict first, or the read-back is served from the page
                     # cache and verifies our own memory against itself.
                     if not integrity.evict_from_cache(partial) and not evict_noted:
-                        # Said once per job, not once per clip: where the
-                        # platform has no eviction call at all (macOS has no
-                        # posix_fadvise), repeating it per file would bury the
-                        # warnings that are about actual media.
                         evict_noted = True
                         job.warnings.append(
                             "could not evict files from the page cache on this "
@@ -623,6 +829,7 @@ def run(source_root: Path, options: OffloadOptions,
 
                 entry.thumbnails = thumbs.extract(
                     picture, entry.media, thumb_dir, options.thumbnail_count,
+                    memo=thumb_memo,
                 )
 
         job.files.append(entry)
@@ -633,6 +840,7 @@ def run(source_root: Path, options: OffloadOptions,
         if not_attempted > 0:
             counters.errors.append(
                 f"cancelled — {not_attempted} file(s) not attempted")
+    _warn_on_split_companions(job)
     job.notes = "; ".join(counters.errors)
     return job
 
@@ -651,7 +859,10 @@ def rescan(source_root: Path, destination_roots: Sequence[Path],
     host = sysinfo.collect()
 
     job = Job(
-        name=options.job_name or source_root.name,
+        # A card offloaded from its root has no folder name; its volume
+        # label is what the operator calls it.
+        name=(options.job_name or source_root.name
+              or volumes.volume_label(source_root) or "Offload"),
         source_root=source_root,
         destination_roots=[Path(d) for d in destination_roots] or [source_root],
         verification=options.verification,
@@ -663,8 +874,16 @@ def rescan(source_root: Path, destination_roots: Sequence[Path],
         system_ram=host.system_ram,
     )
     thumb_dir = options.thumbnail_dir or (source_root / f"{job.name}_Reports" / "thumbs")
+    thumb_memo = thumbs.DecoderMemo()
     total = sum(p.stat().st_size for p in files)
     done = 0
+
+    # A sidecar belongs to a *clip*. Under the data profile nothing is a clip,
+    # so stem-matching a dataset would announce that `run_1440.xmp` belongs to
+    # `run_1440.h5` on no evidence beyond a shared name.
+    belongs_to = (companions.group(files) if options.profile.probes_media
+                  else {})
+    owns = _invert_companions(belongs_to)
 
     for index, source in enumerate(files):
         stat = source.stat()
@@ -674,6 +893,8 @@ def rescan(source_root: Path, destination_roots: Sequence[Path],
             size=stat.st_size,
             created=getattr(stat, "st_birthtime", stat.st_ctime),
             modified=stat.st_mtime,
+            companion_of=belongs_to.get(source),
+            companions=owns.get(source, []),
         )
         if progress:
             progress(ProgressEvent(index, len(files), source.name, "verify",
@@ -703,7 +924,8 @@ def rescan(source_root: Path, destination_roots: Sequence[Path],
             entry.media = probe_mod.probe(source)
             if options.thumbnail_count > 0 and entry.media.is_video:
                 entry.thumbnails = thumbs.extract(
-                    source, entry.media, thumb_dir, options.thumbnail_count
+                    source, entry.media, thumb_dir, options.thumbnail_count,
+                    memo=thumb_memo,
                 )
         job.files.append(entry)
 

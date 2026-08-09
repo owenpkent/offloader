@@ -71,7 +71,7 @@ Three modes, and it is worth being precise about what each proves.
 | --- | --- | --- |
 | `none` | source once | nothing |
 | `source-only` | source once | the bytes written matched the bytes read |
-| `full` | source once, destination again | the bytes **on the destination** match the source |
+| `full` (default) | source once, destination again | the bytes **on the destination** match the source |
 
 `source-only` hashes the source as it is read and hashes each buffer as it is
 handed to `write()`. It catches corruption in transit. It cannot catch anything
@@ -131,6 +131,35 @@ checksum finds that.
 It also reports files present on disk that the manifest does not list, and it
 evicts each file before reading so a freshly written tree is read off the device.
 
+Where the manifest is an ASC MHL history, the directory hashes are recomputed
+too, and they catch the one class of change no checksum can. Rename a clip and
+every file still hashes exactly as recorded — the bytes did not move. The
+structure hash folds each name in with its hash, so it does not agree:
+
+```
+  3 checked: 1 missing, 2 ok; 2 of 2 directory hashes differ
+  MISSING   ...\Clips\A001_C001.mov
+  RENAMED   (root)
+            every file still hashes as recorded, so a name changed or a file moved
+  RENAMED   Clips/
+            every file still hashes as recorded, so a name changed or a file moved
+  not in manifest: ...\Clips\A001_C001_take2.mov
+
+NOT VERIFIED — do not erase the source
+```
+
+Whether that matters depends on the delivery. A tree whose bytes are intact but
+whose names are not is still wrong to hand to an archive that will look for them
+by path.
+
+Recomputing costs more than checking the listed files. Proving a rename is only
+a rename means hashing what the manifest does *not* list, so a destination root
+holding anything besides this job is read too — and that happens whether or not
+the unlisted files were asked for, since the hashes are what the comparison
+needs. The job's own reports are excluded, because the manifest records where
+they went, but a shared archive drive is not. `--allow-cache` removes the
+eviction, not the reading.
+
 ### The manifest has to travel
 
 An MHL that records absolute paths is useless the moment the drive gets a
@@ -164,8 +193,10 @@ known.
 
 - **Controller and drive caches.** As above: `full` verification proves the
   operating system is not lying. It cannot prove the drive is not.
-- **Source read errors that return garbage instead of raising.** Very rare, and
-  only a second independent read of the source would catch it. Not implemented.
+- **Source read errors that return garbage instead of raising** — unless
+  `--paranoid` is on, which reads the source a second time and compares. Off by
+  default because it costs a full extra pass over the card. See "Reading the
+  source twice" below.
 - **`skip_existing` compares size, not checksum.** It is a speed option, not a
   safety one, and should not be used on a tree whose integrity is in question.
 - **Concurrent instances.** One app instance serialises its queue. Two instances
@@ -185,13 +216,60 @@ delay, so only errors with a plausible transient cause qualify: `EIO`, `EBUSY`,
 `ERROR_SHARING_VIOLATION` (usually antivirus, usually brief) and
 `ERROR_IO_DEVICE`. `ENOENT` and `ENOSPC` fail immediately.
 
-A retry restarts the whole file rather than resuming, because a partial read
-leaves the running checksum meaningless. The partial is discarded and the
-progress it claimed is given back, so a retry cannot push the job past 100 %.
+A failed *read* is retried at the chunk it failed on, not by restarting the
+file. A chunk is only hashed once it has arrived whole, so a read that failed
+produced no checksum state to unwind — recovering a bad sector near the end of a
+79 GB clip costs one 8 MiB re-read rather than 79 GB. The source is reopened and
+sought back to the offset, because a reader that dropped off the bus needs its
+handle re-established. Once a chunk has had every attempt the policy allows, the
+file is not started again from the top: that would only repeat the same attempts
+against the same fault.
+
+A failed *write* does restart the whole file, because a write that fails
+part-way leaves the destination at a length the copy loop does not know. The
+partial is discarded and the progress it claimed is given back, so a retry
+cannot push the job past 100 %.
 
 **A recovered file is still reported.** A card that reads on the third attempt
 today is a card to stop using, so the job carries a warning naming it. Silent
 recovery would be the wrong outcome.
+
+## Reading the source twice
+
+Everything above compares the destination against the source's checksum. That
+checksum is computed from whatever the read returned — so a read that hands back
+wrong bytes *without raising* produces a destination which faithfully matches a
+corrupted source, and verifies clean at every level: file hashes, directory
+hashes, read-back off the platter, all of it. The copy is a perfect reproduction
+of something that was never on the card.
+
+Nothing detects that except reading the source again:
+
+```sh
+offloader offload --source E:\ --dest D:\A001 --verify full --paranoid
+```
+
+The page cache is dropped before the second read, or it would compare the first
+read against itself; where the platform cannot drop it the job says so rather
+than claim the guarantee. A disagreement is not adjudicated — there is no basis
+for deciding which read was true — so it is retried, and a source that will not
+read the same twice fails that file and leaves nothing behind.
+
+It costs a second full pass over the card, which is why it is opt-in rather than
+the default. For irreplaceable material it is the strongest statement available.
+
+## Files that belong together
+
+A BRAW `.sidecar` carries the clip's grade. Delivered without its clip it is
+nothing; the clip delivered without it has silently lost the grade. The same
+goes for the proxy a camera writes beside the original.
+
+These are matched to their clip by stem — the only relationship cameras actually
+record — and a clip that copies while a file belonging to it does not is a job
+warning, not two rows twenty lines apart in a table nobody reads to the end. An
+ambiguous stem, two takes of the same name in different folders, is left
+unlinked: naming the wrong clip would be worse than saying nothing, because the
+only value of the link is that it can be trusted.
 
 ## Long paths
 

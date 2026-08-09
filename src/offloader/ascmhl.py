@@ -108,19 +108,25 @@ def _build_tree(entries: list[tuple[Path, str, str]]) -> _Node:
     return root
 
 
-def _directory_hashes(node: _Node, algorithm_key: str) -> tuple[str, str]:
+def _directory_hashes(node: _Node, algorithm_key: str, prefix: str = ".",
+                      sink: dict[str, tuple[str, str]] | None = None,
+                      ) -> tuple[str, str]:
     """(content, structure) for a directory, computed bottom-up.
 
     Only hashes that stand as evidence contribute: a `failed` hash means the
     file is not what it was, so folding it in would produce a directory hash
     that certifies a known-bad tree.
+
+    `sink`, when given, collects every directory's pair on the way back up,
+    keyed by relative POSIX path.
     """
     content_inputs: list[str] = []
     structure_inputs: list[str] = []
 
     for name in sorted(node.directories):
         child_content, child_structure = _directory_hashes(
-            node.directories[name], algorithm_key)
+            node.directories[name], algorithm_key,
+            name if prefix == "." else f"{prefix}/{name}", sink)
         content_inputs.append(child_content)
         structure_inputs.append(
             _structure_entry(name, child_structure, algorithm_key))
@@ -132,8 +138,31 @@ def _directory_hashes(node: _Node, algorithm_key: str) -> tuple[str, str]:
         content_inputs.append(digest)
         structure_inputs.append(_structure_entry(name, digest, algorithm_key))
 
-    return (hash_of_hashes(content_inputs, algorithm_key),
+    pair = (hash_of_hashes(content_inputs, algorithm_key),
             hash_of_hashes(structure_inputs, algorithm_key))
+    if sink is not None:
+        sink[prefix] = pair
+    return pair
+
+
+def directory_hashes(entries: list[tuple[Path, str]],
+                     algorithm_key: str) -> dict[str, tuple[str, str]]:
+    """Every directory's (content, structure) pair, keyed by relative POSIX
+    path, with `"."` for the root of the managed data.
+
+    Exposed so a verifier can recompute from what is on disk what the writer
+    recorded. Only directories holding at least one file appear, which is
+    exactly the set the writer emits a `directoryhash` for.
+
+    Pass only hashes that stand as evidence — excluding a failed one is the
+    caller's job here, the writer having already done it through the `action`
+    it recorded.
+    """
+    sink: dict[str, tuple[str, str]] = {}
+    tree = _build_tree([(relative, digest, ACTION_ORIGINAL)
+                        for relative, digest in entries])
+    _directory_hashes(tree, algorithm_key, ".", sink)
+    return sink
 
 
 # ------------------------------------------------------------------ history
@@ -141,6 +170,34 @@ def _directory_hashes(node: _Node, algorithm_key: str) -> tuple[str, str]:
 
 def ascmhl_dir(root: Path) -> Path:
     return Path(root) / ASCMHL_DIRNAME
+
+
+def _default_ignores(job: Job, root: Path, report_dir: Path | None) -> list[str]:
+    """The history's own folder, plus the job's paperwork.
+
+    Reports are written into the destination *after* this manifest, and they
+    are not managed data: nothing lists them, and the directory hashes here do
+    not cover them. Recording them as ignored is what stops a verifier folding
+    the tool's own output back into a recomputed hash and reporting the report
+    it just wrote as a change to the tree.
+
+    Two entries rather than one because they can differ: `--report-dir` moves
+    the PDF and CSV, while thumbnails always land in `<name>_Reports`. A report
+    directory outside this copy needs no pattern, and one that *is* the copy
+    cannot have one — ignoring `.` would ignore everything.
+    """
+    root = Path(root)
+    patterns = [ASCMHL_DIRNAME]
+    for candidate in (report_dir, root / f"{job.name}_Reports"):
+        if candidate is None:
+            continue
+        try:
+            relative = Path(candidate).resolve().relative_to(root.resolve()).as_posix()
+        except (ValueError, OSError):
+            continue
+        if relative not in (".", "") and relative not in patterns:
+            patterns.append(relative)
+    return patterns
 
 
 def existing_manifests(root: Path) -> list[Path]:
@@ -232,6 +289,7 @@ def write_manifest(job: Job, root: Path, *, destination_index: int = 0,
                    process: str = PROCESS_TRANSFER,
                    algorithm_key: str | None = None,
                    ignore_patterns: list[str] | None = None,
+                   report_dir: Path | None = None,
                    directory_hashes: bool = True,
                    when: _dt.datetime | None = None) -> Path:
     """Write one ASC MHL generation for the copy at `root`, and update the chain.
@@ -292,7 +350,8 @@ def write_manifest(job: Job, root: Path, *, destination_index: int = 0,
         root_hash = ET.SubElement(info, "roothash")
         _hash_pair(root_hash, tag, content, structure, moment)
 
-    patterns = ignore_patterns if ignore_patterns is not None else [ASCMHL_DIRNAME]
+    patterns = (ignore_patterns if ignore_patterns is not None
+                else _default_ignores(job, root, report_dir))
     if patterns:
         ignore = ET.SubElement(info, "ignore")
         for pattern in patterns:
@@ -375,14 +434,17 @@ def write_ascmhl(job: Job, path: Path, *, destination_index: int = 0,
 
     `path` is the conventional report location; ASC MHL ignores it and writes
     into `ascmhl/` at the root of the copy, which is where the format requires
-    a history to live.
+    a history to live. Its *folder* is still worth knowing: that is where the
+    rest of the paperwork lands, and the manifest records it as ignored so a
+    verifier does not mistake it for managed data.
     """
     roots = job.destination_roots or [job.source_root]
     index = min(destination_index, len(roots) - 1)
     # The writer interface is shared with the PDF, which takes logo/footer.
     # Accept and drop anything that does not apply here.
-    accepted = {"process", "algorithm_key", "ignore_patterns",
+    accepted = {"process", "algorithm_key", "ignore_patterns", "report_dir",
                 "directory_hashes", "when"}
+    options.setdefault("report_dir", Path(path).parent)
     return write_manifest(
         job, roots[index], destination_index=index,
         **{k: v for k, v in options.items() if k in accepted},

@@ -69,7 +69,14 @@ class PdfReport:
 
         fonts.register()
         self.canvas = Canvas(str(self.path), pagesize=layout.PAGE_SIZE)
-        self.canvas.setTitle(f"{job.name} Job Report")
+        # The document title is what a stack of reports is told apart by in a
+        # file manager or browser tab, so it carries the route and the date,
+        # not just a job name that may be as generic as "Offload".
+        destination = (str(job.destination_roots[0])
+                       if job.destination_roots else "")
+        route = f" — {job.source_root} → {destination}" if destination else ""
+        self.canvas.setTitle(
+            f"{job.name} Job Report{route} — {job.started:%Y-%m-%d}")
         self.canvas.setAuthor(PRODUCT_NAME)
         self.canvas.setSubject("Verified offload report")
 

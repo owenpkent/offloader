@@ -176,6 +176,11 @@ class FileEntry:
     #: original could not be decoded.
     thumbnail_source: Path | None = None
     destinations: list[Destination] = field(default_factory=list)
+    #: The clip this file belongs to, when it is a sidecar or a proxy rather
+    #: than a take in its own right.
+    companion_of: Path | None = None
+    #: The sidecars and proxies that belong to this clip.
+    companions: list[Path] = field(default_factory=list)
 
     @property
     def name(self) -> str:
@@ -221,6 +226,10 @@ class Job:
     system_ram: str = ""
     notes: str = ""
     cancelled: bool = False
+    #: Every source file was read a second time and the two reads compared.
+    #: Recorded because it changes what "Verified" is worth, and a delivery
+    #: should be able to say which one it got.
+    paranoid: bool = False
     #: Things that did not fail the job but that a human should see before
     #: erasing a card — empty files, verifications that may have been served
     #: from cache.

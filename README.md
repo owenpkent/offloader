@@ -90,18 +90,19 @@ offloader verify D:\video\080426\A001
 | `--source PATH` | card or folder to offload |
 | `--dest PATH` | destination root; repeat for multiple copies |
 | `--hash ALGO` | `xxh3-64` (default), `xxh3-128`, `xxh64`, `xxh64be`, `md5`, `sha1`, `sha256`, `c4`, `none` |
-| `--verify MODE` | `source-only` (default), `full`, `none` |
+| `--verify MODE` | `full` (default), `source-only`, `none` |
 | `--profile P` | `media` (default: ffprobe, thumbnails, BRAW) or `data` (generic transfer, no media probing) |
 | `--generic` | shorthand for `--profile data` |
 | `--report FMT[,FMT]` | `pdf` (default), `csv`, `mhl`, `ascmhl`, `html` |
 | `--report-dir PATH` | override the report location |
 | `--thumbs N` | frames per clip, 0 to disable (default 4) |
-| `--name NAME` | job name; defaults to the source folder name |
+| `--name NAME` | job name; defaults to the source folder name, or the volume label for a card offloaded from its root |
 | `--logo PATH` | image for the PDF header |
 | `--footer TEXT` | footer line for the PDF |
 | `--exclude GLOB` | extra filename pattern to skip; repeatable |
 | `--flat` | do not recreate the source folder structure |
 | `--skip-existing` | skip files already present at matching size |
+| `--paranoid` | read each source file twice and compare (offload only) |
 | `--retries N` | attempts per file on a transient read failure (default 3, 1 disables) |
 | `--retry-wait SECONDS` | pause before the first retry, backing off after (default 2) |
 | `--no-probe` | skip ffprobe metadata and thumbnails |
@@ -121,16 +122,32 @@ manifest lists and exits non-zero if anything is off, so a format script can gat
 on it. `--allow-cache` skips the page-cache eviction — faster, and may verify
 memory rather than the device.
 
+For an ASC MHL history it also recomputes the directory content and structure
+hashes, which is the only check that catches a rename or a moved file — every
+file involved still hashes exactly as recorded. See
+[`docs/ascmhl.md`](docs/ascmhl.md#directory-hashes).
+
 ### Verification modes
 
 | Mode | What it does | Catches |
 | --- | --- | --- |
 | `none` | copy only | nothing |
 | `source-only` | hashes the source as it is read and the bytes as they are written | corruption in transit |
-| `full` | additionally re-reads each destination file off disk and hashes it | the above, plus bad media and lying write caches |
+| `full` (default) | additionally re-reads each destination file off disk and hashes it | the above, plus bad media and lying write caches |
 
-`full` is the honest one: it is the only mode that proves what is actually on
-the destination, at the cost of reading everything twice.
+`full` is the honest one — the only mode that proves what is actually on the
+destination — which is why it is the default. The cost is one extra read of
+each copy at the destination's own speed: a fast SSD destination adds a few
+percent to the job, a spinning disk can approach doubling it. `source-only`
+is there for the run that is racing a deadline.
+
+`--paranoid` is orthogonal to all three. Every mode above compares against the
+source's checksum, which is computed from whatever the read returned — so a read
+that hands back wrong bytes *without raising* produces a destination that
+faithfully matches a corrupted source and verifies clean everywhere. Reading the
+source a second time is the only thing that sees it. It costs a full extra pass,
+which is why it is opt-in. See
+[`docs/data-safety.md`](docs/data-safety.md#reading-the-source-twice).
 
 ## Reports
 
@@ -149,6 +166,11 @@ the destination, at the cost of reading everything twice.
   [`docs/ascmhl.md`](docs/ascmhl.md).
 - **HTML** — self-contained; thumbnails inlined as data URIs, light and dark
   themes, no external requests.
+
+Sidecars and proxies are shown with the clip they belong to rather than as
+unrelated files, matched by stem. A clip that copies while a file belonging to it
+does not is a job warning: a BRAW delivered without its `.sidecar` has silently
+lost its grade.
 
 ## Generic data transfers
 
@@ -172,7 +194,9 @@ offloader offload \
 ```
 
 Nothing is treated as a clip, ffmpeg is never invoked, and the run does not need
-it installed. What you still get is the whole point of the tool: every byte
+it installed — including the sidecar and proxy grouping above, which links a
+file to the clip it belongs to by stem and would otherwise announce that
+`capture.xmp` belongs to `capture.h5` on no more evidence than a shared name. What you still get is the whole point of the tool: every byte
 read once and fanned out, both copies verified off disk, a checksum manifest
 beside each one, and `offloader verify` to re-check the archive months later for
 bit rot. The PDF, CSV, MHL, ASC MHL and HTML reports all render a plain file
@@ -189,6 +213,8 @@ partial-file updates. See [`ROADMAP.md`](ROADMAP.md).
 offloader-gui          # or: offloader gui
 ```
 
+![Preset mode: the drive panel, saved presets and the job queue](docs/images/app-preset-mode.png)
+
 Two modes, switched from the header:
 
 - **Preset mode** — saved workflows, each with its own destinations, checksum,
@@ -197,6 +223,14 @@ Two modes, switched from the header:
   how often a preset gets used.
 - **Simple mode** — source, destinations and options on one screen, for a
   one-off where building a preset would be more work than the job.
+
+![Simple mode: source, destinations and options on one screen](docs/images/app-simple-mode.png)
+
+A preset is edited in three blocks — what it is, how it copies, what paperwork
+it leaves:
+
+<img src="docs/images/app-preset-editor.png"
+     alt="The preset editor, grouped into Preset, Copying and Reports" width="430">
 
 Down the left is the **drive panel**: every mounted volume with a capacity bar
 (amber past 80 %, red past 95 %) and one-click *Source* / *Destination* buttons.
@@ -316,13 +350,13 @@ what makes the report layer testable without moving bytes.
 
 ```sh
 pip install -e ".[dev]"
-pytest                      # 409 tests, ~33s
+pytest                      # 453 tests
 pytest --fuzz               # same suite, 3000 examples per property (~2 min)
 ruff check src tests
 pytest --cov=offloader --cov-report=term-missing
 ```
 
-409 tests at 82% line coverage. They cover formatting against the reference's
+453 tests at 86% line coverage. They cover formatting against the reference's
 exact strings, checksum vectors and streaming equivalence, copy/verify
 behaviour including simulated destination corruption, pause/resume/cancel
 concurrency, retry discrimination, BRAW container parsing, ffprobe parsing,
@@ -373,9 +407,9 @@ that file. Names are now sanitised into the XML character range.
 already documented in `docs/`, not from a wishlist. It also says what this
 deliberately will **not** become.
 
-Nearest up: verifying the ASC MHL directory hashes that are already written (so
-a rename is a mismatch rather than a footnote), an optional second read of the
-source, and chunk-level rather than whole-file retry for marginal cards.
+Nearest up: making `--skip-existing` compare checksums rather than sizes,
+writing `previousPath` so a rename survives a generation, and a lock file so two
+instances pointed at one destination know about each other.
 
 ## Contributing
 

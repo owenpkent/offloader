@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from offloader import engine, integrity
+from offloader import engine, integrity, retry
 from offloader.models import FileStatus, VerificationMode
 
 PAYLOAD = b"IRREPLACEABLE FOOTAGE " * 5000
@@ -32,6 +32,11 @@ def _options(tmp_path: Path, **overrides) -> engine.OffloadOptions:
     )
     defaults.update(overrides)
     return engine.OffloadOptions(**defaults)
+
+
+def _fast() -> retry.RetryPolicy:
+    """The real retry counts, without sitting out the real backoff."""
+    return retry.RetryPolicy(attempts=3, delay=0)
 
 
 def _card(tmp_path: Path, name: str = "A001_C001.mov") -> Path:
@@ -303,3 +308,139 @@ def test_eviction_does_not_damage_the_file(tmp_path: Path):
     target.write_bytes(PAYLOAD)
     integrity.evict_from_cache(target)
     assert target.read_bytes() == PAYLOAD
+
+
+# ------------------------------------------------------------ reading twice
+
+
+class _AlternatingReader:
+    """A source that returns different bytes on alternate opens.
+
+    Simulates the fault nothing else here can catch: a read that returns wrong
+    bytes and reports no error at all. The checksum is computed from whatever
+    came back, so the destination faithfully matches a corrupted source and
+    verifies clean at every level.
+    """
+
+    def __init__(self, handle, opens: dict):
+        self._handle = handle
+        opens["n"] += 1
+        self._lie = opens["n"] % 2 == 0
+
+    def read(self, size=-1):
+        data = self._handle.read(size)
+        return bytes(len(data)) if self._lie else data
+
+    def seek(self, offset, whence=0):
+        return self._handle.seek(offset, whence)
+
+    def close(self):
+        self._handle.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self._handle.close()
+
+
+def _patch_alternating_source(monkeypatch, card: Path, opens: dict) -> None:
+    real_open = builtins.open
+
+    def fake_open(path, mode="r", *args, **kwargs):
+        handle = real_open(path, mode, *args, **kwargs)
+        try:
+            inside = Path(path).resolve().is_relative_to(card.resolve())
+        except (OSError, ValueError):
+            inside = False
+        if inside and "r" in str(mode) and "b" in str(mode):
+            return _AlternatingReader(handle, opens)
+        return handle
+
+    monkeypatch.setattr(builtins, "open", fake_open)
+
+
+def test_paranoid_catches_a_source_that_does_not_read_the_same_twice(
+    tmp_path: Path, monkeypatch
+):
+    """The gap --paranoid exists to close. Every layer below agrees the copy is
+    perfect, because every layer is comparing against the same bad read."""
+    card = _card(tmp_path)
+    _patch_alternating_source(monkeypatch, card, {"n": 0})
+    job = engine.run(card, _options(tmp_path, paranoid=True, retry=_fast()))
+    monkeypatch.undo()
+
+    assert job.final_status == "Failed"
+    assert not (tmp_path / "dest" / "A001_C001.mov").exists()
+
+
+def test_without_paranoid_the_same_source_verifies_clean(tmp_path: Path,
+                                                         monkeypatch):
+    """The point of the test above: this is what happens today. A copy that
+    matches its source's checksum exactly, of bytes that were never on the
+    card. Only reading twice can tell."""
+    card = _card(tmp_path)
+    _patch_alternating_source(monkeypatch, card, {"n": 0})
+    job = engine.run(card, _options(tmp_path))
+    monkeypatch.undo()
+
+    assert job.final_status == "Verified"
+
+
+def test_paranoid_leaves_nothing_behind_when_it_fails(tmp_path: Path,
+                                                      monkeypatch):
+    card = _card(tmp_path)
+    _patch_alternating_source(monkeypatch, card, {"n": 0})
+    engine.run(card, _options(tmp_path, paranoid=True, retry=_fast()))
+    monkeypatch.undo()
+
+    assert list((tmp_path / "dest").rglob(f"*{engine.PARTIAL_SUFFIX}")) == []
+
+
+def test_a_sound_source_passes_paranoid_and_says_so(tmp_path: Path):
+    card = _card(tmp_path)
+    job = engine.run(card, _options(tmp_path, paranoid=True))
+
+    assert job.final_status == "Verified"
+    assert job.paranoid
+    assert (tmp_path / "dest" / "A001_C001.mov").read_bytes() == PAYLOAD
+
+
+def test_paranoid_is_off_by_default_and_reads_the_source_once(tmp_path: Path,
+                                                              monkeypatch):
+    """It costs a second full pass over the card, which is only worth paying
+    deliberately."""
+    card = _card(tmp_path)
+    reads: list[Path] = []
+    real_open = builtins.open
+
+    def counting_open(path, mode="r", *args, **kwargs):
+        if "r" in str(mode) and "b" in str(mode):
+            try:
+                if Path(path).resolve().is_relative_to(card.resolve()):
+                    reads.append(Path(path))
+            except (OSError, ValueError):
+                pass
+        return real_open(path, mode, *args, **kwargs)
+
+    assert engine.OffloadOptions(destinations=[tmp_path / "d"]).paranoid is False
+
+    monkeypatch.setattr(builtins, "open", counting_open)
+    job = engine.run(card, _options(tmp_path))
+    monkeypatch.undo()
+
+    assert job.final_status == "Verified"
+    assert len(reads) == 1, f"the source was opened for reading {len(reads)} times"
+
+
+def test_paranoid_says_so_when_it_could_not_drop_the_cache(tmp_path: Path,
+                                                           monkeypatch):
+    """A second read served out of memory compares the first read against
+    itself. That is worth nothing, and claiming otherwise is the failure mode
+    this whole file exists to prevent."""
+    card = _card(tmp_path)
+    monkeypatch.setattr(integrity, "evict_from_cache", lambda _p: False)
+    job = engine.run(card, _options(tmp_path, paranoid=True))
+
+    assert any("second read" in w and "memory" in w for w in job.warnings), \
+        job.warnings

@@ -172,7 +172,12 @@ def _options(tmp_path: Path, **overrides) -> engine.OffloadOptions:
 
 
 class _FlakyReader:
-    """A reader that fails the first N whole-file attempts, then works."""
+    """A reader that fails its first N reads, then works.
+
+    Stands in for what `open` returns, so it has to carry the parts of a binary
+    file the engine actually uses — `seek` and `close` as well as `read`, since
+    recovering a bad chunk reopens the source and seeks back to it.
+    """
 
     def __init__(self, handle, failures: dict, limit: int):
         self._handle = handle
@@ -184,6 +189,12 @@ class _FlakyReader:
             self._failures["n"] += 1
             raise _os_error(errno.EIO, winerror=1117)
         return self._handle.read(size)
+
+    def seek(self, offset, whence=0):
+        return self._handle.seek(offset, whence)
+
+    def close(self):
+        self._handle.close()
 
     def __enter__(self):
         return self
@@ -272,6 +283,12 @@ def test_progress_is_not_double_counted_across_retries(tmp_path: Path,
                 raise _os_error(errno.EIO, winerror=1117)
             return self._handle.read(size)
 
+        def seek(self, offset, whence=0):
+            return self._handle.seek(offset, whence)
+
+        def close(self):
+            self._handle.close()
+
         def __enter__(self):
             return self
 
@@ -351,3 +368,254 @@ def test_retry_is_configurable_from_a_preset(tmp_path: Path):
     restored = Preset.from_dict(preset.to_dict())
     assert restored.retry_attempts == 7
     assert restored.retry_wait == pytest.approx(0.5)
+
+
+# --------------------------------------------------------- chunk-level retry
+
+
+class _BadSector:
+    """A reader that fails every read starting at one offset, `times` times.
+
+    Records the offset of every read attempted, across reopens, which is what
+    lets a test tell a chunk-level retry from a restart of the whole file: a
+    restart reads offset 0 again, a chunk-level retry does not.
+    """
+
+    def __init__(self, handle, log: list, failures: dict, offset: int, times: int):
+        self._handle = handle
+        self._log = log
+        self._failures = failures
+        self._offset = offset
+        self._times = times
+
+    def read(self, size=-1):
+        at = self._handle.tell()
+        self._log.append(at)
+        if at == self._offset and self._failures["n"] < self._times:
+            self._failures["n"] += 1
+            raise _os_error(errno.EIO, winerror=1117)
+        return self._handle.read(size)
+
+    def seek(self, offset, whence=0):
+        return self._handle.seek(offset, whence)
+
+    def close(self):
+        self._handle.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self._handle.close()
+
+
+def _patch_bad_sector(monkeypatch, card: Path, log: list, failures: dict,
+                      offset: int, times: int) -> None:
+    real_open = builtins.open
+
+    def flaky_open(path, mode="r", *args, **kwargs):
+        handle = real_open(path, mode, *args, **kwargs)
+        try:
+            inside = Path(path).resolve().is_relative_to(card.resolve())
+        except (OSError, ValueError):
+            inside = False
+        if inside and "r" in str(mode) and "b" in str(mode):
+            return _BadSector(handle, log, failures, offset, times)
+        return handle
+
+    monkeypatch.setattr(builtins, "open", flaky_open)
+
+
+def _chunked_card(tmp_path: Path, chunks: int) -> tuple[Path, bytes]:
+    card = tmp_path / "card"
+    card.mkdir()
+    payload = bytes(range(256)) * (engine.CHUNK_SIZE * chunks // 256)
+    (card / "A001_C001.mov").write_bytes(payload)
+    return card, payload
+
+
+def test_a_bad_sector_is_recovered_without_re_reading_the_file(
+    tmp_path: Path, monkeypatch
+):
+    """The point of retrying per chunk. Restarting a 79 GB clip to recover a
+    few bytes near the end is most of an hour; re-reading the chunk is a
+    moment."""
+    monkeypatch.setattr(engine, "CHUNK_SIZE", 4096)
+    card, payload = _chunked_card(tmp_path, 3)
+    log: list[int] = []
+    _patch_bad_sector(monkeypatch, card, log, {"n": 0}, offset=4096, times=1)
+
+    job = engine.run(card, _options(tmp_path))
+    monkeypatch.undo()
+
+    assert job.final_status == "Verified"
+    assert (tmp_path / "dest" / "A001_C001.mov").read_bytes() == payload
+    assert log.count(0) == 1, f"the file was restarted: {log}"
+
+
+def test_a_recovered_chunk_is_reported_with_where_it_was(tmp_path: Path,
+                                                         monkeypatch):
+    monkeypatch.setattr(engine, "CHUNK_SIZE", 4096)
+    card, _payload = _chunked_card(tmp_path, 3)
+    _patch_bad_sector(monkeypatch, card, [], {"n": 0}, offset=8192, times=1)
+
+    job = engine.run(card, _options(tmp_path))
+    monkeypatch.undo()
+
+    assert any("byte 8192" in w and "may be failing" in w for w in job.warnings), \
+        job.warnings
+
+
+def test_a_sector_that_never_reads_does_not_restart_the_whole_file(
+    tmp_path: Path, monkeypatch
+):
+    """Once the chunk has had every attempt the policy allows, running the same
+    attempts again from byte zero only repeats them against the same fault."""
+    monkeypatch.setattr(engine, "CHUNK_SIZE", 4096)
+    card, _payload = _chunked_card(tmp_path, 3)
+    log: list[int] = []
+    _patch_bad_sector(monkeypatch, card, log, {"n": 0}, offset=4096, times=99)
+
+    job = engine.run(card, _options(tmp_path))
+    monkeypatch.undo()
+
+    assert job.final_status == "Failed"
+    assert log.count(0) == 1, f"the file was restarted: {log}"
+    assert log.count(4096) == 3, f"the chunk got {log.count(4096)} attempts: {log}"
+
+
+def test_the_failure_still_names_the_offset_that_could_not_be_read(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.setattr(engine, "CHUNK_SIZE", 4096)
+    card, _payload = _chunked_card(tmp_path, 3)
+    _patch_bad_sector(monkeypatch, card, [], {"n": 0}, offset=4096, times=99)
+
+    job = engine.run(card, _options(tmp_path))
+    monkeypatch.undo()
+
+    assert "offset 4096" in job.notes, job.notes
+
+
+def test_writes_are_still_retried_at_the_whole_file(tmp_path: Path, monkeypatch):
+    """A read that fails produced nothing, so it can be resumed. A write that
+    fails part-way leaves the destination at a length the copy loop does not
+    know, so it starts over."""
+    monkeypatch.setattr(engine, "CHUNK_SIZE", 4096)
+    card, payload = _chunked_card(tmp_path, 2)
+    real_open = builtins.open
+    state = {"failed": False}
+
+    class FailingWrite:
+        def __init__(self, handle):
+            self._handle = handle
+
+        def write(self, data):
+            if not state["failed"]:
+                state["failed"] = True
+                raise _os_error(errno.EIO, winerror=1117)
+            return self._handle.write(data)
+
+        def flush(self):
+            return self._handle.flush()
+
+        def fileno(self):
+            return self._handle.fileno()
+
+        def close(self):
+            self._handle.close()
+
+    def flaky_open(path, mode="r", *args, **kwargs):
+        handle = real_open(path, mode, *args, **kwargs)
+        if "w" in str(mode) and "b" in str(mode):
+            return FailingWrite(handle)
+        return handle
+
+    monkeypatch.setattr(builtins, "open", flaky_open)
+    job = engine.run(card, _options(tmp_path))
+    monkeypatch.undo()
+
+    assert job.final_status == "Verified"
+    assert (tmp_path / "dest" / "A001_C001.mov").read_bytes() == payload
+
+
+class _FlakySectors:
+    """Fails the first read at each of several offsets, then lets it through.
+
+    A card failing over a stretch rather than at one sector, which is the case
+    that decides how the recovery is reported.
+    """
+
+    def __init__(self, handle, offsets: set[int], seen: set[int]):
+        self._handle = handle
+        self._offsets = offsets
+        self._seen = seen
+
+    def read(self, size=-1):
+        at = self._handle.tell()
+        if at in self._offsets and at not in self._seen:
+            self._seen.add(at)
+            raise _os_error(errno.EIO, winerror=1117)
+        return self._handle.read(size)
+
+    def seek(self, offset, whence=0):
+        return self._handle.seek(offset, whence)
+
+    def close(self):
+        self._handle.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self._handle.close()
+
+
+def test_a_run_of_recovered_sectors_is_one_warning_not_one_each(
+    tmp_path: Path, monkeypatch
+):
+    """One warning per 8 MiB is how a dying card buries every other warning in
+    the job. The useful fact stops being which byte and becomes how much of the
+    file would not read first time."""
+    monkeypatch.setattr(engine, "CHUNK_SIZE", 4096)
+    card, payload = _chunked_card(tmp_path, 6)
+    real_open = builtins.open
+    seen: set[int] = set()
+
+    def flaky_open(path, mode="r", *args, **kwargs):
+        handle = real_open(path, mode, *args, **kwargs)
+        try:
+            inside = Path(path).resolve().is_relative_to(card.resolve())
+        except (OSError, ValueError):
+            inside = False
+        if inside and "r" in str(mode) and "b" in str(mode):
+            return _FlakySectors(handle, {4096, 8192, 12288}, seen)
+        return handle
+
+    monkeypatch.setattr(builtins, "open", flaky_open)
+    job = engine.run(card, _options(tmp_path))
+    monkeypatch.undo()
+
+    assert job.final_status == "Verified"
+    assert (tmp_path / "dest" / "A001_C001.mov").read_bytes() == payload
+
+    recovered = [w for w in job.warnings if "recovered" in w]
+    assert len(recovered) == 1, recovered
+    assert "3 failed reads between byte 4096 and byte 12288" in recovered[0]
+    assert "may be failing" in recovered[0]
+
+
+def test_a_single_recovered_sector_is_still_named_exactly(tmp_path: Path,
+                                                          monkeypatch):
+    """Bounding a range is only worth it when there is a range. One bad sector
+    keeps the offset that found it."""
+    monkeypatch.setattr(engine, "CHUNK_SIZE", 4096)
+    card, _payload = _chunked_card(tmp_path, 3)
+    _patch_bad_sector(monkeypatch, card, [], {"n": 0}, offset=8192, times=1)
+
+    job = engine.run(card, _options(tmp_path))
+    monkeypatch.undo()
+
+    recovered = [w for w in job.warnings if "recovered" in w]
+    assert len(recovered) == 1, recovered
+    assert "at byte 8192 on attempt 2" in recovered[0]
