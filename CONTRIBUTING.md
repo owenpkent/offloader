@@ -50,6 +50,16 @@ test files, but if you run Qt code by hand:
 QT_QPA_PLATFORM=offscreen python -m pytest tests/test_gui.py
 ```
 
+The README's screenshots are generated, not captured, so a change to the
+interface can bring them along with it:
+
+```sh
+python tools/screenshots.py         # rewrites docs/images/
+```
+
+It runs the real app against a throwaway config directory and invented volumes,
+so it neither reads your presets nor puts your drive labels in the README.
+
 ## Testing without a camera card
 
 Almost nobody has a 27 GB BRAW clip and a failing card reader to hand, so the

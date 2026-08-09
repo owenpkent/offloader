@@ -208,6 +208,8 @@ partial-file updates. See [`ROADMAP.md`](ROADMAP.md).
 offloader-gui          # or: offloader gui
 ```
 
+![Preset mode: the drive panel, saved presets and the job queue](docs/images/app-preset-mode.png)
+
 Two modes, switched from the header:
 
 - **Preset mode** — saved workflows, each with its own destinations, checksum,
@@ -216,6 +218,14 @@ Two modes, switched from the header:
   how often a preset gets used.
 - **Simple mode** — source, destinations and options on one screen, for a
   one-off where building a preset would be more work than the job.
+
+![Simple mode: source, destinations and options on one screen](docs/images/app-simple-mode.png)
+
+A preset is edited in three blocks — what it is, how it copies, what paperwork
+it leaves:
+
+<img src="docs/images/app-preset-editor.png"
+     alt="The preset editor, grouped into Preset, Copying and Reports" width="430">
 
 Down the left is the **drive panel**: every mounted volume with a capacity bar
 (amber past 80 %, red past 95 %) and one-click *Source* / *Destination* buttons.
