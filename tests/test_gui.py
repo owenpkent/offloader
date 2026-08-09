@@ -1,7 +1,7 @@
 """GUI tests, run against Qt's offscreen platform.
 
-These drive the real widgets and the real queue controller — the worker thread
-actually copies files — so they cover the wiring between the interface and the
+These drive the real widgets and the real queue controller â€” the worker thread
+actually copies files â€” so they cover the wiring between the interface and the
 engine, not just that the modules import.
 """
 
@@ -332,3 +332,83 @@ def test_the_preset_editor_is_grouped_rather_than_one_flat_list(qapp):
                  "_verification", "_thumbnails", "_naming", "_excludes",
                  "_logo", "_footer", "_preserve", "_skip", "_paranoid"):
         assert getattr(editor, name).parent() is not None, f"{name} is orphaned"
+
+
+# ---------------------------------------------------------------- throughput
+
+def _running_item(**kwargs):
+    from offloader.gui.worker import QueueItem
+
+    item = QueueItem(identifier=1, source=Path("card"), name="job",
+                     preset=Preset(name="p"), **kwargs)
+    item.state = JobState.RUNNING
+    return item
+
+
+def test_rate_is_windowed_not_a_lifetime_average(monkeypatch):
+    """A slow first minute must not read as a slow job forever. The regression
+    this pins: a card scan plus early probe stalls dragged the lifetime average
+    to 3.5 MB/s while clips were demonstrably flying past."""
+    from offloader.gui import worker as worker_mod
+
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(worker_mod.time, "monotonic", lambda: clock["now"])
+
+    item = _running_item()
+    item.started_at = clock["now"]
+
+    # Ten dead seconds of scanning, then a steady 100 MB/s.
+    clock["now"] += 10.0
+    for _ in range(10):
+        clock["now"] += 1.0
+        item.bytes_done += 100_000_000
+        item.record_progress(item.bytes_done)
+
+    lifetime = item.bytes_done / item.elapsed          # 50 MB/s â€” the old lie
+    windowed = item.rate_bytes_per_sec
+    assert windowed == pytest.approx(100_000_000, rel=0.05)
+    assert windowed > 1.8 * lifetime
+
+
+def test_rate_decays_during_a_stall_instead_of_freezing(monkeypatch):
+    from offloader.gui import worker as worker_mod
+
+    clock = {"now": 0.0}
+    monkeypatch.setattr(worker_mod.time, "monotonic", lambda: clock["now"])
+
+    item = _running_item()
+    for _ in range(5):
+        clock["now"] += 1.0
+        item.bytes_done += 100_000_000
+        item.record_progress(item.bytes_done)
+    flowing = item.rate_bytes_per_sec
+
+    clock["now"] += 3.0                                # stall: no new bytes
+    assert item.rate_bytes_per_sec < flowing
+    clock["now"] += 10.0                               # window fully drained
+    assert item.rate_bytes_per_sec == 0.0
+    assert item.eta_seconds is None
+
+
+def test_rate_survives_a_counter_reset_between_stages(monkeypatch):
+    """Copy and verify each count job bytes from zero; a delta computed across
+    that boundary would be negative garbage."""
+    from offloader.gui import worker as worker_mod
+
+    clock = {"now": 0.0}
+    monkeypatch.setattr(worker_mod.time, "monotonic", lambda: clock["now"])
+
+    item = _running_item()
+    for _ in range(3):
+        clock["now"] += 1.0
+        item.bytes_done += 100_000_000
+        item.record_progress(item.bytes_done)
+
+    item.bytes_done = 0                                # verify stage begins
+    item.record_progress(0)
+    for _ in range(2):
+        clock["now"] += 1.0
+        item.bytes_done += 50_000_000
+        item.record_progress(item.bytes_done)
+    assert item.rate_bytes_per_sec == pytest.approx(50_000_000, rel=0.05)
+
