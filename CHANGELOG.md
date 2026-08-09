@@ -21,6 +21,56 @@ project uses [semantic versioning][semver].
   profile is a first-class field on `OffloadOptions`, `Job` and saved presets,
   and is selectable in the desktop app's Simple mode and preset editor. This is
   a one-way verified transfer, not two-way sync — see `ROADMAP.md`.
+- **`--paranoid` reads every source file twice and compares.** The gap it
+  closes: a read that returns wrong bytes *without raising*. The checksum is
+  computed from whatever came back, so the destination faithfully matches a
+  corrupted source and verifies clean at every level — file hashes, directory
+  hashes, the lot. Nothing but reading twice can see it. A disagreement is
+  retried rather than adjudicated, because there is no basis for deciding which
+  read was the true one; a source that will not read the same twice fails the
+  file and leaves nothing behind. The page cache is dropped before the second
+  read, and the job says so when it could not be, since a re-read served from
+  memory compares the first read against itself. Costs a full second pass, which
+  is why it is opt-in.
+- **Sidecars and proxies are grouped with the clip they belong to.** A
+  `.sidecar` carries a BRAW's grade; delivered without its clip it is nothing,
+  and a clip delivered without it has silently lost the grade. Matching is by
+  stem, reusing what proxy pairing already did, and an ambiguous stem is left
+  unlinked rather than guessed at. A clip that copies while a file belonging to
+  it does not is now a job warning instead of two rows twenty lines apart. The
+  HTML report shows them together and the CSV gains a `Companion Of` column.
+- **`offloader verify` now re-checks the ASC MHL directory hashes**, which were
+  written from the start and never read back. A rename or a moved file leaves
+  every individual file hashing exactly as recorded, so no file-level check can
+  object to it; the structure hash exists precisely to catch that, and now does.
+  Content matching while structure does not is reported as `RENAMED`, which is a
+  much stronger statement than the "not in manifest" line it used to produce.
+
+  Verifying this way means hashing files the manifest does not list — that is
+  what proves a rename is only a rename — while honouring the manifest's own
+  `ignore` patterns. Directory hashes that a failed file already accounts for
+  say so rather than repeating themselves up to the root.
+
+### Changed
+
+- **The preset editor is grouped into Preset, Copying and Reports.** Sixteen
+  fields in one flat column read as a wall, and the two or three bearing on any
+  given change were never next to each other. Checkboxes now sit together under
+  one label instead of each taking a blank one, `Job name` is called `Job name
+  template` to distinguish it from Simple mode's literal job name, and
+  `Skip files already present at matching size` carries a tooltip saying what it
+  does not compare.
+- **A transient read failure is retried at the chunk that failed, not by
+  restarting the file.** Recovering a bad sector near the end of a 79 GB clip
+  used to mean re-reading all 79 GB; it now costs one 8 MiB re-read. This turned
+  out not to need the hasher rewind it looked like it would: a chunk is only
+  hashed once it has been delivered whole, so a failed read has produced no
+  state to unwind. The source is reopened and sought back to the failed offset,
+  since a reader that dropped off the bus needs its handle re-established.
+  Writes still restart the whole file — a write that fails part-way leaves the
+  destination at a length the copy loop does not know. Once a chunk has had
+  every attempt the policy allows, the whole-file retry no longer repeats them
+  against the same fault.
 
 ### Fixed
 

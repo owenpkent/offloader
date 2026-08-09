@@ -102,6 +102,7 @@ offloader verify D:\video\080426\A001
 | `--exclude GLOB` | extra filename pattern to skip; repeatable |
 | `--flat` | do not recreate the source folder structure |
 | `--skip-existing` | skip files already present at matching size |
+| `--paranoid` | read each source file twice and compare (offload only) |
 | `--retries N` | attempts per file on a transient read failure (default 3, 1 disables) |
 | `--retry-wait SECONDS` | pause before the first retry, backing off after (default 2) |
 | `--no-probe` | skip ffprobe metadata and thumbnails |
@@ -121,6 +122,11 @@ manifest lists and exits non-zero if anything is off, so a format script can gat
 on it. `--allow-cache` skips the page-cache eviction — faster, and may verify
 memory rather than the device.
 
+For an ASC MHL history it also recomputes the directory content and structure
+hashes, which is the only check that catches a rename or a moved file — every
+file involved still hashes exactly as recorded. See
+[`docs/ascmhl.md`](docs/ascmhl.md#directory-hashes).
+
 ### Verification modes
 
 | Mode | What it does | Catches |
@@ -131,6 +137,14 @@ memory rather than the device.
 
 `full` is the honest one: it is the only mode that proves what is actually on
 the destination, at the cost of reading everything twice.
+
+`--paranoid` is orthogonal to all three. Every mode above compares against the
+source's checksum, which is computed from whatever the read returned — so a read
+that hands back wrong bytes *without raising* produces a destination that
+faithfully matches a corrupted source and verifies clean everywhere. Reading the
+source a second time is the only thing that sees it. It costs a full extra pass,
+which is why it is opt-in. See
+[`docs/data-safety.md`](docs/data-safety.md#reading-the-source-twice).
 
 ## Reports
 
@@ -149,6 +163,11 @@ the destination, at the cost of reading everything twice.
   [`docs/ascmhl.md`](docs/ascmhl.md).
 - **HTML** — self-contained; thumbnails inlined as data URIs, light and dark
   themes, no external requests.
+
+Sidecars and proxies are shown with the clip they belong to rather than as
+unrelated files, matched by stem. A clip that copies while a file belonging to it
+does not is a job warning: a BRAW delivered without its `.sidecar` has silently
+lost its grade.
 
 ## Generic data transfers
 
@@ -316,13 +335,13 @@ what makes the report layer testable without moving bytes.
 
 ```sh
 pip install -e ".[dev]"
-pytest                      # 409 tests, ~33s
+pytest                      # 434 tests, ~50s
 pytest --fuzz               # same suite, 3000 examples per property (~2 min)
 ruff check src tests
 pytest --cov=offloader --cov-report=term-missing
 ```
 
-409 tests at 82% line coverage. They cover formatting against the reference's
+434 tests at 86% line coverage. They cover formatting against the reference's
 exact strings, checksum vectors and streaming equivalence, copy/verify
 behaviour including simulated destination corruption, pause/resume/cancel
 concurrency, retry discrimination, BRAW container parsing, ffprobe parsing,
@@ -373,9 +392,9 @@ that file. Names are now sanitised into the XML character range.
 already documented in `docs/`, not from a wishlist. It also says what this
 deliberately will **not** become.
 
-Nearest up: verifying the ASC MHL directory hashes that are already written (so
-a rename is a mismatch rather than a footnote), an optional second read of the
-source, and chunk-level rather than whole-file retry for marginal cards.
+Nearest up: making `--skip-existing` compare checksums rather than sizes,
+writing `previousPath` so a rename survives a generation, and a lock file so two
+instances pointed at one destination know about each other.
 
 ## Contributing
 

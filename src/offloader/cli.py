@@ -128,7 +128,8 @@ def _summarize(job: Job, reports: list[Path]) -> None:
     video = f"  ({job.video_files} video)" if job.profile.probes_media else ""
     print(f"  {job.total_files} files, {format_size(job.total_bytes)}"
           f" in {format_elapsed(job.elapsed_sec)}{video}")
-    print(f"  Verification: {job.verification_label}")
+    print(f"  Verification: {job.verification_label}"
+          f"{' + second source read' if job.paranoid else ''}")
     for destination in job.destination_roots:
         print(f"  -> {destination}")
     for report in reports:
@@ -208,6 +209,10 @@ def build_parser() -> argparse.ArgumentParser:
                          help="do not recreate the source folder structure")
     offload.add_argument("--skip-existing", action="store_true",
                          help="skip files already present with a matching size")
+    offload.add_argument("--paranoid", action="store_true",
+                         help="read each source file twice and compare, to "
+                              "catch a read that returned wrong bytes without "
+                              "reporting an error (costs a second pass)")
     _common_options(offload)
 
     report = sub.add_parser(
@@ -252,6 +257,7 @@ def _options_from(args: argparse.Namespace, destinations: list[Path]) -> engine.
         profile=profile,
         retry=retry.RetryPolicy(attempts=max(1, args.retries),
                                 delay=max(0.0, args.retry_wait)),
+        paranoid=getattr(args, "paranoid", False),
     )
 
 
@@ -334,6 +340,8 @@ def cmd_verify(args: argparse.Namespace) -> int:
         print('\n' + str(manifest))
         print(f"  {report.summary()}")
         for verdict in report.failures:
+            print(f"  {verdict.describe()}")
+        for verdict in report.directory_failures:
             print(f"  {verdict.describe()}")
         for extra in report.unlisted[:20]:
             print(f"  not in manifest: {extra}")
