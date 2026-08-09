@@ -114,3 +114,31 @@ def test_preset_defaults_to_media_and_tolerates_missing_key():
     assert Preset.from_dict({"name": "legacy"}).profile is Profile.MEDIA
     # A garbage value must never brick a load.
     assert Preset.from_dict({"name": "bad", "profile": "nonsense"}).profile is Profile.MEDIA
+
+
+def test_the_data_profile_does_not_invent_companions(tmp_path: Path):
+    """Stem-matching says a `.sidecar` belongs to a clip. Under the data
+    profile nothing is a clip, so a dataset that happens to share a stem with
+    its metadata file would be linked on no evidence but the name."""
+    card = tmp_path / "run_1440"
+    card.mkdir()
+    (card / "capture.h5").write_bytes(b"instrument data " * 200)
+    (card / "capture.xmp").write_bytes(b"<x:xmpmeta/>")
+
+    job = engine.run(card, _options(tmp_path, profile=Profile.DATA))
+
+    assert all(f.companion_of is None for f in job.files)
+    assert all(f.companions == [] for f in job.files)
+
+
+def test_the_media_profile_still_groups_them(tmp_path: Path):
+    card = tmp_path / "A001"
+    card.mkdir()
+    (card / "A001_C001.braw").write_bytes(b"a clip " * 400)
+    (card / "A001_C001.sidecar").write_bytes(b"the grade")
+
+    job = engine.run(card, _options(tmp_path, profile=Profile.MEDIA,
+                                    extra_probe=False))
+
+    sidecar = next(f for f in job.files if f.name == "A001_C001.sidecar")
+    assert sidecar.companion_of is not None

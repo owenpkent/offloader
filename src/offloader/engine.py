@@ -535,7 +535,11 @@ def run(source_root: Path, options: OffloadOptions,
 
     thumb_dir = options.thumbnail_dir or (dest_roots[0] / f"{job.name}_Reports" / "thumbs")
 
-    belongs_to = companions.group(files)
+    # A sidecar belongs to a *clip*. Under the data profile nothing is a clip,
+    # so stem-matching a dataset would announce that `run_1440.xmp` belongs to
+    # `run_1440.h5` on no evidence beyond a shared name.
+    belongs_to = (companions.group(files) if options.profile.probes_media
+                  else {})
     owns = _invert_companions(belongs_to)
 
     #: Whether the "cache could not be evicted" limitation has been reported.
@@ -858,7 +862,11 @@ def rescan(source_root: Path, destination_roots: Sequence[Path],
     total = sum(p.stat().st_size for p in files)
     done = 0
 
-    belongs_to = companions.group(files)
+    # A sidecar belongs to a *clip*. Under the data profile nothing is a clip,
+    # so stem-matching a dataset would announce that `run_1440.xmp` belongs to
+    # `run_1440.h5` on no evidence beyond a shared name.
+    belongs_to = (companions.group(files) if options.profile.probes_media
+                  else {})
     owns = _invert_companions(belongs_to)
 
     for index, source in enumerate(files):
