@@ -1,6 +1,6 @@
 """Job queue and the worker thread that drains it.
 
-Jobs run one at a time. That is not a simplification â€” offloads are I/O bound,
+Jobs run one at a time. That is not a simplification — offloads are I/O bound,
 and running two at once against the same bus makes both slower while making the
 progress readout meaningless.
 """
@@ -19,6 +19,7 @@ from .. import engine, history, naming
 from ..models import Job
 from ..presets import Preset
 from ..reports import WRITERS
+from ..volumes import volume_label
 
 #: Trailing window over which throughput is measured. Long enough to smooth
 #: per-chunk jitter, short enough that a stall shows up within seconds.
@@ -80,7 +81,7 @@ class QueueItem:
         """Feed the throughput window. Called on every progress event."""
         now = time.monotonic()
         if self._samples and bytes_done < self._samples[-1][1]:
-            # The counter went backwards â€” a new stage started counting from
+            # The counter went backwards — a new stage started counting from
             # zero. A delta across that boundary would be negative garbage.
             self._samples.clear()
         self._samples.append((now, bytes_done))
@@ -223,7 +224,8 @@ class QueueController(QObject):
     def enqueue(self, source: Path, preset: Preset, name: str | None = None) -> QueueItem:
         source = Path(source)
         resolved = name or naming.build(
-            preset.naming_template, source, taken=self._taken_names()
+            preset.naming_template, source,
+            volume_label=volume_label(source), taken=self._taken_names()
         )
         item = QueueItem(
             identifier=self._next_id,
@@ -260,7 +262,7 @@ class QueueController(QObject):
             self.itemsChanged.emit()
 
     def move(self, identifier: int, offset: int) -> None:
-        """Reorder a pending job â€” the queue's priority control."""
+        """Reorder a pending job — the queue's priority control."""
         item = self.find(identifier)
         if item is None or item.state is not JobState.QUEUED:
             return

@@ -22,7 +22,7 @@ CAMERA_MARKERS = {
     "brawcontents", "pana_grp",
 }
 
-#: Camera originals. Some cameras â€” Blackmagic among them â€” write clips
+#: Camera originals. Some cameras — Blackmagic among them — write clips
 #: straight to the root with no marker directory at all, so a volume holding
 #: several of these is treated as a card even without one.
 CAMERA_EXTENSIONS = {
@@ -49,7 +49,7 @@ class Volume:
     total_bytes: int
     free_bytes: int
     drive_type: str = "fixed"
-    #: Computed once when the volume is listed â€” the check touches the disk,
+    #: Computed once when the volume is listed — the check touches the disk,
     #: and the drive panel refreshes on a timer.
     is_camera_card: bool = False
 
@@ -84,7 +84,7 @@ def detect_camera_card(root: Path, drive_type: str) -> bool:
     """Whether a volume root looks like camera media rather than a disk.
 
     Two signals: a marker directory the camera wrote, or a root full of camera
-    originals. Removability is deliberately not required â€” a reader in a
+    originals. Removability is deliberately not required — a reader in a
     Thunderbolt dock usually reports as a fixed disk.
     """
     if drive_type in ("network", "optical", "ramdisk", "no-root", "unknown"):
@@ -133,7 +133,7 @@ def _usage(root: Path) -> tuple[int, int]:
 
 
 def _windows_roots() -> list[tuple[Path, str]]:
-    """Every drive letter and its type. Cheap â€” `GetDriveTypeW` reads a flag
+    """Every drive letter and its type. Cheap — `GetDriveTypeW` reads a flag
     the mount manager already holds, it does not touch the volume."""
     import ctypes
 
@@ -152,7 +152,7 @@ def _windows_roots() -> list[tuple[Path, str]]:
 
 
 def _windows_probe(root: Path, drive_type: str) -> Volume | None:
-    """Label, filesystem, usage and card detection for one root â€” the part
+    """Label, filesystem, usage and card detection for one root — the part
     that actually talks to the device, and for a network share is a synchronous
     SMB round-trip. Runs on a pool thread; error mode is set per-thread so an
     empty card reader cannot pop an "insert a disk" dialog."""
@@ -242,7 +242,7 @@ def probe_volume(root: Path, drive_type: str) -> Volume | None:
 
 def probe_many(roots: list[tuple[Path, str]]) -> list[Volume]:
     """Probe roots concurrently, so a sleeping USB drive or a slow network
-    share costs its own probe rather than delaying every drive after it â€”
+    share costs its own probe rather than delaying every drive after it —
     serial probing made the panel's refresh wait the *sum* of every
     round-trip; this waits only the slowest."""
     if not roots:
@@ -275,6 +275,27 @@ def order_volumes(volumes: list[Volume]) -> list[Volume]:
 def list_volumes() -> list[Volume]:
     """Every mounted volume, cards first so they are easy to spot."""
     return order_volumes(probe_many(list_roots()))
+
+
+def volume_label(path: Path) -> str | None:
+    """The label of the volume holding `path`, probing only that volume.
+
+    Exists for job naming: a card offloaded from its root has no folder name
+    to be named after, and the volume label — A003 — is what the operator
+    calls the card. `find_volume` would answer too, but it probes every
+    mounted volume including network shares; this touches one.
+    """
+    if platform.system() != "Windows":
+        return None    # POSIX mounts carry their label as the directory name
+    import ctypes
+
+    kernel32 = ctypes.windll.kernel32
+    buffer = ctypes.create_unicode_buffer(261)
+    ok = kernel32.GetVolumeInformationW(
+        ctypes.c_wchar_p(Path(path).anchor or str(path)), buffer, 261,
+        None, None, None, None, 0,
+    )
+    return (buffer.value or None) if ok else None
 
 
 def find_volume(path: Path) -> Volume | None:

@@ -1,6 +1,6 @@
 """Simple mode: source, destinations, go.
 
-Everything is on one screen with no saved state â€” for the one-off offload where
+Everything is on one screen with no saved state — for the one-off offload where
 building a preset would be more work than the job itself.
 """
 
@@ -23,6 +23,7 @@ from ..hashers import ALGORITHMS
 from ..models import Profile, VerificationMode
 from ..presets import Preset
 from ..reports import WRITERS
+from ..volumes import volume_label
 from .preset_editor import PARANOID_LABEL, PARANOID_TOOLTIP, VERIFICATION_LABELS
 from .widgets import DestinationList, SourceDropZone, button, column, label, row
 
@@ -41,7 +42,7 @@ class SimpleModePanel(QWidget):
 
         self.destinations = DestinationList()
         self.destinations.changed.connect(self._sync)
-        add = button("Addâ€¦", flat=True)
+        add = button("Add…", flat=True)
         add.clicked.connect(self.destinations.browse_and_add)
         remove = button("Remove", flat=True)
         remove.clicked.connect(self.destinations.remove_selected)
@@ -62,8 +63,8 @@ class SimpleModePanel(QWidget):
             max(0, self._verification.findData(VerificationMode.FULL.value)))
 
         self._profile = QComboBox()
-        self._profile.addItem("Media â€” camera card", Profile.MEDIA.value)
-        self._profile.addItem("Data â€” any large transfer", Profile.DATA.value)
+        self._profile.addItem("Media — camera card", Profile.MEDIA.value)
+        self._profile.addItem("Data — any large transfer", Profile.DATA.value)
         self._profile.setCurrentIndex(
             max(0, self._profile.findData(Profile.MEDIA.value)))
         self._profile.currentIndexChanged.connect(self._on_profile_changed)
@@ -126,12 +127,19 @@ class SimpleModePanel(QWidget):
 
     def _on_source_chosen(self, path: Path) -> None:
         if not self._name.text().strip():
-            self._name.setPlaceholderText(Path(path).name or "Offload")
+            # Preview what the job will actually be called: folder name, or
+            # for a card offloaded from its root, the volume label ("A003").
+            self._name.setPlaceholderText(self._default_name(path))
         self._sync()
+
+    @staticmethod
+    def _default_name(source: Path) -> str:
+        source = Path(source)
+        return source.name or volume_label(source) or "Offload"
 
     def set_queue_busy(self, busy: bool) -> None:
         """Tell the panel whether the queue is already working. Jobs run one
-        at a time, so while one is running the button cannot start anything â€”
+        at a time, so while one is running the button cannot start anything —
         it enqueues. It should say so, rather than promise an immediate
         offload it cannot deliver."""
         if busy == self._queue_busy:
@@ -153,12 +161,12 @@ class SimpleModePanel(QWidget):
         elif not destinations:
             self._hint.setText("Add at least one destination.")
         elif overlapping:
-            self._hint.setText("A destination sits inside the source â€” pick another.")
+            self._hint.setText("A destination sits inside the source — pick another.")
         else:
             copies = f"{len(destinations)} cop{'ies' if len(destinations) > 1 else 'y'}"
-            ready = f"Ready: {source} â†’ {copies}"
+            ready = f"Ready: {source} → {copies}"
             if self._queue_busy:
-                ready += " â€” runs after the current job"
+                ready += " — runs after the current job"
             self._hint.setText(ready)
 
     @staticmethod
@@ -172,7 +180,7 @@ class SimpleModePanel(QWidget):
         return source == destination or source in destination.parents
 
     def _on_profile_changed(self) -> None:
-        # Thumbnails are contact-sheet frames from a clip â€” meaningless for a
+        # Thumbnails are contact-sheet frames from a clip — meaningless for a
         # generic data transfer, which never decodes a file. Grey the control
         # so the disabled state explains itself.
         is_media = self._profile.currentData() == Profile.MEDIA.value
@@ -195,5 +203,5 @@ class SimpleModePanel(QWidget):
         source = self.drop_zone.path
         if source is None:
             return
-        name = self._name.text().strip() or (Path(source).name or "Offload")
+        name = self._name.text().strip() or self._default_name(source)
         self.runRequested.emit(source, self.build_preset(), name)

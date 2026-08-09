@@ -45,7 +45,11 @@ def context(source: Path, volume_label: str | None = None,
     except Exception:  # pragma: no cover - no login name in some containers
         user = "unknown"
     return {
-        "card": source.name or source.anchor.strip("\\/:") or "Offload",
+        # A source with no folder name is a card offloaded from its root, and
+        # what the operator calls that card is its volume label — "A003", not
+        # "E". The drive letter stays as the last resort.
+        "card": source.name or volume_label or source.anchor.strip("\\/:")
+        or "Offload",
         "volume": volume_label or source.name or "",
         "date": f"{moment:%Y%m%d}",
         "time": f"{moment:%H%M%S}",

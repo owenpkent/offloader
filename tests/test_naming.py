@@ -52,3 +52,19 @@ def test_volume_label_falls_back_to_folder_name():
     values = naming.context(Path("/Volumes/A001"), volume_label="CARD_A", when=WHEN)
     assert values["volume"] == "CARD_A"
     assert naming.context(Path("/Volumes/A001"), when=WHEN)["volume"] == "A001"
+
+
+def test_card_token_prefers_the_volume_label_for_a_bare_root():
+    """A card offloaded from its root has no folder name; what the operator
+    calls it is the volume label — A003, not E."""
+    from offloader import naming
+
+    values = naming.context(Path("E:/"), volume_label="A003")
+    assert values["card"] == "A003"
+    # A real folder name still wins; the label describes the volume, the
+    # folder describes the selection.
+    values = naming.context(Path("E:/DCIM"), volume_label="A003")
+    assert values["card"] == "DCIM"
+    # No label falls back to the drive letter, never to nothing.
+    values = naming.context(Path("E:/"))
+    assert values["card"] == "E"
