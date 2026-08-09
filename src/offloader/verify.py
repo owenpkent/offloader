@@ -167,6 +167,14 @@ class VerifyReport:
                         f"{len(self.directories)} directory hashes match the "
                         "manifest")
             return f"all {self.checked} files match the manifest"
+        if not self.failures and self.directory_failures:
+            # Every file matched and the report still did not pass. Listing the
+            # file tally first would open "N checked: N ok", which reads as a
+            # pass to anyone scanning — and this is the one verdict where the
+            # file hashes agreeing is the point rather than the reassurance.
+            return (f"{len(self.directory_failures)} of {len(self.directories)} "
+                    f"directory hashes differ; all {self.checked} files match, "
+                    "so the bytes are intact and the tree is not")
         parts = [f"{count} {name}" for name, count in sorted(self.counts().items())]
         line = f"{self.checked} checked: " + ", ".join(parts)
         if self.directory_failures:

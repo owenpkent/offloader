@@ -152,6 +152,14 @@ Whether that matters depends on the delivery. A tree whose bytes are intact but
 whose names are not is still wrong to hand to an archive that will look for them
 by path.
 
+Recomputing costs more than checking the listed files. Proving a rename is only
+a rename means hashing what the manifest does *not* list, so a destination root
+holding anything besides this job is read too — and that happens whether or not
+the unlisted files were asked for, since the hashes are what the comparison
+needs. The job's own reports are excluded, because the manifest records where
+they went, but a shared archive drive is not. `--allow-cache` removes the
+eviction, not the reading.
+
 ### The manifest has to travel
 
 An MHL that records absolute paths is useless the moment the drive gets a

@@ -439,6 +439,23 @@ def _confirm_source(source: Path, expected: str, algorithm: str) -> bool:
     return evicted
 
 
+def _describe_recovery(recovered: list[tuple[int, int]]) -> str:
+    """What a file's recovered reads amount to, in one line.
+
+    A single bad sector is worth naming exactly; a run of them is worth
+    bounding, because the useful fact stops being *which* byte and becomes how
+    much of the file would not read first time.
+    """
+    if len(recovered) == 1:
+        offset, attempts = recovered[0]
+        return f"recovered a failed read at byte {offset} on attempt {attempts}"
+    offsets = [offset for offset, _ in recovered]
+    worst = max(attempts for _, attempts in recovered)
+    return (f"recovered {len(recovered)} failed reads between byte "
+            f"{min(offsets)} and byte {max(offsets)}, the worst on "
+            f"attempt {worst}")
+
+
 def _invert_companions(belongs_to: dict[Path, Path]) -> dict[Path, list[Path]]:
     """clip -> its companions, from companion -> its clip."""
     owns: dict[Path, list[Path]] = {}
@@ -650,12 +667,15 @@ def run(source_root: Path, options: OffloadOptions,
                 job.warnings.append(
                     f"{source.name} copied on attempt {used} of "
                     f"{options.retry.attempts} — the source may be failing")
-            for offset, attempts in result.recovered_reads:
+            if result.recovered_reads:
                 # Recovered without restarting the file, which is why the copy
-                # succeeded at all — but the sector that needed it is real.
+                # succeeded at all — but the sectors that needed it are real.
+                # Said once per file: a card failing over a contiguous stretch
+                # produces one of these every 8 MiB, and a warning list that
+                # long is one nobody reads to the end.
                 job.warnings.append(
-                    f"{source.name}: recovered a failed read at byte {offset} "
-                    f"on attempt {attempts} — the source may be failing")
+                    f"{source.name}: {_describe_recovery(result.recovered_reads)}"
+                    " — the source may be failing")
             entry.checksum = src_sum or None
         except JobCancelled:
             _discard(partials)

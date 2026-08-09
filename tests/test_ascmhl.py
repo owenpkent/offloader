@@ -406,6 +406,13 @@ def test_a_new_file_changes_the_directory_that_gained_it(history):
     assert _directory(report, "Clips").result is verify.DirectoryResult.CHANGED
     assert any(p.name == "extra.mov" for p in report.unlisted)
 
+    # Every listed file still matches, so the summary must not open with the
+    # file tally: "3 checked: 3 ok" leading a report that did not pass is how
+    # an arrival gets waved through.
+    summary = report.summary()
+    assert summary.startswith("2 of 2 directory hashes differ"), summary
+    assert "the bytes are intact and the tree is not" in summary
+
 
 def test_a_deleted_directory_reads_as_missing(history):
     _job, destination, _manifest = history
