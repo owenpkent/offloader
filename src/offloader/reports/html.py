@@ -50,8 +50,8 @@ h1 { font-size: 26px; color: var(--muted); margin: 0 0 12px; }
 .clip .meta b { color: var(--fg); font-weight: bold; }
 .strip { display: flex; flex: 1 1 auto; gap: 0; min-width: 0; }
 .strip img { width: 25%; height: auto; object-fit: contain; background: #000; }
-.proxy-note { font-size: 10px; color: var(--muted); font-style: italic;
-              margin-top: 3px; }
+.proxy-note, .companion-note { font-size: 10px; color: var(--muted);
+              font-style: italic; margin-top: 3px; }
 .noimg { flex: 1 1 auto; min-height: 78px; background: #1c1c1c; border-radius: 4px;
          color: #f0a92b; display: flex; align-items: center; justify-content: center;
          font-size: 12px; letter-spacing: 2px; }
@@ -153,7 +153,10 @@ def write_html(job: Job, path: Path, *, thumbnails: bool = True, **_options) -> 
         ("Size of offload", format_size(job.total_bytes)),
         ("Offload Finish Date", format_job_datetime(finished)),
         ("Processors", str(job.processors) if job.processors else ""),
-        ("Verification Type", job.verification_label),
+        # The PDF's header string is pinned to the reference report's wording,
+        # so the extra pass is said here rather than folded into it.
+        ("Verification Type", job.verification_label
+         + (" + second source read" if job.paranoid else "")),
         ("Total Time", format_elapsed(job.elapsed_sec)),
         ("System Ram", job.system_ram),
         ("Total Files", str(job.total_files)),
@@ -176,6 +179,14 @@ def write_html(job: Job, path: Path, *, thumbnails: bool = True, **_options) -> 
         if entry.thumbnail_source is not None:
             provenance = (f'<div class="proxy-note">Frames from proxy: '
                           f'{_esc(entry.thumbnail_source.name)}</div>')
+        # Sidecars and proxies are shown with the clip they belong to. Copied
+        # and listed as unrelated files, a missing one is invisible.
+        if entry.companions:
+            names = ", ".join(_esc(p.name) for p in entry.companions)
+            provenance += f'<div class="companion-note">With: {names}</div>'
+        elif entry.companion_of is not None:
+            provenance += (f'<div class="companion-note">Belongs to: '
+                           f'{_esc(entry.companion_of.name)}</div>')
         clips.append(
             f'<div class="clip"><div class="meta">{_clip_meta(job, entry)}'
             f'{provenance}</div>{strip}</div>'

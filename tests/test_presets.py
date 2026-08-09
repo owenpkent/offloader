@@ -120,6 +120,7 @@ def test_to_options_carries_settings_through(tmp_path: Path):
         excludes=["*.tmp"],
         preserve_structure=False,
         skip_existing=True,
+        paranoid=True,
     )
     options = preset.to_options(job_name="A001")
 
@@ -130,6 +131,7 @@ def test_to_options_carries_settings_through(tmp_path: Path):
     assert options.job_name == "A001"
     assert options.preserve_structure is False
     assert options.skip_existing is True
+    assert options.paranoid is True
     assert "*.tmp" in options.excludes
     assert ".DS_Store" in options.excludes    # defaults still applied
 
@@ -192,3 +194,16 @@ def test_an_explicitly_empty_report_list_is_respected():
     key should fall back to the default."""
     assert Preset.from_dict({"reports": []}).reports == []
     assert Preset.from_dict({}).reports == ["pdf"]
+
+
+def test_paranoid_survives_a_save_and_reload(tmp_path: Path):
+    """It changes what "Verified" is worth, so it has to persist with the
+    preset rather than being re-chosen each time."""
+    store = PresetStore(tmp_path / "presets.json")
+    store.presets = [Preset(name="Irreplaceable", destinations=[tmp_path / "d"],
+                            paranoid=True)]
+    store.save()
+
+    assert PresetStore(tmp_path / "presets.json").presets[0].paranoid is True
+    # And a preset written before the option existed still loads.
+    assert Preset.from_dict({"name": "old"}).paranoid is False
