@@ -69,6 +69,16 @@ renamed file is unlisted under its new name and its hash is what proves the
 rename is all that happened. Files matching a recorded `ignore` pattern are left
 out, exactly as the writer left them out.
 
+That is why the writer records where the job's own paperwork went. The PDF, CSV
+and thumbnails are written into the destination *after* the manifest, so they
+are on disk when a verifier recomputes but were never in what it recomputes
+against — and folding them in reports the tool's own output as a change to the
+tree. The manifest carries the report directory as an `ignore` pattern for the
+same reason it carries `ascmhl`: neither is managed data. A path rather than an
+assumed name, because `--report-dir` moves it. A history written before this was
+recorded is read with the conventional `*_Reports` allowed for, which is a name
+and not a fact — a current manifest states its own layout.
+
 A directory whose mismatch is already accounted for by a file that failed on its
 own hash says so, rather than reporting a fresh problem for every directory
 between that file and the root. A directory that gained an unexpected file is

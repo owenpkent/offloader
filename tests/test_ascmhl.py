@@ -15,7 +15,7 @@ from xml.etree import ElementTree as ET
 
 import pytest
 
-from offloader import ascmhl, engine, verify
+from offloader import ascmhl, cli, engine, verify
 from offloader.hashers import c4_of_bytes, hash_file
 from offloader.models import VerificationMode
 
@@ -456,6 +456,102 @@ def test_directory_checking_can_be_turned_off(history):
     report = verify.verify_manifest(verify.find_manifests(destination)[0],
                                     check_directories=False)
     assert report.directories == []
+
+
+# --------------------------------------------------- the job's own paperwork
+
+
+def _cli_offload(tmp_path: Path, reports: str, extra: list[str] | None = None) -> Path:
+    """A real offload through the CLI, which is what writes the reports.
+
+    The fixtures above call `write_manifest` directly, so the destination they
+    build has no `<name>_Reports` folder in it — which is exactly why nothing
+    caught the tool's own output being counted as a change to the tree.
+    """
+    source = tmp_path / "card" / "Clips"
+    source.mkdir(parents=True)
+    (source / "A001_C001.mov").write_bytes(b"footage " * 500)
+    (tmp_path / "card" / "readme.txt").write_bytes(b"shot notes\n")
+
+    destination = tmp_path / "dest"
+    assert cli.main(["offload", "--source", str(tmp_path / "card"),
+                     "--dest", str(destination), "--name", "A001",
+                     "--report", reports, "--quiet", *(extra or [])]) == 0
+    return destination
+
+
+def test_a_freshly_offloaded_card_verifies_clean(tmp_path: Path):
+    """REGRESSION. The reports land inside the destination after the manifest
+    is written, so recomputing the root hash over everything on disk folded the
+    tool's own paperwork in and reported it as a change. A card that was just
+    copied has to verify."""
+    destination = _cli_offload(tmp_path, "ascmhl,csv,pdf")
+
+    report = verify.verify_manifest(verify.find_manifests(destination)[0])
+    assert report.passed, report.summary()
+    assert all(v.ok for v in report.directories), \
+        [v.describe() for v in report.directories]
+
+
+def test_the_manifest_records_where_the_paperwork_went(tmp_path: Path):
+    destination = _cli_offload(tmp_path, "ascmhl,csv")
+    text = verify.find_manifests(destination)[0].read_text(encoding="utf-8")
+
+    assert "<pattern>ascmhl</pattern>" in text
+    assert "<pattern>A001_Reports</pattern>" in text
+
+
+def test_a_relocated_report_directory_is_recorded_too(tmp_path: Path):
+    """`--report-dir` is why the path is recorded rather than assumed: the
+    conventional name is not where these went."""
+    destination = _cli_offload(tmp_path, "ascmhl,csv",
+                               ["--report-dir", str(tmp_path / "dest" / "paperwork")])
+    text = verify.find_manifests(destination)[0].read_text(encoding="utf-8")
+    assert "<pattern>paperwork</pattern>" in text
+
+    report = verify.verify_manifest(verify.find_manifests(destination)[0])
+    assert report.passed, report.summary()
+
+
+def test_reports_sent_outside_the_copy_need_no_pattern(tmp_path: Path):
+    destination = _cli_offload(tmp_path, "ascmhl,csv",
+                               ["--report-dir", str(tmp_path / "elsewhere")])
+    text = verify.find_manifests(destination)[0].read_text(encoding="utf-8")
+
+    assert "elsewhere" not in text
+    assert verify.verify_manifest(verify.find_manifests(destination)[0]).passed
+
+
+def test_paperwork_beside_a_manifest_that_never_recorded_it_is_tolerated(
+    tmp_path: Path
+):
+    """A history written before the writer recorded its own report folder. The
+    files are still reported as unlisted — that much was always true — but they
+    are not counted as a change to a directory the manifest never covered."""
+    job, destination = _offload(tmp_path, dict(PLACEHOLDER_FILES))
+    ascmhl.write_manifest(job, destination, when=WHEN,
+                          ignore_patterns=[ascmhl.ASCMHL_DIRNAME])
+    reports = destination / "A002R2EC_Reports"
+    reports.mkdir()
+    (reports / "JobReport.pdf").write_bytes(b"%PDF-1.4 paperwork\n")
+    (reports / "thumbs").mkdir()
+    (reports / "thumbs" / "A002C006.jpg").write_bytes(b"jpeg")
+
+    report = verify.verify_manifest(verify.find_manifests(destination)[0])
+    assert report.passed, report.summary()
+    assert any(p.name == "JobReport.pdf" for p in report.unlisted)
+
+
+def test_the_tolerance_stops_at_anything_that_is_not_paperwork(tmp_path: Path):
+    """It is scoped to the one directory the tool writes itself. A stray file
+    anywhere else still moves the hash it belongs to."""
+    job, destination = _offload(tmp_path, dict(PLACEHOLDER_FILES))
+    ascmhl.write_manifest(job, destination, when=WHEN,
+                          ignore_patterns=[ascmhl.ASCMHL_DIRNAME])
+    (destination / "Clips" / "extra.mov").write_bytes(b"not in the manifest\n")
+
+    report = verify.verify_manifest(verify.find_manifests(destination)[0])
+    assert _directory(report, "Clips").result is verify.DirectoryResult.CHANGED
 
 
 # --------------------------------------------------------------- reference

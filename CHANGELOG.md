@@ -51,6 +51,14 @@ project uses [semantic versioning][semver].
   `ignore` patterns. Directory hashes that a failed file already accounts for
   say so rather than repeating themselves up to the root.
 
+  A manifest now records where the job's reports went, alongside `ascmhl`. They
+  are written into the destination after it, so they are on disk when a verifier
+  recomputes but were never in what it recomputes against — without the pattern,
+  a card that had just been copied reported its own `JobReport.pdf` as a change
+  to the tree. The path is recorded rather than the conventional name, since
+  `--report-dir` moves it; histories written before it was recorded are read with
+  `*_Reports` allowed for.
+
 ### Changed
 
 - **The preset editor is grouped into Preset, Copying and Reports.** Sixteen

@@ -31,6 +31,11 @@ from .ascmhl import directory_hashes as ascmhl_directory_hashes
 from .hashers import ALGORITHMS, hash_file
 from .integrity import evict_from_cache
 
+#: Where this tool files its own paperwork, as a pattern. Only used to read
+#: histories written before the writer recorded the directory itself; a current
+#: manifest carries the real path, which handles `--report-dir` as this cannot.
+REPORT_DIRECTORY_GLOB = "*_Reports"
+
 
 class EntryResult(str, Enum):
     OK = "ok"
@@ -338,6 +343,12 @@ def verify_manifest(
         patterns = _ignore_patterns(ascmhl_root) if ascmhl_root is not None else []
         scan_root = (managed_root if ascmhl_root is not None
                      else _described_root(manifest, listed))
+        # Manifests written before the report directory was recorded as ignored
+        # say nothing about it, and folding the tool's own paperwork into a
+        # recomputed hash reports the report as a change to the tree. Keyed off
+        # the absence of any recorded pattern but the history's own folder, so
+        # it stops applying the moment a manifest describes its own layout.
+        legacy_paperwork = not [p for p in patterns if p != ASCMHL_DIRNAME]
 
         for candidate in scan_root.rglob("*"):
             if not candidate.is_file() or candidate.suffix.lower() == ".mhl":
@@ -354,6 +365,8 @@ def verify_manifest(
             if find_unlisted:
                 report.unlisted.append(candidate)
             if ascmhl_root is not None:
+                if legacy_paperwork and _ignored(relative, [REPORT_DIRECTORY_GLOB]):
+                    continue
                 unexpected.add(relative)
                 try:
                     if bypass_cache:
