@@ -108,19 +108,25 @@ def _build_tree(entries: list[tuple[Path, str, str]]) -> _Node:
     return root
 
 
-def _directory_hashes(node: _Node, algorithm_key: str) -> tuple[str, str]:
+def _directory_hashes(node: _Node, algorithm_key: str, prefix: str = ".",
+                      sink: dict[str, tuple[str, str]] | None = None,
+                      ) -> tuple[str, str]:
     """(content, structure) for a directory, computed bottom-up.
 
     Only hashes that stand as evidence contribute: a `failed` hash means the
     file is not what it was, so folding it in would produce a directory hash
     that certifies a known-bad tree.
+
+    `sink`, when given, collects every directory's pair on the way back up,
+    keyed by relative POSIX path.
     """
     content_inputs: list[str] = []
     structure_inputs: list[str] = []
 
     for name in sorted(node.directories):
         child_content, child_structure = _directory_hashes(
-            node.directories[name], algorithm_key)
+            node.directories[name], algorithm_key,
+            name if prefix == "." else f"{prefix}/{name}", sink)
         content_inputs.append(child_content)
         structure_inputs.append(
             _structure_entry(name, child_structure, algorithm_key))
@@ -132,8 +138,31 @@ def _directory_hashes(node: _Node, algorithm_key: str) -> tuple[str, str]:
         content_inputs.append(digest)
         structure_inputs.append(_structure_entry(name, digest, algorithm_key))
 
-    return (hash_of_hashes(content_inputs, algorithm_key),
+    pair = (hash_of_hashes(content_inputs, algorithm_key),
             hash_of_hashes(structure_inputs, algorithm_key))
+    if sink is not None:
+        sink[prefix] = pair
+    return pair
+
+
+def directory_hashes(entries: list[tuple[Path, str]],
+                     algorithm_key: str) -> dict[str, tuple[str, str]]:
+    """Every directory's (content, structure) pair, keyed by relative POSIX
+    path, with `"."` for the root of the managed data.
+
+    Exposed so a verifier can recompute from what is on disk what the writer
+    recorded. Only directories holding at least one file appear, which is
+    exactly the set the writer emits a `directoryhash` for.
+
+    Pass only hashes that stand as evidence — excluding a failed one is the
+    caller's job here, the writer having already done it through the `action`
+    it recorded.
+    """
+    sink: dict[str, tuple[str, str]] = {}
+    tree = _build_tree([(relative, digest, ACTION_ORIGINAL)
+                        for relative, digest in entries])
+    _directory_hashes(tree, algorithm_key, ".", sink)
+    return sink
 
 
 # ------------------------------------------------------------------ history

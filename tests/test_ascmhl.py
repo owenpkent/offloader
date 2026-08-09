@@ -97,6 +97,19 @@ def test_directory_hashes_match_the_reference_implementation():
     assert ascmhl.hash_of_hashes(structure, "xxh64") == REF_CLIPS_STRUCTURE
 
 
+def test_directory_hashes_is_keyed_by_path_and_agrees_with_the_reference():
+    """The verifier recomputes through this entry point, so it has to produce
+    what the writer records — including for the root, which the manifest keeps
+    under `roothash` rather than as a `directoryhash`."""
+    hashes = ascmhl.directory_hashes(
+        [(Path(name), digest) for name, digest in REF_DIGESTS.items()], "xxh64")
+
+    assert hashes["Clips"] == (REF_CLIPS_CONTENT, REF_CLIPS_STRUCTURE)
+    assert set(hashes) == {".", "Clips"}
+    # The root folds in `Clips`, so it is not the same pair.
+    assert hashes["."] != hashes["Clips"]
+
+
 def test_hash_of_hashes_is_order_independent():
     """The list is sorted before hashing, so discovery order cannot change it."""
     digests = ["ffffffffffffffff", "0000000000000000", "aaaaaaaaaaaaaaaa"]
@@ -328,7 +341,121 @@ def test_classic_mhl_still_verifies(tmp_path: Path):
 
     job, destination = _offload(tmp_path, {"a.mov": b"aaaa"})
     manifest = write_mhl(job, destination / "A001_Reports" / "JobReport.mhl")
-    assert verify.verify_manifest(manifest).passed
+    report = verify.verify_manifest(manifest)
+    assert report.passed
+    # MHL 1.1 has no directory hashes, so there is nothing to re-check.
+    assert report.directories == []
+
+
+# ------------------------------------------------- verifying directory hashes
+
+
+def _directory(report: verify.VerifyReport, relative: str):
+    return next(v for v in report.directories if v.relative == relative)
+
+
+def test_verify_rechecks_the_recorded_directory_hashes(history):
+    _job, destination, _manifest = history
+    report = verify.verify_manifest(verify.find_manifests(destination)[0])
+
+    # The root, written as `roothash`, and `Clips`, the one subdirectory.
+    assert sorted(v.relative for v in report.directories) == [".", "Clips"]
+    assert all(v.result is verify.DirectoryResult.OK for v in report.directories)
+    assert "directory hashes" in report.summary()
+
+
+def test_a_rename_is_a_structure_mismatch_not_a_content_one(history):
+    """The whole reason the structure hash exists: every file is individually
+    fine, and the tree is still not what was recorded."""
+    _job, destination, _manifest = history
+    clips = destination / "Clips"
+    (clips / "A002C006_141024_R2EC.mov").rename(clips / "A002C099_141024_R2EC.mov")
+
+    report = verify.verify_manifest(verify.find_manifests(destination)[0])
+    assert not report.passed
+
+    verdict = _directory(report, "Clips")
+    assert verdict.result is verify.DirectoryResult.RENAMED
+    # Nothing was corrupted — the bytes under `Clips` hash exactly as recorded.
+    assert verdict.actual_content == verdict.expected_content
+    assert verdict.actual_structure != verdict.expected_structure
+    # And it propagates: the root cannot certify a tree it no longer describes.
+    assert _directory(report, ".").result is verify.DirectoryResult.RENAMED
+    # The `MISSING` line for the old name does not account for this. Something
+    # arrived under a new one, which no file verdict can say.
+    assert not verdict.explained_by_files
+
+
+def test_a_file_moved_between_directories_is_caught(history):
+    """A move keeps the bytes but changes which directory owns them, so the
+    content hash moves with it."""
+    _job, destination, _manifest = history
+    (destination / "Sidecar.txt").rename(destination / "Clips" / "Sidecar.txt")
+
+    report = verify.verify_manifest(verify.find_manifests(destination)[0])
+    assert not report.passed
+    assert _directory(report, "Clips").result is verify.DirectoryResult.CHANGED
+    assert _directory(report, ".").result is verify.DirectoryResult.CHANGED
+
+
+def test_a_new_file_changes_the_directory_that_gained_it(history):
+    _job, destination, _manifest = history
+    (destination / "Clips" / "extra.mov").write_bytes(b"not in the manifest\n")
+
+    report = verify.verify_manifest(verify.find_manifests(destination)[0])
+    assert _directory(report, "Clips").result is verify.DirectoryResult.CHANGED
+    assert any(p.name == "extra.mov" for p in report.unlisted)
+
+
+def test_a_deleted_directory_reads_as_missing(history):
+    _job, destination, _manifest = history
+    clips = destination / "Clips"
+    for child in clips.iterdir():
+        child.unlink()
+    clips.rmdir()
+
+    report = verify.verify_manifest(verify.find_manifests(destination)[0])
+    assert _directory(report, "Clips").result is verify.DirectoryResult.MISSING
+
+
+def test_a_corrupt_file_is_not_re_reported_for_every_directory_above_it(history):
+    """A flipped bit invalidates every directory hash up to the root. Saying so
+    three times over would bury the one line that matters."""
+    _job, destination, _manifest = history
+    victim = destination / "Clips" / "A002C006_141024_R2EC.mov"
+    payload = bytearray(victim.read_bytes())
+    payload[0] ^= 0x01
+    victim.write_bytes(bytes(payload))
+
+    report = verify.verify_manifest(verify.find_manifests(destination)[0])
+    verdict = _directory(report, "Clips")
+    assert verdict.result is verify.DirectoryResult.CHANGED
+    assert verdict.explained_by_files
+    assert "accounted for by the file failures" in verdict.describe()
+
+
+def test_an_ignored_file_is_kept_out_of_the_recomputation(tmp_path: Path):
+    """A file the manifest was told to ignore is not evidence. Folding it in
+    would fail every directory above it for a file nobody claimed to have
+    copied."""
+    job, destination = _offload(tmp_path, dict(PLACEHOLDER_FILES))
+    (destination / "Clips" / ".DS_Store").write_bytes(b"finder droppings\n")
+    ascmhl.write_manifest(job, destination, when=WHEN,
+                          ignore_patterns=["ascmhl", ".DS_Store"])
+
+    report = verify.verify_manifest(verify.find_manifests(destination)[0])
+    assert report.passed
+    assert not report.unlisted
+
+
+def test_directory_checking_can_be_turned_off(history):
+    _job, destination, _manifest = history
+    (destination / "Clips" / "A002C006_141024_R2EC.mov").rename(
+        destination / "Clips" / "renamed.mov")
+
+    report = verify.verify_manifest(verify.find_manifests(destination)[0],
+                                    check_directories=False)
+    assert report.directories == []
 
 
 # --------------------------------------------------------------- reference
