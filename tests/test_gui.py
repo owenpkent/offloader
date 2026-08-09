@@ -412,3 +412,24 @@ def test_rate_survives_a_counter_reset_between_stages(monkeypatch):
         item.record_progress(item.bytes_done)
     assert item.rate_bytes_per_sec == pytest.approx(50_000_000, rel=0.05)
 
+
+def test_checksum_pickers_say_what_the_choice_costs(qapp, tmp_path):
+    """MD5 sits in the same list as XXHash3-64; without the cost attached they
+    read as equals, and the difference is 40x on the copy path."""
+    from offloader.gui.preset_editor import PresetEditor
+
+    panel = SimpleModePanel()
+    texts = [panel._algorithm.itemText(i)
+             for i in range(panel._algorithm.count())]
+    md5 = next(t for t in texts if t.startswith("MD5"))
+    assert "slower" in md5
+    assert any(t.startswith("XXHash3-64") and "fastest" in t for t in texts)
+
+    editor = PresetEditor(Preset(name="p"))
+    texts = [editor._algorithm.itemText(i)
+             for i in range(editor._algorithm.count())]
+    assert any("slower" in t for t in texts)
+
+    # The stored key must stay the bare algorithm id, not the display text.
+    assert panel._algorithm.currentData() in {"xxh3-64"}
+

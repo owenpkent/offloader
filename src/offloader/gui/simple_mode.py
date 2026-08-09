@@ -1,6 +1,6 @@
 """Simple mode: source, destinations, go.
 
-Everything is on one screen with no saved state — for the one-off offload where
+Everything is on one screen with no saved state â€” for the one-off offload where
 building a preset would be more work than the job itself.
 """
 
@@ -40,7 +40,7 @@ class SimpleModePanel(QWidget):
 
         self.destinations = DestinationList()
         self.destinations.changed.connect(self._sync)
-        add = button("Add…", flat=True)
+        add = button("Addâ€¦", flat=True)
         add.clicked.connect(self.destinations.browse_and_add)
         remove = button("Remove", flat=True)
         remove.clicked.connect(self.destinations.remove_selected)
@@ -51,7 +51,7 @@ class SimpleModePanel(QWidget):
 
         self._algorithm = QComboBox()
         for key, algorithm in ALGORITHMS.items():
-            self._algorithm.addItem(algorithm.label, key)
+            self._algorithm.addItem(algorithm.picker_label, key)
         self._algorithm.setCurrentIndex(max(0, self._algorithm.findData("xxh3-64")))
 
         self._verification = QComboBox()
@@ -61,8 +61,8 @@ class SimpleModePanel(QWidget):
             max(0, self._verification.findData(VerificationMode.SOURCE_ONLY.value)))
 
         self._profile = QComboBox()
-        self._profile.addItem("Media — camera card", Profile.MEDIA.value)
-        self._profile.addItem("Data — any large transfer", Profile.DATA.value)
+        self._profile.addItem("Media â€” camera card", Profile.MEDIA.value)
+        self._profile.addItem("Data â€” any large transfer", Profile.DATA.value)
         self._profile.setCurrentIndex(
             max(0, self._profile.findData(Profile.MEDIA.value)))
         self._profile.currentIndexChanged.connect(self._on_profile_changed)
@@ -141,10 +141,10 @@ class SimpleModePanel(QWidget):
         elif not destinations:
             self._hint.setText("Add at least one destination.")
         elif overlapping:
-            self._hint.setText("A destination sits inside the source — pick another.")
+            self._hint.setText("A destination sits inside the source â€” pick another.")
         else:
             copies = f"{len(destinations)} cop{'ies' if len(destinations) > 1 else 'y'}"
-            self._hint.setText(f"Ready: {source} → {copies}")
+            self._hint.setText(f"Ready: {source} â†’ {copies}")
 
     @staticmethod
     def _overlaps(source: Path, destination: Path) -> bool:
@@ -157,7 +157,7 @@ class SimpleModePanel(QWidget):
         return source == destination or source in destination.parents
 
     def _on_profile_changed(self) -> None:
-        # Thumbnails are contact-sheet frames from a clip — meaningless for a
+        # Thumbnails are contact-sheet frames from a clip â€” meaningless for a
         # generic data transfer, which never decodes a file. Grey the control
         # so the disabled state explains itself.
         is_media = self._profile.currentData() == Profile.MEDIA.value

@@ -151,7 +151,10 @@ def _summarize(job: Job, reports: list[Path]) -> None:
 def _common_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--hash", default=hashers.DEFAULT_ALGORITHM,
                         choices=sorted(hashers.algorithm_keys()),
-                        help="checksum algorithm (default: %(default)s)")
+                        help="checksum algorithm (default: %(default)s; the "
+                             "engine hashes every byte on the copy path, so a "
+                             "slow choice caps copy speed â€” md5 is ~40x slower "
+                             "than the default; see 'offloader info')")
     parser.add_argument("--report", type=_parse_reports, default=DEFAULT_REPORTS,
                         metavar="FMT[,FMT...]",
                         help=f"report formats: {', '.join(WRITERS)} (default: pdf)")
@@ -189,7 +192,7 @@ def _common_options(parser: argparse.ArgumentParser) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="offloader",
-        description=f"{PRODUCT_NAME} — verified copy for large data transfers, "
+        description=f"{PRODUCT_NAME} â€” verified copy for large data transfers, "
                     f"with camera-card offload and job reports built in.",
     )
     parser.add_argument("--version", action="version",
@@ -228,7 +231,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     verify = sub.add_parser(
         "verify",
-        help="re-check an offloaded tree against its MHL — run this before "
+        help="re-check an offloaded tree against its MHL â€” run this before "
              "erasing a card, and again later to catch bit rot")
     verify.add_argument("path", type=Path,
                         help="an .mhl file, or a folder to search for them")
@@ -351,8 +354,8 @@ def cmd_verify(args: argparse.Namespace) -> int:
             worst = max(worst, 1)
 
     print()
-    print("VERIFIED — safe to erase the source" if worst == 0
-          else "NOT VERIFIED — do not erase the source")
+    print("VERIFIED â€” safe to erase the source" if worst == 0
+          else "NOT VERIFIED â€” do not erase the source")
     return worst
 
 
@@ -368,7 +371,7 @@ def cmd_info(_args: argparse.Namespace) -> int:
     print(f"  ffprobe:     {probe.ffprobe_path() or 'NOT FOUND (metadata disabled)'}")
     print(f"  ffmpeg:      {thumbs.ffmpeg_path() or 'NOT FOUND (thumbnails disabled)'}")
     print(f"  report font: {fonts.describe()}"
-          f"{'' if fonts.using_reference_fonts() else '  (Verdana missing — metrics differ)'}")
+          f"{'' if fonts.using_reference_fonts() else '  (Verdana missing â€” metrics differ)'}")
     enabled = longpath.os_long_paths_enabled()
     if enabled is not None:
         prefix = "\\\\?\\"
@@ -376,7 +379,9 @@ def cmd_info(_args: argparse.Namespace) -> int:
                 else "required for destinations past 260 characters")
         print(f"  long paths:  Windows support {'on' if enabled else 'off'};"
               f" {prefix} prefix {note}")
-    print(f"  checksums:   {', '.join(sorted(hashers.algorithm_keys()))}")
+    print("  checksums:   " + "; ".join(
+        f"{key} ({alg.speed})" if alg.speed else key
+        for key, alg in sorted(hashers.ALGORITHMS.items())))
     print(f"  reports:     {', '.join(WRITERS)}")
     print(f"  profiles:    {', '.join(p.value for p in Profile)} "
           f"(--profile; 'data' skips media probing for generic transfers)")

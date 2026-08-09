@@ -106,7 +106,7 @@ class PresetEditor(QDialog):
 
         self._algorithm = QComboBox()
         for key, algorithm in ALGORITHMS.items():
-            self._algorithm.addItem(algorithm.label, key)
+            self._algorithm.addItem(algorithm.picker_label, key)
         self._algorithm.setCurrentIndex(
             max(0, self._algorithm.findData(self._source.algorithm)))
 
