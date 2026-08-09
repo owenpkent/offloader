@@ -10,6 +10,7 @@ import os
 import platform
 import shutil
 import string
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -21,7 +22,7 @@ CAMERA_MARKERS = {
     "brawcontents", "pana_grp",
 }
 
-#: Camera originals. Some cameras — Blackmagic among them — write clips
+#: Camera originals. Some cameras â€” Blackmagic among them â€” write clips
 #: straight to the root with no marker directory at all, so a volume holding
 #: several of these is treated as a card even without one.
 CAMERA_EXTENSIONS = {
@@ -48,7 +49,7 @@ class Volume:
     total_bytes: int
     free_bytes: int
     drive_type: str = "fixed"
-    #: Computed once when the volume is listed — the check touches the disk,
+    #: Computed once when the volume is listed â€” the check touches the disk,
     #: and the drive panel refreshes on a timer.
     is_camera_card: bool = False
 
@@ -83,7 +84,7 @@ def detect_camera_card(root: Path, drive_type: str) -> bool:
     """Whether a volume root looks like camera media rather than a disk.
 
     Two signals: a marker directory the camera wrote, or a root full of camera
-    originals. Removability is deliberately not required — a reader in a
+    originals. Removability is deliberately not required â€” a reader in a
     Thunderbolt dock usually reports as a fixed disk.
     """
     if drive_type in ("network", "optical", "ramdisk", "no-root", "unknown"):
@@ -131,50 +132,62 @@ def _usage(root: Path) -> tuple[int, int]:
         return 0, 0
 
 
-def _windows_volumes() -> list[Volume]:
+def _windows_roots() -> list[tuple[Path, str]]:
+    """Every drive letter and its type. Cheap â€” `GetDriveTypeW` reads a flag
+    the mount manager already holds, it does not touch the volume."""
     import ctypes
 
     kernel32 = ctypes.windll.kernel32
-    # Stop Windows popping "insert a disk" dialogs for empty card readers.
-    previous = kernel32.SetErrorMode(0x0001 | 0x0002)
-    found: list[Volume] = []
+    roots: list[tuple[Path, str]] = []
+    bitmask = kernel32.GetLogicalDrives()
+    for index, letter in enumerate(string.ascii_uppercase):
+        if not bitmask & (1 << index):
+            continue
+        root = f"{letter}:\\"
+        drive_type = _WINDOWS_DRIVE_TYPES.get(kernel32.GetDriveTypeW(root), "unknown")
+        if drive_type in ("no-root", "unknown"):
+            continue
+        roots.append((Path(root), drive_type))
+    return roots
+
+
+def _windows_probe(root: Path, drive_type: str) -> Volume | None:
+    """Label, filesystem, usage and card detection for one root â€” the part
+    that actually talks to the device, and for a network share is a synchronous
+    SMB round-trip. Runs on a pool thread; error mode is set per-thread so an
+    empty card reader cannot pop an "insert a disk" dialog."""
+    import ctypes
+
+    kernel32 = ctypes.windll.kernel32
+    previous = ctypes.c_uint(0)
+    kernel32.SetThreadErrorMode(0x0001 | 0x0002, ctypes.byref(previous))
     try:
-        bitmask = kernel32.GetLogicalDrives()
-        for index, letter in enumerate(string.ascii_uppercase):
-            if not bitmask & (1 << index):
-                continue
-            root = f"{letter}:\\"
-            drive_type = _WINDOWS_DRIVE_TYPES.get(kernel32.GetDriveTypeW(root), "unknown")
-            if drive_type in ("no-root", "unknown"):
-                continue
+        label_buffer = ctypes.create_unicode_buffer(261)
+        fs_buffer = ctypes.create_unicode_buffer(261)
+        ok = kernel32.GetVolumeInformationW(
+            ctypes.c_wchar_p(str(root)), label_buffer, 261,
+            None, None, None, fs_buffer, 261,
+        )
+        if not ok and drive_type == "optical":
+            return None    # empty drive
 
-            label_buffer = ctypes.create_unicode_buffer(261)
-            fs_buffer = ctypes.create_unicode_buffer(261)
-            ok = kernel32.GetVolumeInformationW(
-                ctypes.c_wchar_p(root), label_buffer, 261,
-                None, None, None, fs_buffer, 261,
-            )
-            if not ok and drive_type == "optical":
-                continue    # empty drive
-
-            total, free = _usage(Path(root))
-            if total == 0 and drive_type != "removable":
-                continue
-            found.append(Volume(
-                root=Path(root),
-                label=label_buffer.value,
-                filesystem=fs_buffer.value,
-                total_bytes=total,
-                free_bytes=free,
-                drive_type=drive_type,
-                is_camera_card=detect_camera_card(Path(root), drive_type),
-            ))
+        total, free = _usage(root)
+        if total == 0 and drive_type != "removable":
+            return None
+        return Volume(
+            root=root,
+            label=label_buffer.value,
+            filesystem=fs_buffer.value,
+            total_bytes=total,
+            free_bytes=free,
+            drive_type=drive_type,
+            is_camera_card=detect_camera_card(root, drive_type),
+        )
     finally:
-        kernel32.SetErrorMode(previous)
-    return found
+        kernel32.SetThreadErrorMode(previous.value, None)
 
 
-def _posix_volumes() -> list[Volume]:
+def _posix_roots() -> list[tuple[Path, str]]:
     candidates: list[Path] = [Path("/")]
     for parent in (Path("/Volumes"), Path("/media"), Path("/mnt"),
                    Path("/run/media") / (Path.home().name)):
@@ -183,40 +196,67 @@ def _posix_volumes() -> list[Volume]:
         except OSError:
             continue
 
-    found: list[Volume] = []
+    roots: list[tuple[Path, str]] = []
     seen: set[Path] = set()
     for root in candidates:
         if root in seen:
             continue
         seen.add(root)
-        total, free = _usage(root)
-        if total == 0:
-            continue
-        drive_type = "fixed" if root == Path("/") else "removable"
-        found.append(Volume(
-            root=root,
-            label=root.name or str(root),
-            filesystem="",
-            total_bytes=total,
-            free_bytes=free,
-            drive_type=drive_type,
-            is_camera_card=detect_camera_card(root, drive_type),
-        ))
-    return found
+        roots.append((root, "fixed" if root == Path("/") else "removable"))
+    return roots
 
 
-def list_volumes() -> list[Volume]:
-    """Every mounted volume, cards first so they are easy to spot.
+def _posix_probe(root: Path, drive_type: str) -> Volume | None:
+    total, free = _usage(root)
+    if total == 0:
+        return None
+    return Volume(
+        root=root,
+        label=root.name or str(root),
+        filesystem="",
+        total_bytes=total,
+        free_bytes=free,
+        drive_type=drive_type,
+        is_camera_card=detect_camera_card(root, drive_type),
+    )
 
-    Deduplicated by resolved root: macOS reaches the boot volume through both
-    `/` and `/Volumes/Macintosh HD`, and listing it twice would be noise.
-    """
+
+def list_roots() -> list[tuple[Path, str]]:
+    """Every mount point and its drive type, without touching any volume."""
     try:
-        volumes = (_windows_volumes() if platform.system() == "Windows"
-                   else _posix_volumes())
+        return (_windows_roots() if platform.system() == "Windows"
+                else _posix_roots())
     except Exception:
-        volumes = []
+        return []
 
+
+def probe_volume(root: Path, drive_type: str) -> Volume | None:
+    """Full details for one root, or None if it should not be listed."""
+    try:
+        return (_windows_probe(root, drive_type)
+                if platform.system() == "Windows"
+                else _posix_probe(root, drive_type))
+    except Exception:
+        return None
+
+
+def probe_many(roots: list[tuple[Path, str]]) -> list[Volume]:
+    """Probe roots concurrently, so a sleeping USB drive or a slow network
+    share costs its own probe rather than delaying every drive after it â€”
+    serial probing made the panel's refresh wait the *sum* of every
+    round-trip; this waits only the slowest."""
+    if not roots:
+        return []
+    with ThreadPoolExecutor(max_workers=min(len(roots), 12),
+                            thread_name_prefix="volscan") as pool:
+        results = pool.map(lambda pair: probe_volume(*pair), roots)
+    return [volume for volume in results if volume is not None]
+
+
+def order_volumes(volumes: list[Volume]) -> list[Volume]:
+    """Cards first so they are easy to spot; deduplicated by resolved root,
+    because macOS reaches the boot volume through both `/` and
+    `/Volumes/Macintosh HD`, and listing it twice would be noise."""
     seen: set[Path] = set()
     unique: list[Volume] = []
     for volume in sorted(volumes, key=lambda v: len(str(v.root))):
@@ -230,6 +270,11 @@ def list_volumes() -> list[Volume]:
         unique.append(volume)
 
     return sorted(unique, key=lambda v: (not v.is_camera_card, str(v.root)))
+
+
+def list_volumes() -> list[Volume]:
+    """Every mounted volume, cards first so they are easy to spot."""
+    return order_volumes(probe_many(list_roots()))
 
 
 def find_volume(path: Path) -> Volume | None:
