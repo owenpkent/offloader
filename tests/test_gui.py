@@ -289,3 +289,46 @@ def test_source_drop_zone_reports_its_path(qapp, tmp_path):
     assert zone.path is None
     zone.set_path(tmp_path / "A001")
     assert zone.path == tmp_path / "A001"
+
+
+# ------------------------------------------------------------- the UI sweep
+
+
+def test_simple_mode_offers_the_second_read_and_it_reaches_the_engine(qapp,
+                                                                      tmp_path):
+    """A preset field the interface never exposes is a field nobody can use."""
+    panel = SimpleModePanel()
+    assert panel.build_preset().paranoid is False
+
+    panel._paranoid.setChecked(True)
+    assert panel.build_preset().to_options().paranoid is True
+
+
+def test_the_preset_editor_round_trips_the_second_read(qapp):
+    from offloader.gui.preset_editor import PresetEditor
+
+    editor = PresetEditor(Preset(name="Irreplaceable", paranoid=True))
+    assert editor._paranoid.isChecked()
+
+    editor._paranoid.setChecked(False)
+    editor._accept()
+    assert editor.result_preset.paranoid is False
+
+
+def test_the_preset_editor_is_grouped_rather_than_one_flat_list(qapp):
+    """Sixteen fields in a single column read as a wall. The sections are the
+    difference between scanning for a setting and hunting for it."""
+    from PySide6.QtWidgets import QLabel
+
+    from offloader.gui.preset_editor import PresetEditor
+
+    editor = PresetEditor(Preset(name="p"))
+    headings = [w.text() for w in editor.findChildren(QLabel)
+                if w.property("role") == "heading"]
+    assert headings == ["Preset", "Copying", "Reports"]
+
+    # Regrouping a form is exactly the change that silently drops a field.
+    for name in ("_name", "_color", "_destinations", "_algorithm",
+                 "_verification", "_thumbnails", "_naming", "_excludes",
+                 "_logo", "_footer", "_preserve", "_skip", "_paranoid"):
+        assert getattr(editor, name).parent() is not None, f"{name} is orphaned"

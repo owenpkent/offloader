@@ -23,8 +23,8 @@ from ..hashers import ALGORITHMS
 from ..models import Profile, VerificationMode
 from ..presets import Preset
 from ..reports import WRITERS
-from .preset_editor import VERIFICATION_LABELS
-from .widgets import DestinationList, SourceDropZone, button, label, row
+from .preset_editor import PARANOID_LABEL, PARANOID_TOOLTIP, VERIFICATION_LABELS
+from .widgets import DestinationList, SourceDropZone, button, column, label, row
 
 
 class SimpleModePanel(QWidget):
@@ -84,6 +84,8 @@ class SimpleModePanel(QWidget):
 
         self._preserve = QCheckBox("Recreate the source folder structure")
         self._preserve.setChecked(True)
+        self._paranoid = QCheckBox(PARANOID_LABEL)
+        self._paranoid.setToolTip(PARANOID_TOOLTIP)
 
         form = QFormLayout()
         form.setSpacing(10)
@@ -94,7 +96,7 @@ class SimpleModePanel(QWidget):
         form.addRow("Verification", self._verification)
         form.addRow("Thumbnails", self._thumbnails)
         form.addRow("Reports", row(*report_row))
-        form.addRow("", self._preserve)
+        form.addRow("Options", column(self._preserve, self._paranoid))
 
         self._start = button("Start offload", accent=True)
         self._start.clicked.connect(self._start_clicked)
@@ -171,6 +173,7 @@ class SimpleModePanel(QWidget):
             thumbnail_count=self._thumbnails.value(),
             reports=[key for key, box in self._reports.items() if box.isChecked()],
             preserve_structure=self._preserve.isChecked(),
+            paranoid=self._paranoid.isChecked(),
         )
 
     def _start_clicked(self) -> None:
