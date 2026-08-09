@@ -71,7 +71,7 @@ Three modes, and it is worth being precise about what each proves.
 | --- | --- | --- |
 | `none` | source once | nothing |
 | `source-only` | source once | the bytes written matched the bytes read |
-| `full` | source once, destination again | the bytes **on the destination** match the source |
+| `full` (default) | source once, destination again | the bytes **on the destination** match the source |
 
 `source-only` hashes the source as it is read and hashes each buffer as it is
 handed to `write()`. It catches corruption in transit. It cannot catch anything

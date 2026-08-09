@@ -8,7 +8,70 @@ project uses [semantic versioning][semver].
 
 ## [Unreleased]
 
+### Changed
+
+- **Full verification is the default.** The read-back is the only mode that
+  proves what is on the destination device, and the default should be the one
+  whose "Verified" means the most. Applies to the engine's options, new
+  presets, Simple mode and the CLI's `--verify`; `source-only` remains one
+  flag or one dropdown away for the run that is racing a deadline. The cost
+  is one extra read of each copy at the destination's own read speed.
+- **Jobs offloaded from a card's root are named after the volume label.** A
+  root has no folder name, so the job — and every report named after it —
+  was called "Offload". It is now called what the operator calls the card:
+  the label, e.g. "A003". Applies to the engine, the queue's naming
+  templates (`{card}`), and Simple mode's placeholder.
+- **The PDF's document title carries the route and the date.** A stack of
+  reports in a file manager all read "Offload Job Report"; the title is now
+  "A003 Job Report — E:\ → D:\skate video — 2026-08-09".
+
+### Fixed
+
+- **A decoder ffmpeg lacks is probed once per job, not per clip.** Extracting
+  thumbnails from BRAW with a stock ffmpeg fails identically for every clip;
+  each one still paid four doomed process spawns. The first clip of a suffix
+  that produces no frames now marks that suffix dead for the rest of the job
+  (camera proxies, being ordinary MP4/MOV, are unaffected).
+
+- **The queue's throughput and ETA measure the last five seconds, not the life
+  of the job.** The old figure was `bytes / total elapsed`, which folds the
+  pre-copy card scan and every between-file probe stall into the number
+  forever — a real offload read 3.5 MB/s while clips were demonstrably flying
+  past, and the ETA was wrong in the same direction. The rate now comes from a
+  trailing window, decays visibly during a stall instead of freezing, and
+  survives the copy→verify counter reset.
+
+- **The drive panel no longer waits on the slowest network share.** Volume
+  probes run concurrently instead of serially — the refresh costs the slowest
+  probe, not the sum — and local drives are delivered before network shares,
+  so the card reader next to the machine never queues behind an SMB
+  round-trip. While the shares are still answering, the rows from the last
+  scan stay up rather than flickering out, and the Refresh button says
+  "Scanning…" instead of looking like a button that does nothing.
+- **A running job is visible as one.** The queue panel now carries a summary
+  line — stage, current file, percent, live rate and ETA — instead of leaving
+  the evidence in a thin strip of 30 px rows. The progress bar gained a
+  percent label and colours that survive the row being selected (the running
+  row is auto-selected, and an accent bar on the accent selection was
+  invisible on exactly the row that mattered). The rate and progress columns
+  are fixed-width, so updating values no longer shove the numbers being read.
+  A once-a-second repaint lets the displayed rate visibly decay during a
+  stall instead of freezing at its last healthy value.
+- **Simple mode's form rows no longer clip.** Inputs and checkboxes declare
+  the height their styling actually needs; at fractional display scales
+  (125%) the computed hint fell short and every field's text was sliced at
+  the bottom.
+
 ### Added
+
+- **"Start offload" says "Add to queue" when that is what it does.** Jobs run
+  one at a time; while one is running the button enqueues, and the ready line
+  says the job runs after the current one.
+- **Checksum pickers say what the choice costs.** MD5 sat in the same list as
+  XXHash3-64 looking like an equal choice; on the copy path, where every byte
+  is hashed once per stream, it is ~40x slower and can cap copy speed. The
+  desktop pickers, `--hash` help and `offloader info` now carry a speed note
+  per algorithm ("fastest", "~40x slower, legacy compatibility only", …).
 
 - **A `data` profile for generic large-data transfers.** The verified copy
   engine was never camera-specific — it reads every byte once, checksums it,

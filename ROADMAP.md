@@ -17,7 +17,11 @@ an oversight.
 ## Done
 
 Engine, CLI, five report formats (PDF, CSV, MHL 1.1, ASC MHL v2.0, HTML), the
-desktop app, and cross-platform CI.
+desktop app, and cross-platform CI. A first live card offload then drove a
+round of fixes: full verification as the default, windowed throughput/ETA,
+checksum-cost labels in every picker, a running-job summary line, the
+local-first parallel drive scan, jobs named after the volume label, and a PDF
+title that tells reports apart.
 
 The PDF matches a real ShotPut Pro report's geometry, measured from its content
 streams. ASC MHL is diffed against the reference implementation's own worked

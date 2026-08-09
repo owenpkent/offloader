@@ -90,13 +90,13 @@ offloader verify D:\video\080426\A001
 | `--source PATH` | card or folder to offload |
 | `--dest PATH` | destination root; repeat for multiple copies |
 | `--hash ALGO` | `xxh3-64` (default), `xxh3-128`, `xxh64`, `xxh64be`, `md5`, `sha1`, `sha256`, `c4`, `none` |
-| `--verify MODE` | `source-only` (default), `full`, `none` |
+| `--verify MODE` | `full` (default), `source-only`, `none` |
 | `--profile P` | `media` (default: ffprobe, thumbnails, BRAW) or `data` (generic transfer, no media probing) |
 | `--generic` | shorthand for `--profile data` |
 | `--report FMT[,FMT]` | `pdf` (default), `csv`, `mhl`, `ascmhl`, `html` |
 | `--report-dir PATH` | override the report location |
 | `--thumbs N` | frames per clip, 0 to disable (default 4) |
-| `--name NAME` | job name; defaults to the source folder name |
+| `--name NAME` | job name; defaults to the source folder name, or the volume label for a card offloaded from its root |
 | `--logo PATH` | image for the PDF header |
 | `--footer TEXT` | footer line for the PDF |
 | `--exclude GLOB` | extra filename pattern to skip; repeatable |
@@ -133,10 +133,13 @@ file involved still hashes exactly as recorded. See
 | --- | --- | --- |
 | `none` | copy only | nothing |
 | `source-only` | hashes the source as it is read and the bytes as they are written | corruption in transit |
-| `full` | additionally re-reads each destination file off disk and hashes it | the above, plus bad media and lying write caches |
+| `full` (default) | additionally re-reads each destination file off disk and hashes it | the above, plus bad media and lying write caches |
 
-`full` is the honest one: it is the only mode that proves what is actually on
-the destination, at the cost of reading everything twice.
+`full` is the honest one — the only mode that proves what is actually on the
+destination — which is why it is the default. The cost is one extra read of
+each copy at the destination's own speed: a fast SSD destination adds a few
+percent to the job, a spinning disk can approach doubling it. `source-only`
+is there for the run that is racing a deadline.
 
 `--paranoid` is orthogonal to all three. Every mode above compares against the
 source's checksum, which is computed from whatever the read returned — so a read
