@@ -433,3 +433,44 @@ def test_checksum_pickers_say_what_the_choice_costs(qapp, tmp_path):
     # The stored key must stay the bare algorithm id, not the display text.
     assert panel._algorithm.currentData() in {"xxh3-64"}
 
+
+def test_start_offload_says_add_to_queue_while_the_queue_is_busy(qapp, tmp_path):
+    """Jobs run one at a time; while one runs, the button enqueues rather than
+    starts, and promising "Start offload" was a small lie."""
+    panel = SimpleModePanel()
+    (tmp_path / "card").mkdir()
+    panel.set_source(tmp_path / "card")
+    panel.add_destination(tmp_path / "out")
+
+    assert panel._start.text() == "Start offload"
+    panel.set_queue_busy(True)
+    assert panel._start.text() == "Add to queue"
+    assert "after the current job" in panel._hint.text()
+    panel.set_queue_busy(False)
+    assert panel._start.text() == "Start offload"
+    assert "after the current job" not in panel._hint.text()
+
+
+def test_active_summary_promotes_stage_file_and_rate(monkeypatch):
+    from offloader.gui import queue_view
+    from offloader.gui import worker as worker_mod
+
+    clock = {"now": 0.0}
+    monkeypatch.setattr(worker_mod.time, "monotonic", lambda: clock["now"])
+
+    item = _running_item()
+    item.stage = "copy"
+    item.current_file = "A003_C001.braw"
+    item.fraction = 0.30
+    item.bytes_total = 1_000_000_000
+    for _ in range(3):
+        clock["now"] += 1.0
+        item.bytes_done += 100_000_000
+        item.record_progress(item.bytes_done)
+
+    text = queue_view._active_summary(item)
+    assert text.startswith("Copying A003_C001.braw")
+    assert "30%" in text and "/s" in text
+
+    item.state = JobState.PAUSED
+    assert queue_view._active_summary(item).startswith("Paused")

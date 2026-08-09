@@ -34,6 +34,7 @@ class SimpleModePanel(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._queue_busy = False
 
         self.drop_zone = SourceDropZone()
         self.drop_zone.pathChosen.connect(self._on_source_chosen)
@@ -128,6 +129,17 @@ class SimpleModePanel(QWidget):
             self._name.setPlaceholderText(Path(path).name or "Offload")
         self._sync()
 
+    def set_queue_busy(self, busy: bool) -> None:
+        """Tell the panel whether the queue is already working. Jobs run one
+        at a time, so while one is running the button cannot start anything â€”
+        it enqueues. It should say so, rather than promise an immediate
+        offload it cannot deliver."""
+        if busy == self._queue_busy:
+            return
+        self._queue_busy = busy
+        self._start.setText("Add to queue" if busy else "Start offload")
+        self._sync()
+
     def _sync(self) -> None:
         source = self.drop_zone.path
         destinations = self.destinations.paths()
@@ -144,7 +156,10 @@ class SimpleModePanel(QWidget):
             self._hint.setText("A destination sits inside the source â€” pick another.")
         else:
             copies = f"{len(destinations)} cop{'ies' if len(destinations) > 1 else 'y'}"
-            self._hint.setText(f"Ready: {source} â†’ {copies}")
+            ready = f"Ready: {source} â†’ {copies}"
+            if self._queue_busy:
+                ready += " â€” runs after the current job"
+            self._hint.setText(ready)
 
     @staticmethod
     def _overlaps(source: Path, destination: Path) -> bool:
