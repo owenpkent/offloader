@@ -183,6 +183,46 @@ assumed, now stated for any large data rather than only camera originals. It is
 deliberately not a sync tool — no two-way reconciliation, conflict resolution or
 partial-file updates. See [`ROADMAP.md`](ROADMAP.md).
 
+## Compared with robocopy
+
+robocopy moves bytes fast; Offloader proves the bytes arrived, and gives you
+the paperwork to prove it again later. The overlap is "copy a tree to another
+drive", but each is the wrong tool for the other's job.
+
+What Offloader does that robocopy cannot:
+
+- **Verification.** robocopy has no integrity checking (`/V` is verbose
+  logging, not verification): it trusts the OS write path. Offloader checksums
+  every byte as it is read and, with `--verify full`, evicts the page cache and
+  reads each copy back off the platter. A flaky USB bridge or failing cable
+  that corrupts data in transit passes robocopy and fails Offloader.
+- **Manifests.** CSV, MHL and ASC MHL are written beside every copy, so anyone
+  can re-verify the tree months later without the source. robocopy leaves
+  nothing behind but a log.
+- **One read, many destinations.** `--dest` repeats, so a slow card is read
+  once and fanned out. robocopy reads the source again for every destination.
+- **An answer to the real question.** "Is it safe to erase the source?"
+  robocopy can only say it issued the writes.
+
+What robocopy does that Offloader deliberately will not (these are decisions,
+recorded under "Not planned" in [`ROADMAP.md`](ROADMAP.md)):
+
+- **Mirroring and sync.** `/MIR`, deleting extras from the destination,
+  incremental reconciliation. Offloader is one-way and write-once because that
+  assumption is exactly what makes the "Verified" verdict meaningful, and a
+  tool that can delete from a destination is the wrong shape for one whose
+  verdict authorises erasing the source.
+- **Metadata fidelity beyond timestamps.** NTFS ACLs, alternate data streams,
+  junctions (`/COPYALL`, `/SEC`, backup mode). Camera cards have none of these.
+  Replicating a server share with permissions intact is robocopy's job, and it
+  does it well.
+
+So the rule of thumb: replication or sync on trusted hardware, use robocopy. A
+one-way transfer of data you cannot get back, use Offloader. (Using robocopy
+*inside* Offloader as the copy loop was measured and rejected: it copies faster
+but emits no checksums, so the verified workflow it implies costs two extra
+passes over the data. See [`docs/performance.md`](docs/performance.md).)
+
 ## The desktop app
 
 ```sh
