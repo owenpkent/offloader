@@ -286,9 +286,10 @@ The short version:
   proves nothing about the device.
 - Empty files, and verifications that may have been served from cache, are
   reported as warnings rather than folded into a "Verified" verdict.
-- Reads that fail for a transient reason are retried, and a file that only
-  succeeded on a later attempt is reported — a card that needs retries today is
-  a card to stop using.
+- Reads that fail for a transient reason are retried at the failing chunk, so
+  one marginal sector costs a re-read of 8 MiB rather than of the whole clip.
+  A file that only succeeded on a later attempt is reported, because a card
+  that needs retries today is a card to stop using.
 - Destinations past Windows' 260-character limit use the extended-length path
   prefix. `offloader info` reports whether your machine needs it.
 
@@ -356,13 +357,13 @@ what makes the report layer testable without moving bytes.
 
 ```sh
 pip install -e ".[dev]"
-pytest                      # 409 tests, ~33s
+pytest                      # 412 tests, ~33s
 pytest --fuzz               # same suite, 3000 examples per property (~2 min)
 ruff check src tests
 pytest --cov=offloader --cov-report=term-missing
 ```
 
-409 tests at 82% line coverage. They cover formatting against the reference's
+412 tests at 82% line coverage. They cover formatting against the reference's
 exact strings, checksum vectors and streaming equivalence, copy/verify
 behaviour including simulated destination corruption, pause/resume/cancel
 concurrency, retry discrimination, BRAW container parsing, ffprobe parsing,
@@ -415,7 +416,7 @@ deliberately will **not** become.
 
 Nearest up: verifying the ASC MHL directory hashes that are already written (so
 a rename is a mismatch rather than a footnote), an optional second read of the
-source, and chunk-level rather than whole-file retry for marginal cards.
+source, and grouping BRAW `.sidecar` files with their clips.
 
 ## Contributing
 

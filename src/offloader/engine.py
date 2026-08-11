@@ -13,6 +13,7 @@ import os
 import queue
 import shutil
 import threading
+import time
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -233,13 +234,22 @@ def _destination_for(source: Path, source_root: Path, dest_root: Path,
 
 def _copy_fanout(source: Path, targets: Sequence[Path], algorithm: str,
                  on_chunk: Callable[[int], None],
-                 control: JobControl | None = None) -> tuple[str, list[str]]:
+                 control: JobControl | None = None,
+                 retry_policy: retry_mod.RetryPolicy = retry_mod.NO_RETRY,
+                 on_read_retry: Callable[[int, int, BaseException, float], None]
+                 | None = None) -> tuple[str, list[str]]:
     """Stream `source` into every target at once.
 
     `targets` are the *in-flight* paths — the caller renames them into place
     once it is satisfied. Nothing here ever opens a final destination name, so a
     copy that fails or is interrupted cannot damage a good file already sitting
     there.
+
+    A transient source-read failure is retried per `retry_policy` at the failing
+    chunk: the source is reopened and the read resumed from the last chunk that
+    was delivered, so recovering a few bytes on a marginal card does not cost a
+    re-read of the whole clip. `on_read_retry(offset, attempt, exc, pause)` is
+    called before each such retry, on the reader thread.
 
     Returns the source checksum plus one checksum per target, computed from the
     bytes actually handed to each write() call.
@@ -263,25 +273,71 @@ def _copy_fanout(source: Path, targets: Sequence[Path], algorithm: str,
     failure: list[BaseException] = []
 
     def read_ahead() -> None:
-        """Keep the queue fed so the next read overlaps the current write."""
+        """Keep the queue fed so the next read overlaps the current write.
+
+        Transient read failures are retried here, at the failing chunk. The
+        hashers only ever see chunks that were read successfully, so resuming
+        from the last delivered byte needs no hasher rewind and no re-read of
+        what already landed. The handle is reopened for each retry because
+        after an I/O error its buffered state cannot be trusted.
+        """
+        reader = None
+        offset = 0       # bytes delivered to the queue: the resume point
+        attempt = 1      # attempts spent on the *current* chunk
         try:
-            with longpath.open_binary(source, "rb") as reader:
-                while not stop.is_set():
-                    if control is not None:
-                        control.checkpoint()
+            while not stop.is_set():
+                if control is not None:
+                    control.checkpoint()
+                try:
+                    if reader is None:
+                        reader = longpath.open_binary(source, "rb")
+                        if offset:
+                            reader.seek(offset)
                     chunk = reader.read(CHUNK_SIZE)
-                    if not chunk:
-                        break
-                    # Time-boxed so a consumer that died still lets us exit.
-                    while not stop.is_set():
+                except OSError as exc:
+                    if reader is not None:
                         try:
-                            chunks.put(chunk, timeout=0.2)
+                            reader.close()
+                        except OSError:
+                            pass
+                        reader = None
+                    if (not retry_mod.is_transient(exc)
+                            or attempt >= retry_policy.attempts):
+                        raise
+                    attempt += 1
+                    pause = retry_policy.wait_before(attempt)
+                    if on_read_retry is not None:
+                        on_read_retry(offset, attempt, exc, pause)
+                    # Sleep in slices so a pause or cancel is still honoured
+                    # while waiting out the backoff.
+                    deadline = time.monotonic() + pause
+                    while pause and not stop.is_set():
+                        if control is not None:
+                            control.checkpoint()
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
                             break
-                        except queue.Full:
-                            continue
+                        time.sleep(min(0.2, remaining))
+                    continue
+                attempt = 1
+                if not chunk:
+                    break
+                offset += len(chunk)
+                # Time-boxed so a consumer that died still lets us exit.
+                while not stop.is_set():
+                    try:
+                        chunks.put(chunk, timeout=0.2)
+                        break
+                    except queue.Full:
+                        continue
         except BaseException as exc:      # re-raised on the calling thread
             failure.append(exc)
         finally:
+            if reader is not None:
+                try:
+                    reader.close()
+                except OSError:
+                    pass
             # The sentinel must be delivered, not attempted: if the queue
             # happens to be full at EOF a dropped sentinel leaves the consumer
             # blocked on get() forever. Only give up once `stop` is set, which
@@ -454,11 +510,24 @@ def run(source_root: Path, options: OffloadOptions,
                                    0, _st.st_size,
                                    counters.job_bytes_done, counters.job_bytes_total))
 
-            def rewind(_partials=partials, _mark=bytes_at_start) -> None:
-                # A retry restarts the file, so discard what the failed attempt
-                # wrote and give back the progress it claimed.
+            # Chunk-level retries, recorded by the reader thread and reported
+            # once per file. Only recorded here: progress events keep coming
+            # from this thread's on_chunk, never from the reader.
+            chunk_retries = {"count": 0, "worst": 1}
+
+            def note_read_retry(offset: int, attempt: int, exc: BaseException,
+                                pause: float, _tally=chunk_retries) -> None:
+                _tally["count"] += 1
+                _tally["worst"] = max(_tally["worst"], attempt)
+
+            def rewind(_partials=partials, _mark=bytes_at_start,
+                       _tally=chunk_retries) -> None:
+                # A whole-file retry restarts the file, so discard what the
+                # failed attempt wrote, give back the progress it claimed, and
+                # start the chunk-retry tally over.
                 _discard(_partials)
                 counters.job_bytes_done = _mark
+                _tally.update(count=0, worst=1)
 
             def note_retry(attempt: int, exc: BaseException, pause: float,
                            _idx=index, _src=source, _st=stat) -> None:
@@ -470,9 +539,17 @@ def run(source_root: Path, options: OffloadOptions,
                     f"{_src.name}: read failed ({exc}); "
                     f"attempt {attempt} of {options.retry.attempts}")
 
+            # Two layers of retry. The reader inside _copy_fanout retries a
+            # transient read at the failing chunk, which is the cheap recovery:
+            # a marginal sector costs a re-read of 8 MiB, not of the whole
+            # clip. This outer call is the fallback for everything the chunk
+            # retry cannot reach (opening a target, a write to a blipping
+            # network destination) and for reads whose chunk retries were
+            # exhausted, where it restarts the file exactly as before.
             (src_sum, dst_sums), used = retry_mod.call(
                 lambda _src=source, _partials=partials: _copy_fanout(
-                    _src, _partials, options.algorithm, on_chunk, control),
+                    _src, _partials, options.algorithm, on_chunk, control,
+                    retry_policy=options.retry, on_read_retry=note_read_retry),
                 options.retry, on_retry=note_retry, before_retry=rewind,
             )
             if used > 1:
@@ -481,6 +558,12 @@ def run(source_root: Path, options: OffloadOptions,
                 job.warnings.append(
                     f"{source.name} copied on attempt {used} of "
                     f"{options.retry.attempts} — the source may be failing")
+            if chunk_retries["count"]:
+                plural = "s" if chunk_retries["count"] != 1 else ""
+                job.warnings.append(
+                    f"{source.name}: {chunk_retries['count']} chunk read{plural} "
+                    f"recovered on retry, worst attempt {chunk_retries['worst']} "
+                    f"of {options.retry.attempts}; the source may be failing")
             entry.checksum = src_sum or None
         except JobCancelled:
             _discard(partials)

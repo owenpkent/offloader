@@ -128,11 +128,14 @@ def test_a_failed_copy_leaves_the_previous_good_copy_alone(tmp_path: Path,
         def read(self, _size=-1):
             raise OSError("The device is not ready")
 
+        def close(self):
+            self._handle.close()
+
         def __enter__(self):
             return self
 
         def __exit__(self, *args):
-            self._handle.close()
+            self.close()
 
     def flaky_open(path, mode="r", *args, **kwargs):
         handle = real_open(path, mode, *args, **kwargs)

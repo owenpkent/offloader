@@ -185,8 +185,16 @@ delay, so only errors with a plausible transient cause qualify: `EIO`, `EBUSY`,
 `ERROR_SHARING_VIOLATION` (usually antivirus, usually brief) and
 `ERROR_IO_DEVICE`. `ENOENT` and `ENOSPC` fail immediately.
 
-A retry restarts the whole file rather than resuming, because a partial read
-leaves the running checksum meaningless. The partial is discarded and the
+A transient read failure is retried at the failing chunk. The running checksum
+only ever sees chunks that were read successfully, so its state is already at
+the resume point: the reader reopens the source (after an I/O error the
+handle's buffered state cannot be trusted), seeks back to the last chunk it
+delivered and reads on. One marginal sector costs a re-read of at most 8 MiB,
+not of the whole clip, and the bytes already hashed are never counted twice.
+
+Failures the chunk retry cannot reach fall back to restarting the whole file:
+opening a target, a write to a blipping network destination, or a chunk that
+never reads good within its attempts. There the partial is discarded and the
 progress it claimed is given back, so a retry cannot push the job past 100 %.
 
 **A recovered file is still reported.** A card that reads on the third attempt
