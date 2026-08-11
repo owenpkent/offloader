@@ -357,13 +357,13 @@ what makes the report layer testable without moving bytes.
 
 ```sh
 pip install -e ".[dev]"
-pytest                      # 412 tests, ~33s
+pytest                      # 413 tests, ~33s
 pytest --fuzz               # same suite, 3000 examples per property (~2 min)
 ruff check src tests
 pytest --cov=offloader --cov-report=term-missing
 ```
 
-412 tests at 82% line coverage. They cover formatting against the reference's
+413 tests at 82% line coverage. They cover formatting against the reference's
 exact strings, checksum vectors and streaming equivalence, copy/verify
 behaviour including simulated destination corruption, pause/resume/cancel
 concurrency, retry discrimination, BRAW container parsing, ffprobe parsing,

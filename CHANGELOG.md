@@ -33,7 +33,9 @@ project uses [semantic versioning][semver].
   failures the chunk retry cannot reach (opening a target, a write to a
   blipping network destination, a chunk that never reads good), and a recovery
   is still reported, because a card that needs retries today is a card to stop
-  using.
+  using. The retry budget is per chunk, deliberately: a card with many marginal
+  sectors gets its full set of attempts at each one, the way a recovery tool
+  would, at a cost in time rather than integrity.
 
 ### Fixed
 

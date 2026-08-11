@@ -170,6 +170,12 @@ known.
   safety one, and should not be used on a tree whose integrity is in question.
 - **Concurrent instances.** One app instance serialises its queue. Two instances
   pointed at the same destination are not coordinated.
+- **A source that changes while it is being read.** The checksum is of the
+  bytes that were read, so a file modified mid-copy, or swapped between a
+  retry's close and reopen, produces a destination that faithfully matches
+  what was read rather than any one version of the source. The tool cannot
+  freeze the source; offload from media nothing else is writing to. (A swap
+  that changes the size is caught by the size check.)
 
 ## Marginal media
 
@@ -191,6 +197,12 @@ the resume point: the reader reopens the source (after an I/O error the
 handle's buffered state cannot be trusted), seeks back to the last chunk it
 delivered and reads on. One marginal sector costs a re-read of at most 8 MiB,
 not of the whole clip, and the bytes already hashed are never counted twice.
+
+The retry budget is per chunk, deliberately: a card with many marginal sectors
+gets `--retries` attempts at each one, the way a recovery tool would, rather
+than one budget the whole file must share. On a badly failing card that costs
+time, never integrity; progress stays live, pause and cancel are honoured
+during the backoff waits, and every recovery is counted in the file's warning.
 
 Failures the chunk retry cannot reach fall back to restarting the whole file:
 opening a target, a write to a blipping network destination, or a chunk that
