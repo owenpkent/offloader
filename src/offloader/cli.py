@@ -167,8 +167,8 @@ def _common_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--exclude", action="append", default=[], metavar="GLOB",
                         help="extra filename pattern to skip (repeatable)")
     parser.add_argument("--retries", type=int, default=3, metavar="N",
-                        help="attempts per file when a read fails for a "
-                             "transient reason (default: %(default)s, 1 disables)")
+                        help="attempts per failing read when the error looks "
+                             "transient (default: %(default)s, 1 disables)")
     parser.add_argument("--retry-wait", type=float, default=2.0, metavar="SECONDS",
                         help="pause before the first retry, backing off after "
                              "(default: %(default)s)")

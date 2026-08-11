@@ -99,7 +99,9 @@ Two of the three have since been adopted; both are covered in
   machine that has `LongPathsEnabled` set.
 - **Retry on flaky media.** `/R` and `/W` retry a failing read, which matters
   with a marginal card or reader. *Since adopted* — `--retries` and
-  `--retry-wait`, restricted to errors with a plausible transient cause.
+  `--retry-wait`, restricted to errors with a plausible transient cause, and
+  retried at the failing chunk rather than the whole file, so one marginal
+  sector does not cost a re-read of the clip.
 - **Metadata fidelity.** ACLs, alternate data streams, junctions. Still not
   handled. Not relevant to camera originals, but relevant if anyone points this
   at a general file tree.

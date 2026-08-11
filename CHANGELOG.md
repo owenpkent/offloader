@@ -22,6 +22,21 @@ project uses [semantic versioning][semver].
   and is selectable in the desktop app's Simple mode and preset editor. This is
   a one-way verified transfer, not two-way sync — see `ROADMAP.md`.
 
+### Changed
+
+- **Transient read failures now retry at the failing chunk, not the whole
+  file.** The reader reopens the source and resumes from the last chunk it
+  delivered, so recovering a few bytes on a marginal card no longer costs a
+  re-read of an entire clip. No hasher rewind is needed: the checksums only
+  ever see chunks that were read successfully, so the running state is already
+  at the resume point. Restarting the whole file remains the fallback for
+  failures the chunk retry cannot reach (opening a target, a write to a
+  blipping network destination, a chunk that never reads good), and a recovery
+  is still reported, because a card that needs retries today is a card to stop
+  using. The retry budget is per chunk, deliberately: a card with many marginal
+  sectors gets its full set of attempts at each one, the way a recovery tool
+  would, at a cost in time rather than integrity.
+
 ### Fixed
 
 Found by adding CI on Linux and macOS — the suite had only ever run on Windows.

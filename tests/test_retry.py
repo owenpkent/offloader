@@ -172,7 +172,7 @@ def _options(tmp_path: Path, **overrides) -> engine.OffloadOptions:
 
 
 class _FlakyReader:
-    """A reader that fails the first N whole-file attempts, then works."""
+    """A reader that fails the first N read calls, then works."""
 
     def __init__(self, handle, failures: dict, limit: int):
         self._handle = handle
@@ -185,11 +185,17 @@ class _FlakyReader:
             raise _os_error(errno.EIO, winerror=1117)
         return self._handle.read(size)
 
+    def seek(self, pos, whence=0):
+        return self._handle.seek(pos, whence)
+
+    def close(self):
+        self._handle.close()
+
     def __enter__(self):
         return self
 
     def __exit__(self, *args):
-        self._handle.close()
+        self.close()
 
 
 def _patch_source_reads(monkeypatch, card: Path, failures: dict, limit: int):
@@ -272,11 +278,17 @@ def test_progress_is_not_double_counted_across_retries(tmp_path: Path,
                 raise _os_error(errno.EIO, winerror=1117)
             return self._handle.read(size)
 
+        def seek(self, pos, whence=0):
+            return self._handle.seek(pos, whence)
+
+        def close(self):
+            self._handle.close()
+
         def __enter__(self):
             return self
 
         def __exit__(self, *args):
-            self._handle.close()
+            self.close()
 
     def flaky_open(path, mode="r", *args, **kwargs):
         handle = real_open(path, mode, *args, **kwargs)
@@ -315,11 +327,14 @@ def test_a_permanent_error_fails_without_burning_retries(tmp_path: Path,
             attempts["n"] += 1
             raise _os_error(errno.ENOENT)
 
+        def close(self):
+            self._handle.close()
+
         def __enter__(self):
             return self
 
         def __exit__(self, *args):
-            self._handle.close()
+            self.close()
 
     def gone_open(path, mode="r", *args, **kwargs):
         handle = real_open(path, mode, *args, **kwargs)
@@ -337,6 +352,146 @@ def test_a_permanent_error_fails_without_burning_retries(tmp_path: Path,
 
     assert job.final_status == "Failed"
     assert attempts["n"] == 1
+
+
+# ------------------------------------------------------- chunk-level retry
+
+
+def _patch_chunk_failure(monkeypatch, card: Path, state: dict):
+    """Wrap source reads so reads at the offsets in `state['fail_at']` fail up
+    to `state['limit']` times each, recording every open, seek and successful
+    read position. `state['failures']` tallies failures per offset."""
+    real_open = builtins.open
+
+    class ChunkFlaky:
+        def __init__(self, handle):
+            self._handle = handle
+            state["opens"] += 1
+
+        def read(self, size=-1):
+            pos = self._handle.tell()
+            if pos in state["fail_at"] and \
+                    state["failures"].get(pos, 0) < state["limit"]:
+                state["failures"][pos] = state["failures"].get(pos, 0) + 1
+                raise _os_error(errno.EIO, winerror=23)   # CRC error
+            state["reads"].append(pos)
+            return self._handle.read(size)
+
+        def seek(self, pos, whence=0):
+            state["seeks"].append(pos)
+            return self._handle.seek(pos, whence)
+
+        def close(self):
+            self._handle.close()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.close()
+
+    def flaky_open(path, mode="r", *args, **kwargs):
+        handle = real_open(path, mode, *args, **kwargs)
+        try:
+            inside = Path(path).resolve().is_relative_to(card.resolve())
+        except (OSError, ValueError):
+            inside = False
+        if inside and "r" in str(mode) and "b" in str(mode):
+            return ChunkFlaky(handle)
+        return handle
+
+    monkeypatch.setattr(builtins, "open", flaky_open)
+
+
+def test_a_mid_file_failure_resumes_at_the_failed_chunk(tmp_path: Path,
+                                                        monkeypatch):
+    """One bad sector must cost a re-read of one chunk, not of the whole clip:
+    the reader reopens, seeks back to the last delivered chunk boundary and
+    carries on, so the chunks already hashed are never read twice."""
+    card = tmp_path / "card"
+    card.mkdir()
+    payload = (b"A" * engine.CHUNK_SIZE + b"B" * engine.CHUNK_SIZE + b"C" * 1000)
+    (card / "A001_C001.mov").write_bytes(payload)
+
+    state = {"fail_at": {engine.CHUNK_SIZE}, "failures": {}, "limit": 1,
+             "opens": 0, "reads": [], "seeks": []}
+    _patch_chunk_failure(monkeypatch, card, state)
+    job = engine.run(card, _options(tmp_path))
+    monkeypatch.undo()
+
+    assert job.final_status == "Verified"
+    assert (tmp_path / "dest" / "A001_C001.mov").read_bytes() == payload
+    assert state["opens"] == 2, "expected one reopen, not a whole-file restart"
+    assert state["seeks"] == [engine.CHUNK_SIZE], \
+        "the retry must resume at the failed chunk boundary"
+    assert state["reads"].count(0) == 1, "the first chunk was re-read"
+
+
+def test_a_chunk_recovery_is_still_reported(tmp_path: Path, monkeypatch):
+    """Recovering cheaply does not make the card healthy; the warning that a
+    read needed a second attempt must survive the chunk-level path."""
+    card = tmp_path / "card"
+    card.mkdir()
+    (card / "A001_C001.mov").write_bytes(b"x" * (engine.CHUNK_SIZE + 500))
+
+    state = {"fail_at": {engine.CHUNK_SIZE}, "failures": {}, "limit": 1,
+             "opens": 0, "reads": [], "seeks": []}
+    _patch_chunk_failure(monkeypatch, card, state)
+    job = engine.run(card, _options(tmp_path))
+    monkeypatch.undo()
+
+    assert job.final_status == "Verified"
+    assert any("recovered on retry" in w and "may be failing" in w
+               for w in job.warnings)
+
+
+def test_exhausted_chunk_retries_fall_back_to_a_file_restart(tmp_path: Path,
+                                                             monkeypatch):
+    """A chunk that never reads good exhausts its per-chunk attempts; the
+    whole-file retry then restarts the file as before, and the file fails once
+    that is exhausted too. For a single bad chunk, attempts stay bounded by
+    attempts x attempts."""
+    card = tmp_path / "card"
+    card.mkdir()
+    (card / "A001_C001.mov").write_bytes(b"x" * 1000)
+
+    state = {"fail_at": {0}, "failures": {}, "limit": 10 ** 9,
+             "opens": 0, "reads": [], "seeks": []}
+    _patch_chunk_failure(monkeypatch, card, state)
+    job = engine.run(card, _options(
+        tmp_path, retry=retry.RetryPolicy(attempts=2, delay=0)))
+    monkeypatch.undo()
+
+    assert job.final_status == "Failed"
+    assert state["failures"] == {0: 4}, \
+        "2 chunk attempts per file attempt, 2 file attempts"
+    assert list((tmp_path / "dest").rglob(f"*{engine.PARTIAL_SUFFIX}")) == []
+
+
+def test_each_marginal_chunk_gets_its_own_attempt_budget(tmp_path: Path,
+                                                         monkeypatch):
+    """The retry budget is per chunk, not per file. A card with several
+    marginal sectors gets a fresh set of attempts at each one, the way a
+    recovery tool would: here two chunks each need a second attempt under a
+    two-attempt policy, which a shared per-file budget would fail. Every
+    recovery is counted in the aggregated warning."""
+    card = tmp_path / "card"
+    card.mkdir()
+    payload = (b"A" * engine.CHUNK_SIZE + b"B" * engine.CHUNK_SIZE + b"C" * 1000)
+    (card / "A001_C001.mov").write_bytes(payload)
+
+    state = {"fail_at": {0, engine.CHUNK_SIZE}, "failures": {}, "limit": 1,
+             "opens": 0, "reads": [], "seeks": []}
+    _patch_chunk_failure(monkeypatch, card, state)
+    job = engine.run(card, _options(
+        tmp_path, retry=retry.RetryPolicy(attempts=2, delay=0)))
+    monkeypatch.undo()
+
+    assert job.final_status == "Verified"
+    assert (tmp_path / "dest" / "A001_C001.mov").read_bytes() == payload
+    assert state["opens"] == 3, "one reopen per marginal chunk, no file restart"
+    assert any("2 chunk reads recovered" in w and "worst attempt 2 of 2" in w
+               for w in job.warnings)
 
 
 def test_retry_is_configurable_from_a_preset(tmp_path: Path):

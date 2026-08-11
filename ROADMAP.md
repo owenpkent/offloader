@@ -24,6 +24,11 @@ streams. ASC MHL is diffed against the reference implementation's own worked
 example. BRAW metadata comes out of the container because ffprobe cannot read
 the format at all, and has been run over 510 real clips from two camera bodies.
 
+Transient read failures retry at the failing chunk rather than restarting the
+file: the reader resumes from the last chunk it delivered, so one marginal
+sector costs a re-read of 8 MiB, not of a 79 GB clip. Whole-file restart
+remains the fallback for everything the chunk retry cannot reach.
+
 ## Next
 
 ### Verify what is already written
@@ -50,15 +55,6 @@ the cost of a second pass. Worth having as an option for irreplaceable material,
 not as a default.
 
 *Where:* `engine.py`, alongside the existing verification modes.
-
-### Retry the source, not just the read
-
-Retry currently restarts the whole file on a transient error. For a marginal
-card that fails at one sector, re-reading the entire 79 GB clip to recover a few
-bytes is expensive. Retrying at the chunk level would need the hasher state
-rewound to a chunk boundary — doable, and worth it on failing media.
-
-*Where:* `engine.py` `_copy_fanout`, with `retry.py` unchanged.
 
 ### `.sidecar` and companion grouping
 
