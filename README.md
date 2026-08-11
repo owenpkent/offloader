@@ -102,7 +102,7 @@ offloader verify D:\video\080426\A001
 | `--exclude GLOB` | extra filename pattern to skip; repeatable |
 | `--flat` | do not recreate the source folder structure |
 | `--skip-existing` | skip files already present at matching size |
-| `--retries N` | attempts per file on a transient read failure (default 3, 1 disables) |
+| `--retries N` | attempts per failing read on a transient error (default 3, 1 disables) |
 | `--retry-wait SECONDS` | pause before the first retry, backing off after (default 2) |
 | `--no-probe` | skip ffprobe metadata and thumbnails |
 | `--quiet` | suppress progress |
