@@ -198,6 +198,12 @@ known.
   `clip.MOV` are still two files at the source and one at the destination.
   Detecting it means asking the destination filesystem what it considers
   distinct, which is not implemented.
+- **Duplicate detection for cards offloaded before this version.** The
+  fingerprint now includes the source's name as well as its listing, so entries
+  recorded earlier no longer match and their cards will not raise the
+  "already offloaded" warning. It fails in the safe direction, since a missing
+  warning is a wasted hour rather than lost footage, and each card re-records
+  correctly the next time it is pulled.
 - **A source that changes while it is being read.** The checksum is of the
   bytes that were read, so a file modified mid-copy, or swapped between a
   retry's close and reopen, produces a destination that faithfully matches
@@ -211,6 +217,12 @@ Cards and readers fail intermittently long before they fail for good. A read
 that fails for a transient-looking reason is retried — three attempts by
 default, backing off from two seconds, matching robocopy's `/R` and `/W`. Tune
 with `--retries` and `--retry-wait`, or per preset.
+
+Those values are clamped where the policy is built, not where it is used:
+at least one attempt, and no negative delay or backoff. `presets.json` is a
+file people edit by hand, and the failure it prevents is a specific one, since
+`time.sleep` raises on a negative argument. A nonsensical retry setting should
+cost you the retry, not the transfer.
 
 The discrimination matters more than the retrying. Retrying a missing file, a
 permission denial or a full disk wastes time and buries the real fault in a

@@ -255,10 +255,11 @@ destination file rather than leaving something that looks complete.
 
 Two guards run before anything is queued:
 
-- **Duplicate offload protection.** The source's file listing — names and sizes,
-  never contents — is fingerprinted and checked against past offloads. Re-pulling
-  a card you already have gets a warning naming the earlier job and when it ran.
-  Only successful offloads count; a cancelled attempt is a reason to run again.
+- **Duplicate offload protection.** The source's name and its file listing (names
+  and sizes, never contents) are fingerprinted and checked against past offloads.
+  Re-pulling a card you already have gets a warning naming the earlier job and
+  when it ran. Only successful offloads count; a cancelled attempt is a reason to
+  run again.
 - **Space and containment checks.** A destination inside the source is refused
   outright; one without room prompts before queueing.
 
