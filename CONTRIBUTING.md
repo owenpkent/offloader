@@ -37,8 +37,8 @@ pip install -e ".[dev]"
 `ffmpeg` and `ffprobe` on `PATH` are optional — the suite runs without them.
 
 ```sh
-pytest                      # ~400 tests, about 33s
-pytest --fuzz               # property tests at 3000 examples each, about 2 min
+pytest                      # 482 tests, about 20s
+pytest --fuzz               # property tests at 3000 examples each, about 3 min
 ruff check src tests
 pytest --cov=offloader --cov-report=term-missing
 ```
@@ -63,6 +63,10 @@ suite fakes all of it:
 | Corruption | flip a byte and re-verify; size stays identical, checksum does not |
 | An interrupted recording | write a BRAW with `include_moov=False` |
 | A deep Windows path | build until `len(str(path)) > 260` — do not hard-code, the temp root's length varies |
+| A lying BRAW header | `tests/test_fuzz_edges.py::atom` declares whatever size you pass, including the 64-bit extended form |
+| A directory-junction cycle | `tests/test_fuzz_edges.py` shells out to `mklink /J` and skips when it cannot |
+| Two files that want one destination | `tests/test_fuzz_edges.py` flattens a tree with a repeated basename |
+| ffprobe returning `"N/A"` | `tests/test_edge_cases.py` stubs `subprocess.run`; it is ordinary output, not corruption |
 
 If you have real hardware, there are tests that use it and skip cleanly when it
 is absent (`test_braw.py::test_synthetic_fixture_matches_a_real_camera_file`).

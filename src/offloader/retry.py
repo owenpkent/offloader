@@ -58,13 +58,28 @@ _PERMANENT_ERRNO = {
 }
 
 
+#: A ceiling for a backoff that overflowed. Five minutes is already far past
+#: the point where a card is worth waiting on.
+_MAX_WAIT = 300.0
+
+
 @dataclass(frozen=True)
 class RetryPolicy:
-    """How hard to try again. `attempts` counts the first try."""
+    """How hard to try again. `attempts` counts the first try.
+
+    Values are clamped rather than rejected. These come out of presets.json,
+    which is a hand-editable file: a nonsensical delay should not raise out of
+    the middle of a transfer, and `time.sleep` raises on a negative argument.
+    """
 
     attempts: int = 3
     delay: float = 2.0
     backoff: float = 1.5
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "attempts", max(1, int(self.attempts)))
+        object.__setattr__(self, "delay", max(0.0, float(self.delay)))
+        object.__setattr__(self, "backoff", max(0.0, float(self.backoff)))
 
     @property
     def enabled(self) -> bool:
@@ -74,7 +89,11 @@ class RetryPolicy:
         """Seconds to wait before `attempt` (1-based; attempt 1 never waits)."""
         if attempt <= 1:
             return 0.0
-        return self.delay * (self.backoff ** (attempt - 2))
+        try:
+            return max(0.0, self.delay * (self.backoff ** (attempt - 2)))
+        except OverflowError:
+            return _MAX_WAIT
+
 
 
 NO_RETRY = RetryPolicy(attempts=1)

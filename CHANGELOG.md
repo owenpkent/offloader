@@ -39,6 +39,86 @@ project uses [semantic versioning][semver].
 
 ### Fixed
 
+Found by fuzzing the edges: `tests/test_fuzz_edges.py` for what a card can
+contain, `tests/test_edge_cases.py` for the layers between the bytes and the
+paperwork. Each fix has the reproduction that found it.
+
+- **Flattening could silently destroy a file and certify it.** With
+  `--flat` (and the desktop app's "Recreate the source folder structure"
+  unticked), every source mapped to `destination / name`, and nothing checked
+  two sources for one target. Two clips of the same name in different card
+  folders left one file on disk and *both* rows reading VERIFIED, because each
+  was verified as it landed, before the next overwrote it. Full verification
+  passed them too. The collision is now detected against the scan, before a
+  byte moves, and the job refuses with both paths named. Paths compare through
+  `os.path.normcase`, so on Windows this also catches two names differing only
+  in case: distinct on the case-sensitive volume they came from, one file on
+  the volume they are going to.
+- **One malformed clip aborted the whole offload.** `engine.run` called
+  `probe()` with no guard, and `probe()` did not guard its own parsers, so a
+  BRAW whose atom headers lied, or an ordinary clip whose audio stream ffprobe
+  described as `"N/A"`, raised out of the middle of a job. The clips after it
+  were never copied and no report was written. Metadata is now contained: the
+  bytes are already copied and verified by that point, so an unreadable
+  container costs its own metadata and a line in the report, not the rest of
+  the card.
+- **The BRAW parser trusted the file's own size fields.** `_read_timing`
+  indexed and unpacked at offsets derived from an atom's *declared* size
+  without checking the buffer reached that far; `_descend` recursed once per
+  nested container with no depth limit, so a 16 KB file exhausted the stack;
+  and `_find_moov` issued a read for whatever size the header claimed, up to
+  2^64. Offsets are now bounded by each atom's real end, depth is capped, and
+  the read is clamped to the bytes actually present.
+- **A filename could stop the paperwork.** `write_csv` wrote to a strict UTF-8
+  stream with no filtering, so a name carrying a lone surrogate (what
+  `os.listdir` returns for any POSIX name that is not valid UTF-8, and what
+  NTFS accepts outright) raised mid-row after the copy had succeeded. ASC MHL
+  had the same gap in a worse place: control characters produced a manifest
+  that would not reparse, and `read_manifest_hashes` answers a parse failure
+  with an empty dict, so the file left the chain of custody with nothing to
+  show for it. The XML 1.0 character filter that `reports/mhl.py` always had
+  now lives in `util` and covers all three writers.
+- **Verify called good footage corrupt.** Digests were compared with a plain
+  case-sensitive `==`, so a manifest from a tool that emits uppercase hex
+  reported every byte-identical file as a mismatch. Comparison is now per
+  algorithm: case-folded for hex, exact for C4, whose base58 alphabet uses
+  case to carry information.
+- **A directory junction sent the scanner round in circles.** `scan` was a bare
+  `os.walk` with no cycle guard, and `Path.is_symlink()` is False for a
+  junction, so the usual check would not have helped. It terminated only
+  because Windows refuses paths past MAX_PATH, having by then returned the same
+  file dozens of times. Directories are now visited at most once each.
+- **A corrupt history blocked offloading**, which is precisely what it exists
+  not to do. `History()` mapped `from_dict` over the file with no guard, and
+  `from_dict` did bare `int()`/`list()` conversions, so a hand-edited or
+  half-written `history.json` raised out of the constructor. A record that will
+  not parse is now dropped. `read_json` also treats a file that is not valid
+  UTF-8 as unreadable rather than letting `UnicodeDecodeError`, which is a
+  ValueError and not an OSError, escape.
+- **Job names could collide after 999.** `naming.build`'s two exhaustion
+  fallbacks returned a name without checking it was free, so two jobs would
+  share one report folder: the exact outcome the deduplication exists to
+  prevent. Both searches are now bounded by the number of taken names, and the
+  suffix search always produces one more candidate than there are names to
+  avoid.
+- **Byte counts printed a mantissa of 1000** at every decade boundary
+  (`999_999` rendered as `1000.0 KB`), and negative counts never promoted out
+  of bytes at all, because the unit test came before the rounding and ignored
+  the sign. `nan` rendered as `nan TB`.
+- **A frame rate of `inf` crashed the report.** `_parse_rate` accepted `"inf"`
+  and `"nan"` because `float()` does, and every fps formatter then called
+  `round()` on the result, which does not. The parser now rejects a rate that
+  is not finite and positive, and the formatters degrade instead of raising.
+- **Smaller ones, same sweep.** `hash_file` accepted a `chunk_size` of 0 and
+  returned the empty-file digest for a file that was not empty. `RetryPolicy`
+  validated nothing, so a hand-edited negative delay reached `time.sleep`,
+  which raises on one. `naming.render` substituted into values it had already
+  placed, so a card folder genuinely named `{index}` had its name overwritten
+  by the sequence number. `history.fingerprint` hashed the file listing and
+  nothing else, so every empty source shared one digest. `config_file` joined
+  with pathlib's `/`, which discards the left operand when the right is
+  absolute.
+
 Found by adding CI on Linux and macOS — the suite had only ever run on Windows.
 
 - **A preset with explicit nulls loaded unusable.** `dict.get(key, default)`

@@ -21,7 +21,7 @@ from xml.etree import ElementTree as ET
 
 from .ascmhl import ASCMHL_DIRNAME
 from .ascmhl import NAMESPACE as ASCMHL_NAMESPACE
-from .hashers import ALGORITHMS, hash_file
+from .hashers import ALGORITHMS, get_algorithm, hash_file
 from .integrity import evict_from_cache
 
 
@@ -198,7 +198,10 @@ def verify_manifest(
                             detail=str(exc)))
             continue
 
-        matched = actual == expected
+        # Case-folded for hex, exact for C4. An MHL is an interchange format,
+        # and plenty of tools write their hex uppercase: comparing those with
+        # `==` calls every byte-identical file a mismatch.
+        matched = get_algorithm(algorithm_key).digests_match(actual, expected)
         report.verdicts.append(FileVerdict(
             path,
             EntryResult.OK if matched else EntryResult.MISMATCH,

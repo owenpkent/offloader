@@ -24,6 +24,7 @@ from xml.etree import ElementTree as ET
 from . import PRODUCT_NAME, __version__
 from .hashers import ALGORITHMS, c4_of_bytes, get_algorithm, new_hasher
 from .models import FileStatus, Job
+from .util import xml_safe
 
 ASCMHL_DIRNAME = "ascmhl"
 CHAIN_FILENAME = "ascmhl_chain.xml"
@@ -201,10 +202,33 @@ def _previous_hashes(root: Path) -> dict[str, dict[str, str]]:
 # ------------------------------------------------------------------ writing
 
 
+def _sanitise_tree(element: ET.Element) -> None:
+    """Filter every text node and attribute to what XML can actually carry.
+
+    `<path>` text is a filename off a filesystem. A control character in one
+    produces a manifest that will not parse, and `read_manifest_hashes`
+    answers a parse failure with an empty dict, so the file would drop out of
+    the chain of custody with nothing to show for it. A lone surrogate is
+    worse still: it fails in the UTF-8 encode below, before the manifest
+    exists at all.
+
+    Done over the finished tree rather than at each assignment, so a call site
+    added later cannot forget.
+    """
+    for node in element.iter():
+        if node.text is not None:
+            node.text = xml_safe(node.text)
+        if node.tail is not None:
+            node.tail = xml_safe(node.tail)
+        for key, value in list(node.attrib.items()):
+            node.attrib[key] = xml_safe(value)
+
+
 def _indent_and_write(element: ET.Element, path: Path) -> None:
     # ElementTree writes the declaration with single quotes; the reference
     # implementation and the spec's examples use double. Match them, so a
     # manifest can be diffed against another tool's output directly.
+    _sanitise_tree(element)
     ET.indent(element, space="  ")
     declaration = '<?xml version="1.0" encoding="UTF-8"?>\n'
     body = ET.tostring(element, encoding="unicode")
@@ -260,6 +284,11 @@ def write_manifest(job: Job, root: Path, *, destination_index: int = 0,
             relative = Path(destination.path).relative_to(root)
         except ValueError:
             continue
+        # Filter here, where a filesystem name first enters the manifest, so
+        # the structure hashes below and the <path> text they describe are
+        # computed from the same string. A lone surrogate would otherwise
+        # reach _structure_entry's UTF-8 encode and abort the manifest.
+        relative = Path(xml_safe(relative.as_posix()))
 
         key = relative.as_posix()
         if destination.status is FileStatus.FAILED:

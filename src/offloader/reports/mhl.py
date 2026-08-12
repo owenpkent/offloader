@@ -16,34 +16,18 @@ from xml.etree import ElementTree as ET
 
 from .. import PRODUCT_NAME, __version__
 from ..models import Job
+from ..util import xml_safe
 
 _MHL_VERSION = "1.1"
 
-#: XML 1.0 forbids most C0 control characters outright — they cannot even be
+#: XML 1.0 forbids most C0 control characters outright: they cannot even be
 #: written as character references. ElementTree emits them raw, producing a
 #: document no parser will read. One stray control byte in one filename would
-#: therefore strand the verification of the *entire* delivery, so it is
-#: replaced with U+FFFD rather than passed through.
-#: U+FFFD REPLACEMENT CHARACTER.
-_REPLACEMENT = chr(0xFFFD)
-
-
-def _is_xml_char(code: int) -> bool:
-    """The XML 1.0 Char production."""
-    return (
-        code in (0x09, 0x0A, 0x0D)
-        or 0x20 <= code <= 0xD7FF
-        or 0xE000 <= code <= 0xFFFD
-        or 0x10000 <= code <= 0x10FFFF
-    )
-
-
-def _xml_safe(text: object) -> str:
-    """Text ElementTree can serialise and a parser can read back."""
-    return "".join(
-        character if _is_xml_char(ord(character)) else _REPLACEMENT
-        for character in str(text)
-    )
+#: therefore strand the verification of the *entire* delivery.
+#:
+#: The filter lives in util now, so the ASC MHL writer and the CSV writer get
+#: the same guarantee instead of each having to rediscover it.
+_xml_safe = xml_safe
 
 
 def _iso(value: float | _dt.datetime) -> str:
