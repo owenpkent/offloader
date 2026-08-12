@@ -6,7 +6,24 @@ import csv
 from pathlib import Path
 
 from ..models import Job
-from ..util import format_file_datetime, format_size
+from ..util import format_file_datetime, format_size, xml_safe
+
+
+class _SafeWriter:
+    """A csv.writer that cannot be killed by a filename.
+
+    The underlying stream is UTF-8 with the default strict error handling, so
+    a name carrying a lone surrogate raises UnicodeEncodeError mid-row and
+    takes the whole report with it. Filtering here covers every column at
+    once, and matches what the MHL writer has always done.
+    """
+
+    def __init__(self, writer) -> None:
+        self._writer = writer
+
+    def writerow(self, values) -> None:
+        self._writer.writerow(
+            [xml_safe(v) if isinstance(v, str) else v for v in values])
 
 COLUMNS = [
     "File Name",
@@ -45,7 +62,7 @@ def write_csv(job: Job, path: Path, *, delimiter: str = ",", **_options) -> Path
     path.parent.mkdir(parents=True, exist_ok=True)
 
     with open(path, "w", newline="", encoding="utf-8") as handle:
-        writer = csv.writer(handle, delimiter=delimiter)
+        writer = _SafeWriter(csv.writer(handle, delimiter=delimiter))
         writer.writerow([f"# {job.name}"])
         writer.writerow([
             f"# Source: {job.source_root}",

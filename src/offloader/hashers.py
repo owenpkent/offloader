@@ -28,9 +28,20 @@ class Algorithm:
     factory: Callable[[], Hasher] | None
     #: MHL/ASC-MHL element name, or None if the format has no slot for it.
     mhl_tag: str | None = None
+    #: Whether two digests differing only in case are different digests. True
+    #: for C4, whose base58 alphabet uses case to carry information. False for
+    #: every hex format, where another tool's uppercase output describes the
+    #: very same bytes.
+    case_sensitive: bool = False
 
     def new(self) -> Hasher | None:
         return self.factory() if self.factory else None
+
+    def digests_match(self, left: str, right: str) -> bool:
+        """Compare two digests of this algorithm."""
+        if self.case_sensitive:
+            return left == right
+        return left.casefold() == right.casefold()
 
 
 #: Base58 alphabet used by C4 (SMPTE ST 2114) — no 0, O, I or l.
@@ -81,7 +92,7 @@ ALGORITHMS: dict[str, Algorithm] = {
     "md5": Algorithm("md5", "MD5", hashlib.md5, "md5"),
     "sha1": Algorithm("sha1", "SHA-1", hashlib.sha1, "sha1"),
     "sha256": Algorithm("sha256", "SHA-256", hashlib.sha256, "sha256"),
-    "c4": Algorithm("c4", "C4", C4Hasher, "c4"),
+    "c4": Algorithm("c4", "C4", C4Hasher, "c4", case_sensitive=True),
     "none": Algorithm("none", "None", None, None),
 }
 
@@ -107,6 +118,12 @@ def hash_file(path: Path, key: str, chunk_size: int = 8 << 20) -> str:
     destination, and by the `report` and `verify` commands to reconstruct or
     re-check checksums without copying."""
     from .longpath import open_binary
+
+    if chunk_size <= 0:
+        # read(0) returns b'' immediately, so the sentinel iteration below
+        # would stop before the first byte and hand back the digest of an
+        # empty file for a file that is not empty.
+        raise ValueError(f"chunk_size must be positive, got {chunk_size}")
 
     hasher = new_hasher(key)
     with open_binary(path, "rb") as handle:

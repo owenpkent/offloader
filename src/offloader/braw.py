@@ -23,6 +23,7 @@ Three things this buys:
 
 from __future__ import annotations
 
+import math
 import struct
 from dataclasses import dataclass, field
 from enum import Enum
@@ -195,8 +196,26 @@ def _find_moov(handle: BinaryIO, file_size: int) -> bytes | None:
     for offset, size, atom_type, header_length in _top_level_atoms(handle, file_size):
         if atom_type == b"moov":
             handle.seek(offset + header_length)
-            return handle.read(size - header_length)
+            # `size` came out of the file and can claim up to 2**64-1 through
+            # the extended-size header. Ask only for what is actually there,
+            # the way check_container already does, or a corrupt clip turns
+            # into a request the allocator cannot serve.
+            available = max(0, file_size - (offset + header_length))
+            return handle.read(min(size - header_length, available))
     return None
+
+
+def _uint(buf: bytes, offset: int, width: int, limit: int) -> int | None:
+    """A big-endian unsigned int, or None if it does not fit.
+
+    Every fixed offset in this module is measured from an atom header whose
+    size the *file* declared. `limit` is that atom's real end, so a truncated
+    atom yields None here instead of a short slice and a struct.error three
+    frames up.
+    """
+    if offset < 0 or offset + width > min(limit, len(buf)):
+        return None
+    return int.from_bytes(buf[offset:offset + width], "big")
 
 
 def _walk(buf: bytes, start: int, end: int):
@@ -216,13 +235,21 @@ def _walk(buf: bytes, start: int, end: int):
         offset += size
 
 
-def _descend(buf: bytes, start: int, end: int, wanted: bytes):
+#: Real BRAW nests moov/trak/mdia/minf/stbl about six deep. Anything past this
+#: is a malformed or hostile file, and each level costs an interpreter frame.
+_MAX_ATOM_DEPTH = 64
+
+
+def _descend(buf: bytes, start: int, end: int, wanted: bytes, depth: int = 0):
     """Depth-first search for an atom type inside a parsed buffer."""
+    if depth >= _MAX_ATOM_DEPTH:
+        return None
     for offset, size, atom_type, header_length in _walk(buf, start, end):
         if atom_type == wanted:
             return offset, size, header_length
         if atom_type in _CONTAINERS:
-            found = _descend(buf, offset + header_length, offset + size, wanted)
+            found = _descend(buf, offset + header_length, offset + size,
+                             wanted, depth + 1)
             if found:
                 return found
     return None
@@ -286,12 +313,20 @@ def _read_metadata_pairs(moov: bytes) -> dict[str, Any]:
     cursor = ilst_offset + ilst_header
     limit = ilst_offset + ilst_size
     while cursor + 16 <= limit:
-        item_size, index = struct.unpack(">II", moov[cursor:cursor + 8])
+        item_size = _uint(moov, cursor, 4, limit)
+        index = _uint(moov, cursor + 4, 4, limit)
+        if item_size is None or index is None:
+            break
         if item_size < 16 or cursor + item_size > limit:
             break
-        data_size = struct.unpack(">I", moov[cursor + 8:cursor + 12])[0]
-        type_indicator = struct.unpack(
-            ">I", moov[cursor + 16:cursor + 20])[0] & 0x00FFFFFF
+        data_size = _uint(moov, cursor + 8, 4, limit)
+        # The loop condition only guarantees 16 bytes, but the type indicator
+        # sits at 16..20: an item declaring exactly 16 bytes at the end of the
+        # atom leaves nothing to read.
+        type_indicator = _uint(moov, cursor + 16, 4, limit)
+        if data_size is None or type_indicator is None:
+            break
+        type_indicator &= 0x00FFFFFF
         payload = moov[cursor + 24:cursor + 8 + data_size]
         if 1 <= index <= len(names):
             decoded = _decode_value(type_indicator, payload)
@@ -329,25 +364,33 @@ def _read_timing(moov: bytes) -> tuple[float | None, float | None, int | None]:
         if not stts or not mdhd:
             continue
 
-        mdhd_offset = mdhd[0]
-        version = moov[mdhd_offset + 8]
+        mdhd_offset, mdhd_size, _ = mdhd
+        mdhd_end = mdhd_offset + mdhd_size
+        version = _uint(moov, mdhd_offset + 8, 1, mdhd_end)
+        if version is None:
+            continue
         if version == 1:
-            timescale = struct.unpack(">I", moov[mdhd_offset + 28:mdhd_offset + 32])[0]
-            duration = struct.unpack(">Q", moov[mdhd_offset + 32:mdhd_offset + 40])[0]
+            timescale = _uint(moov, mdhd_offset + 28, 4, mdhd_end)
+            duration = _uint(moov, mdhd_offset + 32, 8, mdhd_end)
         else:
-            timescale = struct.unpack(">I", moov[mdhd_offset + 20:mdhd_offset + 24])[0]
-            duration = struct.unpack(">I", moov[mdhd_offset + 24:mdhd_offset + 28])[0]
-        if not timescale:
+            timescale = _uint(moov, mdhd_offset + 20, 4, mdhd_end)
+            duration = _uint(moov, mdhd_offset + 24, 4, mdhd_end)
+        if not timescale or duration is None:
             continue
 
-        stts_offset = stts[0]
-        entry_count = struct.unpack(
-            ">I", moov[stts_offset + 12:stts_offset + 16])[0]
+        stts_offset, stts_size, _ = stts
+        stts_end = stts_offset + stts_size
+        entry_count = _uint(moov, stts_offset + 12, 4, stts_end)
+        if entry_count is None:
+            continue
         frames, delta = 0, None
         cursor = stts_offset + 16
         for _ in range(min(entry_count, 4096)):
-            sample_count, sample_delta = struct.unpack(
-                ">II", moov[cursor:cursor + 8])
+            # The count is the file's claim; the atom's own end is the fact.
+            sample_count = _uint(moov, cursor, 4, stts_end)
+            sample_delta = _uint(moov, cursor + 4, 4, stts_end)
+            if sample_count is None or sample_delta is None:
+                break
             frames += sample_count
             delta = delta or sample_delta
             cursor += 8
@@ -358,6 +401,17 @@ def _read_timing(moov: bytes) -> tuple[float | None, float | None, int | None]:
         if frames:
             return (round(fps, 6) if fps else None, seconds, frames)
     return (None, None, None)
+
+
+def _as_pixels(value: Any) -> int | None:
+    """A sensor dimension, or None if the file's bytes did not decode to one."""
+    try:
+        if not math.isfinite(value):
+            return None
+        pixels = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return pixels if 0 < pixels <= 100_000 else None
 
 
 def read_info(path: Path) -> BrawInfo | None:
@@ -378,8 +432,12 @@ def read_info(path: Path) -> BrawInfo | None:
     info = BrawInfo(fps=fps, duration_sec=duration, frame_count=frames, raw=values)
 
     crop = values.get("crop_size") or values.get("sensor_area_captured")
-    if isinstance(crop, tuple):
-        info.width, info.height = int(crop[0]), int(crop[1])
+    if isinstance(crop, tuple) and len(crop) >= 2:
+        # These arrive as a raw IEEE754 pair out of the file, so they can be
+        # NaN or infinity, neither of which survives int().
+        width, height = _as_pixels(crop[0]), _as_pixels(crop[1])
+        if width and height:
+            info.width, info.height = width, height
 
     info.camera_type = values.get("camera_type")
     info.camera_id = values.get("camera_id")

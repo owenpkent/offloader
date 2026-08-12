@@ -4,19 +4,18 @@
 module goes after everything downstream of them: what ffprobe hands back, what
 a number formats to, what a digest compares equal to, what a name renders to.
 
-The failures here share a shape. Each is a value that is perfectly legal at the
-point it is produced and fatal (or silently wrong) at the point it is consumed,
-because the two ends disagree about the contract:
+The bugs these were written against shared a shape. Each was a value that was
+perfectly legal at the point it was produced and fatal, or silently wrong, at
+the point it was consumed, because the two ends disagreed about the contract:
 
-  * ffprobe writes "N/A" in a numeric field. `_build` calls `int()` on it.
+  * ffprobe writes "N/A" in a numeric field. `_build` called `int()` on it.
   * `_parse_rate` accepts "inf/1" because `float()` does. Every fps formatter
-    then calls `round()` on it, which does not.
-  * Another tool writes its hex digests uppercase. `verify` compares with `==`.
-  * `render` substitutes token values into a string it then keeps substituting
-    into.
+    then called `round()` on it, which does not.
+  * Another tool writes its hex digests uppercase. `verify` compared with `==`.
+  * `render` substituted token values into a string it kept substituting into.
 
-Tests marked `xfail(strict=True)` are reproduced, not hypothesised. Fixing one
-turns it XPASS and pytest will ask for the marker back.
+All four are fixed, and both ends of each pair are pinned here: whichever side
+a later change moves, the other still has to hold.
 
 Run longer sweeps with:  pytest --fuzz tests/test_edge_cases.py
 """
@@ -76,13 +75,6 @@ def test_probe_build_handles_healthy_output():
 
 
 @pytest.mark.parametrize("stream", NA_STREAMS)
-@pytest.mark.xfail(strict=True, reason=(
-    "probe._build does bare int()/float() on ffprobe's audio fields "
-    "(probe.py:208, 211, 212) with no try/except, unlike the duration field "
-    "at probe.py:166-169 which is guarded. _build is called at probe.py:152, "
-    "*outside* the try that catches SubprocessError/JSONDecodeError, so the "
-    "ValueError escapes probe() and then engine.run(), which does not guard "
-    "the probe call either"))
 def test_probe_build_survives_na_fields(stream):
     """This is the realistic version of 'one bad file kills the job'. It needs
     no crafted BRAW, only a clip whose audio stream ffprobe cannot fully
@@ -90,15 +82,10 @@ def test_probe_build_survives_na_fields(stream):
     probe._build({"streams": [stream], "format": {}})
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "probe._build assumes every entry of `streams` is a dict (probe.py:158)"))
 def test_probe_build_survives_a_non_dict_stream():
     probe._build({"streams": ["garbage"], "format": {}})
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "same unguarded _build as above, reached the way it is reached in "
-    "production: through probe.probe() with ffprobe returning real output"))
 def test_probe_survives_an_ffprobe_that_reports_na(tmp_path, monkeypatch):
     """End to end through the public entry point, with ffprobe stubbed to
     return output it genuinely produces."""
@@ -119,10 +106,6 @@ def test_probe_survives_an_ffprobe_that_reports_na(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("rate", ["inf/1", "-inf/1", "nan/1", "Infinity/1"])
-@pytest.mark.xfail(strict=True, reason=(
-    "probe._parse_rate (probe.py:66-79) guards division by zero but not the "
-    "conversion itself: float('inf') and float('nan') do not raise, so a "
-    "non-finite rate flows into MediaInfo.fps and reaches every formatter"))
 def test_parse_rate_never_returns_a_non_finite_number(rate):
     """A frame rate is a physical quantity. The parser is the right place to
     refuse a value that is not one, because nothing downstream checks."""
@@ -131,11 +114,6 @@ def test_parse_rate_never_returns_a_non_finite_number(rate):
 
 
 @pytest.mark.parametrize("fps", [float("inf"), float("nan")])
-@pytest.mark.xfail(strict=True, reason=(
-    "util.format_fps and util.format_timecode both call round()/int() on fps "
-    "before any guard can help: round(nan) raises ValueError and round(inf) "
-    "raises OverflowError. The `or 1` fallback in format_timecode's "
-    "`int(round(fps)) or 1` never runs, because round() raises first"))
 def test_fps_formatters_accept_whatever_parse_rate_produces(fps):
     """The two ends of the same contract. `_parse_rate` can produce these, so
     the formatters have to survive them, or one of the two has to change."""
@@ -151,10 +129,6 @@ SIZE_SHAPE = re.compile(r"-?\d+(?:\.\d+)? (bytes|KB|MB|GB|TB)")
 
 @given(size=st.integers(min_value=-10 ** 15, max_value=-1))
 @settings(deadline=None)
-@pytest.mark.xfail(strict=True, reason=(
-    "util.format_size's first branch is `num_bytes < 1000`, which is true for "
-    "every negative number regardless of magnitude, so a negative size is "
-    "printed verbatim in bytes and never promotes to KB/MB/GB/TB"))
 def test_format_size_promotes_negative_values_too(size: int):
     """`test_fuzz.py` pins this property for non-negative sizes only. A byte
     count that can go negative anywhere (history.py uses -1 as its stat-failure
@@ -169,10 +143,6 @@ def test_format_size_promotes_negative_values_too(size: int):
 @pytest.mark.parametrize("size, unit", [
     (999_999, "KB"), (999_999_999, "MB"), (999_999_999_999, "GB"),
 ])
-@pytest.mark.xfail(strict=True, reason=(
-    "util.format_size compares against 1000 before rounding to one or two "
-    "decimals, so a value just under a decade boundary rounds up to a "
-    "mantissa of 1000.0 in the smaller unit instead of promoting"))
 def test_format_size_mantissa_never_reaches_1000(size: int, unit: str):
     """'1000.0 MB' is not wrong by much, but it is a unit the function's own
     branch structure says it will never print."""
@@ -184,10 +154,6 @@ def test_format_size_mantissa_never_reaches_1000(size: int, unit: str):
 
 
 @pytest.mark.parametrize("value", [float("nan"), float("inf")])
-@pytest.mark.xfail(strict=True, reason=(
-    "every `< 1000` comparison is False for nan and inf, so format_size falls "
-    "through all of its branches and returns the last one, producing "
-    "'nan TB' / 'inf TB'"))
 def test_format_size_does_not_invent_a_unit_for_non_finite_input(value):
     text = util.format_size(value)
     assert SIZE_SHAPE.fullmatch(text), text
@@ -227,11 +193,6 @@ def test_verify_passes_a_manifest_we_wrote_ourselves(tmp_path):
     assert verify.verify_manifest(manifest).counts() == {"ok": 1}
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "verify.py:201 compares digests with a plain case-sensitive `==`, so a "
-    "manifest written by a tool that emits uppercase hex reports every file "
-    "as MISMATCH. Note the fix is per-algorithm, not a blanket .lower(): C4 "
-    "digests are base58 and genuinely case-sensitive (hashers.py:53-59)"))
 def test_verify_accepts_an_uppercase_hex_manifest(tmp_path):
     """MHL is an interchange format. Telling an editor their footage is
     corrupt because another tool shifted the case of a hex digit is the most
@@ -250,10 +211,6 @@ def test_verify_accepts_an_uppercase_hex_manifest(tmp_path):
 # ---------------------------------------------------------- name rendering
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "naming.render applies str.replace once per token in sequence, over the "
-    "string it is accumulating, so a token value that itself contains token "
-    "text is substituted again by a later pass"))
 def test_render_does_not_substitute_into_a_value_it_already_placed():
     """A folder literally named `{index}` is a legal directory name. Rendering
     `{card}` from it puts the text `{index}` into the result, and the later
@@ -266,10 +223,6 @@ def test_render_does_not_substitute_into_a_value_it_already_placed():
 # -------------------------------------------------------------- fingerprint
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "history.fingerprint hashes the joined per-file lines and nothing else, "
-    "so an empty file list hashes the empty string: da39a3ee..., the SHA-1 of "
-    "nothing, for every source root there has ever been"))
 def test_empty_sources_do_not_share_one_fingerprint():
     """The fingerprint decides whether a card has been offloaded before. Two
     different empty volumes must not look like the same prior job."""
@@ -281,10 +234,6 @@ def test_empty_sources_do_not_share_one_fingerprint():
 
 
 @pytest.mark.parametrize("name", ["D:/evil.json", "/etc/passwd"])
-@pytest.mark.xfail(strict=True, reason=(
-    "config.config_file joins with pathlib's `/`, which discards the left "
-    "operand entirely when the right operand is absolute, so an absolute "
-    "`name` silently resolves outside the config directory"))
 def test_config_file_stays_inside_the_config_directory(name: str):
     """Only ever called with literals today, which is the single reason this
     is latent rather than live."""

@@ -16,9 +16,9 @@ failure below is a violation of one of these three:
   3. A parser fed hostile bytes may return nothing, but it may not raise
      something the caller has no reason to catch.
 
-Tests marked `xfail(strict=True)` are confirmed live bugs, not aspirations.
-Each names the offending line. If you fix one, the marker turns the test XPASS
-and pytest will tell you to delete the marker.
+Every test here began as a reproduced bug. They are regressions now, and the
+comments name the mechanism rather than the fix, because the mechanism is what
+a future change is liable to reintroduce.
 
 Run longer sweeps with:  pytest --fuzz tests/test_fuzz_edges.py
 """
@@ -69,8 +69,15 @@ PARSER_MAY_RAISE = (OSError,)
 
 
 def atom(tag: bytes, payload: bytes = b"", *, declared: int | None = None) -> bytes:
-    """One ISO-BMFF atom. `declared` lies about the size on purpose."""
+    """One ISO-BMFF atom. `declared` lies about the size on purpose.
+
+    A size past 2**32 does not fit the 32-bit field, so it goes in the 64-bit
+    extended form the format defines for exactly that: a size of 1, then the
+    real size as a big-endian u64. That is the path a hostile file would use.
+    """
     size = len(payload) + 8 if declared is None else declared
+    if size > 0xFFFFFFFF:
+        return struct.pack(">I", 1) + tag + struct.pack(">Q", size) + payload
     return struct.pack(">I", size) + tag + payload
 
 
@@ -156,11 +163,6 @@ def test_braw_read_info_survives_random_atom_trees(trees, tmp_path_factory):
         pytest.fail(f"read_info raised {type(exc).__name__}: {exc}")
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "braw.py:333/335/338/344/349 index and unpack at offsets derived from an "
-    "atom's *declared* size without checking the buffer actually extends that "
-    "far, so a short mdhd or a lying stts entry_count raises struct.error / "
-    "IndexError straight out of read_info"))
 @settings(deadline=None, suppress_health_check=[HealthCheck.too_slow])
 @given(mdhd=st.binary(max_size=40), stts=st.binary(max_size=40),
        trailing=st.lists(atom_trees(2), max_size=2))
@@ -190,18 +192,12 @@ def test_braw_read_info_survives_truncated_video_traks(mdhd, stts, trailing,
     ("stts entry_count promises entries that are not there",
      GOOD_MDHD, b"\x00" * 4 + struct.pack(">I", 4096)),
 ])
-@pytest.mark.xfail(strict=True, reason=(
-    "braw._read_timing trusts the declared atom size over the real buffer "
-    "length; see braw.py:333-350"))
 def test_braw_truncated_atoms_do_not_raise(label, mdhd, stts, tmp_path):
     """Minimised regressions for the structured sweep above."""
     target = write_braw(tmp_path, braw_file(video_trak(mdhd, stts)))
     braw.read_info(target)
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "braw._descend (braw.py:225) recurses once per nested container with no "
-    "depth limit, so ~1000 nested atoms exhaust the interpreter stack"))
 def test_braw_deep_nesting_does_not_exhaust_the_stack(tmp_path):
     """8 bytes per level, so a 16 KB file is enough to blow the stack."""
     nest = atom(b"stbl")
@@ -239,11 +235,6 @@ class _RecordingHandle:
         return self._pos
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "braw._find_moov (braw.py:198) does `handle.read(size - header_length)` "
-    "with a size taken straight from the file (up to 2**64-1 via the "
-    "extended-size path), without the `offset + size > file_size` check that "
-    "check_container (braw.py:177) does perform"))
 @given(claimed=st.integers(min_value=2 ** 32, max_value=2 ** 48))
 @settings(deadline=None)
 def test_find_moov_never_reads_past_the_end_of_the_file(claimed: int):
@@ -269,11 +260,6 @@ def _offload(source: Path, dest: Path, **overrides) -> Job:
     return engine.run(source, OffloadOptions(**options))
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "engine.run calls probe_mod.probe(source) with no try/except, and "
-    "probe.probe's BRAW branch (probe.py:133-134) has none either, so any "
-    "braw.py crash aborts the whole job: the clips after the bad one are "
-    "never copied and no report is written"))
 def test_one_malformed_clip_does_not_abort_the_offload(tmp_path):
     """The scenario this tool exists for: a card with one bad clip. The bad
     clip may fail. The other two must still land, and the job must still
@@ -311,12 +297,6 @@ def test_destination_paths_are_injective_when_structure_is_preserved(tmp_path):
     assert landed == [1000, 2000]
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "engine._destination_for (engine.py:232) maps every source onto "
-    "`dest_root / source.name` when preserve_structure is False, and nothing "
-    "checks two sources for the same target. engine.py:85's `seen` dict "
-    "dedupes destination *roots* only. Reachable as `offloader --flat` and as "
-    "the GUI's 'Recreate the source folder structure' checkbox"))
 @settings(max_examples=30, deadline=None,
           suppress_health_check=[HealthCheck.function_scoped_fixture,
                                  HealthCheck.too_slow])
@@ -324,16 +304,24 @@ def test_destination_paths_are_injective_when_structure_is_preserved(tmp_path):
                         min_size=2, max_size=5, unique=True),
        basename=st.sampled_from(["clip.mov", "A001_C001.mov", "take.braw"]))
 def test_flat_mode_never_silently_drops_a_file(folders, basename, tmp_path_factory):
-    """Every byte that leaves the card must arrive, or the job must say it
-    didn't. Reporting VERIFIED for a file that is not at the destination is the
-    one outcome a verified-copy tool may never produce."""
+    """Every byte that leaves the card must arrive, or the job must say so.
+
+    Reporting VERIFIED for a file that is not at the destination is the one
+    outcome a verified-copy tool may never produce. Refusing the layout counts
+    as saying so: the collision is detected before any byte moves, so the card
+    is untouched and the operator gets to choose a layout that fits.
+    """
     root = tmp_path_factory.mktemp("flat")
     source, dest = root / "card", root / "dst"
     for index, folder in enumerate(folders):
         (source / folder).mkdir(parents=True)
         (source / folder / basename).write_bytes(bytes([65 + index]) * (1000 + index))
 
-    job = _offload(source, dest, preserve_structure=False)
+    try:
+        job = _offload(source, dest, preserve_structure=False)
+    except engine.UnsafeDestination:
+        assert not list(dest.rglob("*")), "refused the job but still wrote"
+        return
 
     source_bytes = sum(p.stat().st_size for p in source.rglob("*") if p.is_file())
     dest_bytes = sum(p.stat().st_size for p in dest.rglob("*") if p.is_file())
@@ -347,34 +335,42 @@ def test_flat_mode_never_silently_drops_a_file(folders, basename, tmp_path_facto
             f"{len(job.files)} destinations still report VERIFIED")
 
 
-@pytest.mark.xfail(strict=True, reason="same collision as the sweep above")
-def test_flat_mode_collision_is_reported_not_silent(tmp_path):
-    """Minimised regression: two takes, one surviving file, a clean report."""
+def test_flat_mode_collision_is_refused_before_anything_moves(tmp_path):
+    """Minimised regression: two takes that would become one file.
+
+    The check runs on the scan, so the error names both sources and nothing
+    has been written by the time it is raised.
+    """
     source, dest = tmp_path / "card", tmp_path / "dst"
     (source / "A").mkdir(parents=True)
     (source / "B").mkdir(parents=True)
     (source / "A" / "clip.mov").write_bytes(b"A" * 1000)
     (source / "B" / "clip.mov").write_bytes(b"B" * 2000)
 
-    job = _offload(source, dest, preserve_structure=False)
+    with pytest.raises(engine.UnsafeDestination, match="would both be copied"):
+        _offload(source, dest, preserve_structure=False)
 
-    landed = [p for p in dest.rglob("*") if p.is_file()]
-    failures = [d for entry in job.files for d in entry.destinations
-                if d.status is not FileStatus.VERIFIED]
-    assert len(landed) == 2 or failures, (
-        f"{len(job.files)} files became {len(landed)} on disk, "
-        f"and not one destination reported a problem")
+    assert not dest.exists() or not list(dest.rglob("*"))
+
+
+def test_flat_mode_still_works_when_names_do_not_collide(tmp_path):
+    """The guard must not cost the ordinary flattening case."""
+    source, dest = tmp_path / "card", tmp_path / "dst"
+    (source / "A").mkdir(parents=True)
+    (source / "B").mkdir(parents=True)
+    (source / "A" / "one.mov").write_bytes(b"A" * 1000)
+    (source / "B" / "two.mov").write_bytes(b"B" * 2000)
+
+    _offload(source, dest, preserve_structure=False)
+
+    assert sorted(p.name for p in dest.rglob("*") if p.is_file()) == \
+        ["one.mov", "two.mov"]
 
 
 # ------------------------------------------------------------ scanning cycles
 
 
 @pytest.mark.skipif(not WINDOWS, reason="directory junctions are Windows-only")
-@pytest.mark.xfail(strict=True, reason=(
-    "engine.scan (engine.py:215) is a bare os.walk with no cycle guard, and "
-    "Path.is_symlink() is False for a junction, so the usual symlink check "
-    "would not help either. It terminates only because Windows refuses paths "
-    "past MAX_PATH; with long paths enabled it would not"))
 def test_scan_does_not_follow_a_directory_junction_into_a_cycle(tmp_path):
     card = tmp_path / "card"
     (card / "sub").mkdir(parents=True)
@@ -432,11 +428,6 @@ def test_write_mhl_is_total(name, tmp_path):
 
 
 @pytest.mark.parametrize("name", UNENCODABLE_NAMES)
-@pytest.mark.xfail(strict=True, reason=(
-    "csv_report.py:47 opens with the default errors='strict' and does no "
-    "filtering, so writer.writerow (csv_report.py:96) raises "
-    "UnicodeEncodeError. write_mhl survives the same name because it has "
-    "_xml_safe; write_csv has no equivalent"))
 def test_write_csv_is_total(name, tmp_path):
     """A report writer runs *after* the bytes are safely copied. Crashing there
     turns a finished offload into one with no paperwork."""
@@ -455,13 +446,6 @@ def test_ascmhl_round_trips_ordinary_names(name, tmp_path):
 
 
 @pytest.mark.parametrize("name", ILLEGAL_XML_NAMES + UNENCODABLE_NAMES)
-@pytest.mark.xfail(strict=True, reason=(
-    "ascmhl.py has no _xml_safe equivalent: the <path> text at ascmhl.py:355 "
-    "is written raw. Control characters produce a manifest that will not "
-    "reparse, and read_manifest_hashes swallows the ParseError "
-    "(ascmhl.py:176) and returns {}, so the file vanishes from the chain of "
-    "custody silently. A lone surrogate fails earlier, in the UTF-8 encode at "
-    "ascmhl.py:212"))
 def test_ascmhl_round_trips_hostile_names(name, tmp_path):
     """Whatever the name, `write_manifest` must either refuse it outright or
     produce a manifest `read_manifest_hashes` can fully recover. Writing a
@@ -475,11 +459,6 @@ def test_ascmhl_round_trips_hostile_names(name, tmp_path):
 # -------------------------------------------------------------- retry policy
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "RetryPolicy is a frozen dataclass with no __post_init__ validation, and "
-    "presets.py builds one straight from presets.json, so a negative delay "
-    "reaches retry.py:114's `if pause: sleep(pause)`, and time.sleep raises "
-    "ValueError on a negative argument"))
 @given(attempts=st.integers(min_value=-5, max_value=12),
        delay=st.floats(min_value=-10, max_value=10, allow_nan=False,
                        allow_infinity=False),
@@ -510,11 +489,6 @@ def test_retry_never_asks_to_sleep_for_a_negative_time(attempts, delay, backoff)
         "time.sleep raises ValueError on a negative argument")
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "hashers.hash_file's chunk_size is unvalidated: read(0) returns b'' "
-    "immediately, so iter(..., b'') stops before the first byte and a "
-    "non-empty file hashes as empty. Not reachable from the CLI today, which "
-    "is the only reason this is not a live data-integrity bug"))
 def test_hash_file_rejects_a_zero_chunk_size(tmp_path):
     """A checksum that silently describes a different file than the one on
     disk is the worst failure mode this codebase has."""
@@ -568,11 +542,6 @@ def test_zero_byte_file_verifies(tmp_path):
     ("{index}", [f"{i:03d}" for i in range(1, 1000)]),
     ("{card}", ["A001"] + [f"A001-{i}" for i in range(2, 1000)]),
 ])
-@pytest.mark.xfail(strict=True, reason=(
-    "naming.build's two exhaustion fallbacks return an unchecked name: "
-    "naming.py:82 returns render(..., index=999) and naming.py:91 returns "
-    "`base`, neither tested against `used`. Two jobs then share one report "
-    "folder, which is the exact outcome the dedup exists to prevent"))
 def test_build_never_returns_a_taken_name_even_when_exhausted(template, taken):
     """`test_fuzz.py` already asserts this property, but with `max_size=8` it
     can never reach the 999-name ceiling where the guarantee lapses."""
@@ -593,10 +562,6 @@ CORRUPT_HISTORY = [
 
 
 @pytest.mark.parametrize("body", CORRUPT_HISTORY)
-@pytest.mark.xfail(strict=True, reason=(
-    "History.__init__ maps HistoryEntry.from_dict over read_json's result with "
-    "no try/except, and from_dict itself does bare int()/list() conversions, "
-    "so a corrupt history.json raises out of the constructor"))
 def test_corrupt_history_does_not_stop_an_offload(body, tmp_path):
     """history.py's own reason for existing is that a damaged history must
     never stop someone offloading a card. An exception from the constructor
@@ -606,10 +571,6 @@ def test_corrupt_history_does_not_stop_an_offload(body, tmp_path):
     History(path)
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "config.read_json catches OSError and json.JSONDecodeError, but "
-    "path.read_text raises UnicodeDecodeError (a ValueError) for invalid "
-    "UTF-8, which is not caught"))
 def test_history_survives_invalid_utf8(tmp_path):
     path = tmp_path / "history.json"
     path.write_bytes(b'[{"job_name": "\xff\xfe"}]')
