@@ -150,12 +150,32 @@ exists precisely so it can be checked independently.
 | --- | --- |
 | Empty (0-byte) source file | Warned. It hashes and verifies perfectly, and is still a lost take. |
 | Destination without room | Checked before queueing; prompts. |
-| Re-offloading a card already pulled | Fingerprinted by name and size, warned with the earlier job's name and date. Only successful offloads count. |
+| Re-offloading a card already pulled | Fingerprinted by source name plus the listing's names and sizes, warned with the earlier job's name and date. Only successful offloads count. |
 | Card pulled mid-copy | `OSError` fails that file; the partial is deleted; other files are unaffected. |
 | Quit during an offload | Confirmed, then cancelled cleanly, partials removed. |
 | Cancel | Deletes the in-flight partial rather than leaving plausible-looking media. |
 | Report writer crashing | Caught; a bad PDF never invalidates a good copy. |
 | Corrupt config file | Treated as empty. Config must never stand between someone and their card. |
+| Two source files mapping to one destination path | Refused before a byte moves, naming both sources. See below. |
+| Metadata that will not parse | The file still copies and verifies; only its metadata is lost, and the job carries a warning. |
+| A directory junction pointing at its own parent | Each directory is visited at most once, so the scan cannot loop. |
+| A manifest whose digests are uppercase | Compared case-insensitively for hex formats, exactly for C4. Another tool's casing is not corruption. |
+| A filename XML or UTF-8 cannot carry | Filtered to U+FFFD in manifests and CSV, so one bad name cannot strand a delivery's paperwork. |
+
+### Flattening is refused when it would lose a file
+
+`--flat` maps every source onto `destination/name`. Two clips of the same name
+in different folders therefore want the same destination path, and copying both
+leaves one file where there were two. This is the worst shape a bug can take
+here: each copy is verified as it lands, *before* the next overwrites it, so
+both would be reported `Verified` and the report would attest to a file that is
+no longer there.
+
+The collision is detected against the scan, before any byte moves, and the
+offload refuses with both source paths named. Paths are compared through
+`os.path.normcase`, so on Windows this also catches two names differing only in
+case: distinct on the case-sensitive volume they came from, one file on the
+volume they are going to.
 
 ## What is still not protected
 
@@ -170,6 +190,14 @@ known.
   safety one, and should not be used on a tree whose integrity is in question.
 - **Concurrent instances.** One app instance serialises its queue. Two instances
   pointed at the same destination are not coordinated.
+- **Case-only filename collisions on a case-insensitive destination, off
+  Windows.** The collision check compares with `os.path.normcase`, which folds
+  case on Windows and is the identity elsewhere. Copying on Linux or macOS from
+  a case-sensitive source onto a case-insensitive destination (an exFAT card,
+  an SMB share) is therefore the one arrangement where `Clip.mov` and
+  `clip.MOV` are still two files at the source and one at the destination.
+  Detecting it means asking the destination filesystem what it considers
+  distinct, which is not implemented.
 - **A source that changes while it is being read.** The checksum is of the
   bytes that were read, so a file modified mid-copy, or swapped between a
   retry's close and reopen, produces a destination that faithfully matches

@@ -100,7 +100,7 @@ offloader verify D:\video\080426\A001
 | `--logo PATH` | image for the PDF header |
 | `--footer TEXT` | footer line for the PDF |
 | `--exclude GLOB` | extra filename pattern to skip; repeatable |
-| `--flat` | do not recreate the source folder structure |
+| `--flat` | do not recreate the source folder structure; refused if two files would land on one path |
 | `--skip-existing` | skip files already present at matching size |
 | `--retries N` | attempts per failing read on a transient error (default 3, 1 disables) |
 | `--retry-wait SECONDS` | pause before the first retry, backing off after (default 2) |
@@ -295,7 +295,9 @@ The short version:
 
 `offloader verify` catches a single flipped bit in a file whose size never
 changed. Run it before erasing a card, and again on the archive months later to
-catch bit rot.
+catch bit rot. It reads manifests other tools wrote, and compares digests per
+algorithm: hex case-insensitively, C4 exactly. Another tool's choice of casing
+is not corruption, and saying it is would be a costly thing to get wrong.
 
 ## Blackmagic RAW
 
@@ -357,13 +359,13 @@ what makes the report layer testable without moving bytes.
 
 ```sh
 pip install -e ".[dev]"
-pytest                      # 413 tests, ~33s
-pytest --fuzz               # same suite, 3000 examples per property (~2 min)
+pytest                      # 482 tests, ~20s
+pytest --fuzz               # same suite, 3000 examples per property (~3 min)
 ruff check src tests
 pytest --cov=offloader --cov-report=term-missing
 ```
 
-413 tests at 82% line coverage. They cover formatting against the reference's
+482 tests at 83% line coverage. They cover formatting against the reference's
 exact strings, checksum vectors and streaming equivalence, copy/verify
 behaviour including simulated destination corruption, pause/resume/cancel
 concurrency, retry discrimination, BRAW container parsing, ffprobe parsing,
@@ -381,11 +383,20 @@ real camera file when one is present.
 
 ### Property-based testing
 
-`tests/test_fuzz.py` uses [Hypothesis][hyp] to assert invariants over generated
-input rather than over a handful of fixtures. Filenames come off camera cards,
-which in practice means any Unicode at all — accented takes, CJK slates, emoji
-from a naming macro, and the occasional control character from a corrupt
-directory entry.
+Three modules use [Hypothesis][hyp] to assert invariants over generated input
+rather than over a handful of fixtures, each aimed at a different layer:
+
+- **`tests/test_fuzz.py`: what a filename can contain.** Names come off camera
+  cards, which in practice means any Unicode at all: accented takes, CJK
+  slates, emoji from a naming macro, and the occasional control character from
+  a corrupt directory entry.
+- **`tests/test_fuzz_edges.py`: what a card can contain.** A BRAW clip whose
+  atom headers lie, a tree that maps two sources onto one destination, a
+  directory junction pointing at its own parent, a retry policy someone
+  hand-edited into a preset.
+- **`tests/test_edge_cases.py`: the layers between the bytes and the
+  paperwork.** What ffprobe hands back, what a number formats to, what a digest
+  compares equal to, what a name renders to.
 
 The properties worth knowing about:
 
@@ -396,14 +407,22 @@ The properties worth knowing about:
 - Chunked hashing equals whole-buffer hashing for every algorithm at arbitrary
   chunk boundaries — the engine's boundaries fall wherever a read lands.
 - `sanitize()` always returns a legal filename, and `build()` never collides
-  with a name already taken.
+  with a name already taken, including once the numeric space is exhausted.
 - Presets survive a JSON round trip, and load from arbitrary garbage without
   raising — a hand-edited or version-skewed config must not brick the app.
+- No input makes an offload lose a file without saying so, no single malformed
+  file aborts a job, and a parser fed hostile bytes may return nothing but may
+  not raise something its caller has no reason to catch.
 
-This found a real bug: XML 1.0 cannot represent most C0 control characters even
-as character references, so a control byte in one filename produced an MHL that
-no parser would read — stranding verification of the entire delivery, not just
-that file. Names are now sanitised into the XML character range.
+These have earned their keep. The first found that XML 1.0 cannot represent
+most C0 control characters even as character references, so a control byte in
+one filename produced an MHL no parser would read, stranding verification of
+the entire delivery rather than one file. The later two found 24 more, the
+worst of which certified a file it had just overwritten: flattening a tree
+mapped two clips onto one destination path, and each was verified as it landed,
+before the next replaced it. Both were reported `Verified`. That check now runs
+against the scan, before a byte moves. Every one of those 24 has a test here
+that fails against the code as it was.
 
 [hyp]: https://hypothesis.readthedocs.io/
 

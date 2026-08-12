@@ -103,8 +103,11 @@ Two of the three have since been adopted; both are covered in
   retried at the failing chunk rather than the whole file, so one marginal
   sector does not cost a re-read of the clip.
 - **Metadata fidelity.** ACLs, alternate data streams, junctions. Still not
-  handled. Not relevant to camera originals, but relevant if anyone points this
-  at a general file tree.
+  *reproduced* at the destination, which is not relevant to camera originals
+  but is if anyone points this at a general file tree. A junction in the source
+  is at least no longer a hazard: the scan visits each directory once, so one
+  pointing back at its own parent cannot send it round in circles. That guard
+  cannot lean on `Path.is_symlink()`, which is False for a junction.
 
 ## Reproducing
 

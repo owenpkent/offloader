@@ -70,6 +70,14 @@ Only the newest generation of a history is checked. Every generation covers the
 same files, so verifying all of them would hash the media once per generation
 for no additional evidence.
 
+Digests are compared per algorithm rather than as plain strings. Hex formats
+compare case-insensitively, because a manifest is an interchange format and
+plenty of tools emit their hex uppercase: the same bytes described in a
+different case are not a mismatch, and reporting one is the most expensive
+false alarm this tool can raise. C4 compares exactly, since its base58 alphabet
+uses case to carry information and folding it would make genuinely different
+identifiers compare equal.
+
 ## Validation
 
 Implementing a standard from prose is how you end up with something that only
@@ -102,6 +110,23 @@ And one real bug the round trip caught: failed entries were being dropped from
 the manifest entirely rather than recorded with `action="failed"`. Excluding
 them from directory hashes is correct; excluding them from the document destroys
 the evidence the format exists to carry.
+
+A second one came from fuzzing the round trip rather than diffing it. A
+`<path>` is a filename off a filesystem, not validated text: a control
+character in one produces a manifest no parser will read, and
+`read_manifest_hashes` answers a parse failure by returning nothing, so that
+file would leave the chain of custody with nothing to indicate it ever left. A
+lone surrogate (what `os.listdir` hands back for any POSIX name that is not
+valid UTF-8, and what NTFS accepts outright) failed earlier still, in the
+UTF-8 encode, so no manifest was written at all.
+
+Names are now filtered to the XML 1.0 character set, replacing anything outside
+it with U+FFFD. The filter runs where a filename first enters the manifest, so
+the structure hashes and the `<path>` text they describe are computed from the
+same string; sanitising only at serialisation time would leave the two
+disagreeing. It is the same filter the plain-MHL writer has always used, which
+is the point: it now lives in `util` and covers the ASC MHL and CSV writers
+too, rather than each having to rediscover it.
 
 ## Limits
 
