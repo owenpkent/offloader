@@ -200,7 +200,13 @@ def _probe(path: Path, timeout: float) -> MediaInfo:
 
     info = _build(data)
     if info.is_audio and ixml.is_wav(path):
-        _attach_sound(info, path)
+        try:
+            _attach_sound(info, path)
+        except Exception:            # noqa: BLE001 - the slate is a bonus
+            # Caught here rather than left to `probe`, which would discard the
+            # whole document: a card pulled mid-read must not cost us the
+            # container, the tracks and the clock ffprobe already gave us.
+            pass
     return info
 
 

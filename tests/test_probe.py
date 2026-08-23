@@ -6,6 +6,7 @@ rate mapping is tested without needing media on disk.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -271,7 +272,26 @@ def test_video_timecode_is_untouched_by_the_audio_path():
 # ------------------------------------------------- iXML, through a real file
 
 
-def test_probe_upgrades_the_clock_to_frame_timecode(tmp_path):
+@pytest.fixture
+def stub_ffprobe(monkeypatch):
+    """Drive `probe.probe` end to end without ffmpeg on PATH.
+
+    The WAV on disk is real, because the iXML walk genuinely reads it, but the
+    stream report is the captured shape the rest of this module uses. Without
+    this the sound path is unreachable on a bare runner: `_probe` returns an
+    empty MediaInfo when `ffprobe_path()` is None, so `is_audio` is False and
+    the iXML read is never attempted.
+    """
+    payload = json.dumps(_wav(time_reference="1728000000"))
+
+    class Result:
+        stdout = payload
+
+    monkeypatch.setattr(probe, "ffprobe_path", lambda: "ffprobe")
+    monkeypatch.setattr(probe.subprocess, "run", lambda *a, **k: Result())
+
+
+def test_probe_upgrades_the_clock_to_frame_timecode(tmp_path, stub_ffprobe):
     """Without iXML `probe` can only render milliseconds; with it, frames."""
     import bwf
 
@@ -283,7 +303,7 @@ def test_probe_upgrades_the_clock_to_frame_timecode(tmp_path):
     assert probe.probe(slated).timecode == "10:00:00:00 NDF"
 
 
-def test_probe_attaches_the_slate(tmp_path):
+def test_probe_attaches_the_slate(tmp_path, stub_ffprobe):
     import bwf
 
     path = bwf.write_wav(tmp_path / "MIX_001.wav", ixml=bwf.ixml_document(),
@@ -294,7 +314,7 @@ def test_probe_attaches_the_slate(tmp_path):
     assert info.sound.track_names == ["Boom", "Lav 1"]
 
 
-def test_a_video_file_is_never_asked_for_ixml(tmp_path):
+def test_a_video_file_is_never_asked_for_ixml(tmp_path, stub_ffprobe):
     """The read is bounded, but a 28 GB clip should not be opened for it."""
     import bwf
 
@@ -311,16 +331,22 @@ def test_a_video_file_is_never_asked_for_ixml(tmp_path):
         probe.ixml.read_sound_info = original
 
 
-def test_an_unreadable_ixml_does_not_fail_the_probe(tmp_path, monkeypatch):
+def test_an_unreadable_ixml_does_not_fail_the_probe(tmp_path, monkeypatch,
+                                                    stub_ffprobe):
     """Metadata is a convenience; no take is worth abandoning a card over."""
     import bwf
 
     path = bwf.write_wav(tmp_path / "MIX_001.wav", ixml=bwf.ixml_document())
+    reached = []
 
     def boom(_path):
+        reached.append(_path)
         raise OSError("card pulled")
 
     monkeypatch.setattr(probe.ixml, "read_sound_info", boom)
     info = probe.probe(path)
-    assert info.container in (None, "WAVE")
+    # The stub is what makes this bite: without ffprobe the probe returns an
+    # empty MediaInfo, `boom` is never called, and the test passes vacuously.
+    assert reached
+    assert info.container == "WAVE"
 
