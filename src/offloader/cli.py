@@ -208,6 +208,14 @@ def build_parser() -> argparse.ArgumentParser:
                          help="do not recreate the source folder structure")
     offload.add_argument("--skip-existing", action="store_true",
                          help="skip files already present with a matching size")
+    order = offload.add_mutually_exclusive_group()
+    order.add_argument("--proxies-first", dest="proxies_first",
+                       action="store_true", default=True,
+                       help="copy the camera's proxy folders before the "
+                            "originals so an edit can start early (default)")
+    order.add_argument("--originals-first", dest="proxies_first",
+                       action="store_false",
+                       help="copy in plain tree order instead")
     _common_options(offload)
 
     report = sub.add_parser(
@@ -247,6 +255,9 @@ def _options_from(args: argparse.Namespace, destinations: list[Path]) -> engine.
         excludes=tuple(engine.DEFAULT_EXCLUDES) + tuple(args.exclude),
         preserve_structure=not args.flat,
         skip_existing=getattr(args, "skip_existing", False),
+        # `report` copies nothing, so it never defines this flag and the
+        # default is inert there -- rescan() reads the tree in scan order.
+        proxies_first=getattr(args, "proxies_first", True),
         job_name=args.name,
         extra_probe=not args.no_probe,
         profile=profile,

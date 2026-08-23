@@ -22,7 +22,27 @@ project uses [semantic versioning][semver].
   and is selectable in the desktop app's Simple mode and preset editor. This is
   a one-way verified transfer, not two-way sync — see `ROADMAP.md`.
 
+- **`run.py`, a launcher that needs no install.** `python run.py` opens the
+  desktop app and `python run.py <anything>` forwards to the CLI untouched,
+  exit codes included. It prepends `src/` to the import path, so a fresh clone
+  or a branch checked out beside an older `pip install offloader` runs the code
+  you are actually looking at rather than site-packages.
+
 ### Changed
+
+- **Proxies now copy before the originals.** Camera proxies are a rounding
+  error next to the originals (a 27-clip BRAW card is ~110 GB of original
+  against ~0.4 GB of H.264), so moving them first costs well under a percent of
+  the job's runtime and hands the edit something to cut with minutes in, rather
+  than after the last original has landed. It also improves the contact sheet:
+  thumbnails for an original ffmpeg cannot decode are borrowed from the
+  matching proxy, and that read now comes off the destination disk instead of
+  competing with the copy for the card. This is ordering only: the same files
+  are copied, and the report still reads in tree order, so the paperwork is
+  byte-identical whichever way the job ran. Use `--originals-first` (or the
+  "Copy proxies before the originals" checkbox in Simple mode and the preset
+  editor) for the old order. Presets saved before this option existed inherit
+  the new default.
 
 - **Transient read failures now retry at the failing chunk, not the whole
   file.** The reader reopens the source and resumes from the last chunk it

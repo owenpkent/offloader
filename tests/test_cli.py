@@ -243,3 +243,33 @@ def test_verify_fails_on_a_missing_file(source_tree: Path, tmp_path: Path, capsy
 def test_verify_reports_a_missing_manifest(tmp_path: Path, capsys):
     assert cli.main(["verify", str(tmp_path), "--quiet"]) == 2
     assert "no .mhl manifest" in capsys.readouterr().err
+
+
+def _parse_offload(*extra: str):
+    return cli.build_parser().parse_args(
+        ["offload", "--source", "s", "--dest", "d", *extra])
+
+
+def test_proxies_first_is_the_cli_default():
+    assert _parse_offload().proxies_first is True
+    assert _parse_offload("--proxies-first").proxies_first is True
+    assert _parse_offload("--originals-first").proxies_first is False
+
+
+def test_ordering_flags_are_mutually_exclusive():
+    with pytest.raises(SystemExit):
+        _parse_offload("--proxies-first", "--originals-first")
+
+
+def test_ordering_flag_reaches_the_engine_options():
+    assert cli._options_from(_parse_offload(), [Path("d")]).proxies_first is True
+    opts = cli._options_from(_parse_offload("--originals-first"), [Path("d")])
+    assert opts.proxies_first is False
+
+
+def test_report_command_has_no_ordering_flag_and_still_builds_options():
+    """`report` copies nothing, so it never defines the flag."""
+    args = cli.build_parser().parse_args(["report", "--source", "s"])
+    assert not hasattr(args, "proxies_first")
+    assert cli._options_from(args, [Path("d")]).proxies_first is True
+

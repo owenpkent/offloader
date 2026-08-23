@@ -36,6 +36,16 @@ pip install -e .            # engine + CLI
 pip install -e ".[gui]"     # and the desktop app
 ```
 
+Or skip the install and run the checkout directly. `run.py` puts `src/` at the
+front of the import path, so it always runs the code next to it rather than
+whatever pip last installed:
+
+```sh
+python run.py                     # launch the desktop app
+python run.py info                # anything the CLI takes, forwarded untouched
+python run.py offload --source E:\ --dest D:\video\A001 --name A001
+```
+
 Python 3.10+. `ffmpeg` and `ffprobe` on `PATH` enable metadata and thumbnails —
 without them the offload still runs and verifies, it just reports less. Verdana
 (standard on Windows and macOS) makes the PDF metrically identical to the
@@ -102,6 +112,8 @@ offloader verify D:\video\080426\A001
 | `--exclude GLOB` | extra filename pattern to skip; repeatable |
 | `--flat` | do not recreate the source folder structure; refused if two files would land on one path |
 | `--skip-existing` | skip files already present at matching size |
+| `--proxies-first` | copy the camera's proxy folders before the originals (default) |
+| `--originals-first` | copy in plain tree order instead |
 | `--retries N` | attempts per failing read on a transient error (default 3, 1 disables) |
 | `--retry-wait SECONDS` | pause before the first retry, backing off after (default 2) |
 | `--no-probe` | skip ffprobe metadata and thumbnails |
