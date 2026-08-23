@@ -125,6 +125,21 @@ def _clip_meta(job: Job, entry: FileEntry) -> str:
         good = " &nbsp; <b>GOOD TAKE</b>" if camera.good_take else ""
         rows.append(f"<div><b>{_esc(camera.slate())}</b> &nbsp; {extras}{good}</div>")
 
+    sound = media.sound
+    if sound:
+        slate = sound.slate()
+        if slate or sound.circled:
+            circled = " &nbsp; <b>CIRCLED</b>" if sound.circled else ""
+            rows.append(f"<div><b>{_esc(slate or '')}</b>{circled}</div>")
+        detail = [bit for bit in (sound.recorder, sound.project, sound.tracks())
+                  if bit]
+        if detail:
+            rows.append("<div>"
+                        + " &nbsp; ".join(_esc(bit) for bit in detail)
+                        + "</div>")
+        if sound.note:
+            rows.append(f"<div><b>Note:</b> {_esc(sound.note)}</div>")
+
     if media.audio_tracks:
         track = media.audio_tracks[0]
         count = len(media.audio_tracks)

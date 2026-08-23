@@ -22,6 +22,29 @@ project uses [semantic versioning][semver].
   and is selectable in the desktop app's Simple mode and preset editor. This is
   a one-way verified transfer, not two-way sync — see `ROADMAP.md`.
 
+- **The sound slate, read from the iXML chunk.** ffprobe does not surface iXML
+  at all, so every field a sound report is read for was invisible: scene, take,
+  sound roll, the mixer's note, the circled-take flag, and what each track was.
+  `offloader.ixml` reads the RIFF chunks directly, the way `braw` reads the
+  `moov` atom, for a few seeks and a few KB. The PDF now reads
+  `Roll SR082226 / Scene 12A / Take 3   CIRCLED` over
+  `Boom, Lav 1   LINEAR PCM   48 kHz   24-bit`, naming the channels rather than
+  describing their shape, and the CSV gains `Recorder`, `Project`,
+  `Track Names` and `Note` while filling the existing `Reel`, `Scene`, `Take`
+  and `Good Take` columns from whichever department wrote the slate.
+
+  It also settles the timecode. `SPEED/TIMECODE_RATE` is the frame rate the
+  `bext` sample count needed and could not supply, so a slated take now renders
+  as `10:00:00:00 NDF` instead of the millisecond clock. Without iXML the
+  milliseconds stay, for the same reason as before: a frame count with no rate
+  behind it is a guess.
+
+  A card is untrusted input, so the walk is bounded at every step, the payload
+  is capped, RF64's `ds64` sizes are honoured so a trailing chunk past 4 GB is
+  still reachable, Wave64 is declined rather than misread, and a doctype or
+  entity declaration is refused outright -- which closes billion-laughs and XXE
+  without taking on `defusedxml`. See [`docs/ixml.md`](docs/ixml.md).
+
 - **Sound recorder cards are a first-class offload.** The `media` profile
   already probed `.wav/.aif/.bwf`, but a card of production sound reported
   `(0 video)`, rendered a picture report with the interesting fields blank, and

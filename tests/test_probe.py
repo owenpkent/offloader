@@ -267,3 +267,60 @@ def test_a_broken_time_reference_does_not_raise():
 def test_video_timecode_is_untouched_by_the_audio_path():
     assert probe._build(_payload()).timecode == "12:54:38:12 NDF"
 
+
+# ------------------------------------------------- iXML, through a real file
+
+
+def test_probe_upgrades_the_clock_to_frame_timecode(tmp_path):
+    """Without iXML `probe` can only render milliseconds; with it, frames."""
+    import bwf
+
+    bare = bwf.write_wav(tmp_path / "bare.wav", bext=bwf.bext_chunk())
+    slated = bwf.write_wav(tmp_path / "slated.wav", ixml=bwf.ixml_document(),
+                           bext=bwf.bext_chunk())
+
+    assert probe.probe(bare).timecode == "10:00:00.000"
+    assert probe.probe(slated).timecode == "10:00:00:00 NDF"
+
+
+def test_probe_attaches_the_slate(tmp_path):
+    import bwf
+
+    path = bwf.write_wav(tmp_path / "MIX_001.wav", ixml=bwf.ixml_document(),
+                         bext=bwf.bext_chunk())
+    info = probe.probe(path)
+    assert info.is_audio
+    assert info.sound.slate() == "Roll SR082226 · Scene 12A · Take 3"
+    assert info.sound.track_names == ["Boom", "Lav 1"]
+
+
+def test_a_video_file_is_never_asked_for_ixml(tmp_path):
+    """The read is bounded, but a 28 GB clip should not be opened for it."""
+    import bwf
+
+    calls = []
+    original = probe.ixml.read_sound_info
+    probe.ixml.read_sound_info = lambda path: calls.append(path) or None
+    try:
+        probe.probe(bwf.write_wav(tmp_path / "a.wav", ixml=bwf.ixml_document()))
+        assert len(calls) == 1
+        calls.clear()
+        probe.probe(tmp_path / "nothing.braw")
+        assert calls == []
+    finally:
+        probe.ixml.read_sound_info = original
+
+
+def test_an_unreadable_ixml_does_not_fail_the_probe(tmp_path, monkeypatch):
+    """Metadata is a convenience; no take is worth abandoning a card over."""
+    import bwf
+
+    path = bwf.write_wav(tmp_path / "MIX_001.wav", ixml=bwf.ixml_document())
+
+    def boom(_path):
+        raise OSError("card pulled")
+
+    monkeypatch.setattr(probe.ixml, "read_sound_info", boom)
+    info = probe.probe(path)
+    assert info.container in (None, "WAVE")
+

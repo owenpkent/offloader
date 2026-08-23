@@ -57,8 +57,22 @@ COLUMNS = [
     "Take",
     "Good Take",
     "Colour Science",
+    "Recorder",
+    "Project",
+    "Track Names",
+    "Note",
     "Error",
 ]
+
+
+def _good_take(media) -> str:
+    """The circled take, from whichever department marked it."""
+    flag = media.camera.good_take
+    if flag is None:
+        flag = media.sound.circled
+    if flag is None:
+        return ""
+    return "yes" if flag else "no"
 
 
 def _audio_columns(media) -> list:
@@ -114,12 +128,17 @@ def write_csv(job: Job, path: Path, *, delimiter: str = ",", **_options) -> Path
                 *_audio_columns(media),
                 media.camera.model or "",
                 media.camera.lens or "",
-                media.camera.reel or "",
-                media.camera.scene or "",
-                media.camera.take or "",
-                ("yes" if media.camera.good_take else
-                 "no" if media.camera.good_take is False else ""),
+                media.camera.reel or media.sound.tape or "",
+                media.camera.scene or media.sound.scene or "",
+                media.camera.take or media.sound.take or "",
+                _good_take(media),
                 media.camera.colour_science or "",
+                media.sound.recorder or "",
+                media.sound.project or "",
+                "; ".join(media.sound.track_names),
+                # iXML's note first; a recorder with no iXML often puts
+                # the same thing in the bext description.
+                media.sound.note or media.sound.description or "",
             ]
 
             if not entry.destinations:

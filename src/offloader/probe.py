@@ -12,6 +12,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from . import ixml
 from .models import AudioTrack, CameraInfo, MediaInfo
 from .util import format_clock, format_timecode
 
@@ -197,7 +198,30 @@ def _probe(path: Path, timeout: float) -> MediaInfo:
     except (subprocess.SubprocessError, json.JSONDecodeError, OSError):
         return MediaInfo()
 
-    return _build(data)
+    info = _build(data)
+    if info.is_audio and ixml.is_wav(path):
+        _attach_sound(info, path)
+    return info
+
+
+def _attach_sound(info: MediaInfo, path: Path) -> None:
+    """Add what ffprobe could not read: the take, and the rate to read it at.
+
+    Only reached for a WAV with no video stream, so the cost is a couple of
+    seeks on a file that is megabytes rather than gigabytes.
+    """
+    sound = ixml.read_sound_info(path)
+    if sound is None:
+        return
+    info.sound = sound
+
+    rate = info.audio_tracks[0].sample_rate_hz if info.audio_tracks else None
+    frames = ixml.timecode_of(sound, rate)
+    if frames:
+        # iXML supplied the frame rate, so the clock `_build` derived from the
+        # bare sample count can be upgraded to the frame timecode a sound
+        # report is expected to show.
+        info.timecode = frames
 
 
 def _build(data: dict) -> MediaInfo:

@@ -337,6 +337,23 @@ class PdfReport:
             if slate_runs:
                 lines.append(slate_runs)
 
+        sound = media.sound
+        if sound:
+            # The sound department's slate, in the same shape as the camera's:
+            # a reader hunting for scene and take should not have to learn two
+            # layouts depending on which cart the card came off.
+            slate_runs: list[Run] = []
+            if sound.slate():
+                slate_runs.append(_label(sound.slate()))
+            if sound.circled:
+                if slate_runs:
+                    slate_runs.append(_value(layout.RUN_SEPARATOR))
+                slate_runs.append(_label("CIRCLED"))
+            if slate_runs:
+                lines.append(slate_runs)
+            if sound.note:
+                lines.append([_label("Note: "), _value(sound.note)])
+
         for track in media.audio_tracks[:1]:
             name = channel_layout_name(track.channels, track.layout)
             detail = [track.codec]
@@ -358,8 +375,14 @@ class PdfReport:
                 if track.sample_rate_hz:
                     detail.append(f"{track.sample_rate_hz} hz")
             count = len(media.audio_tracks)
+            if media.is_audio and sound.track_names:
+                # What each channel *was* beats what shape it is: "Boom, Lav 1"
+                # tells an editor something "2 Stereo track" cannot.
+                head = ", ".join(sound.track_names)
+            else:
+                head = f"{count} {name} track" + ("s" if count > 1 else "")
             lines.append([
-                _label(f"{count} {name} track" + ("s" if count > 1 else "")),
+                _label(head),
                 _value(layout.RUN_SEPARATOR + layout.RUN_SEPARATOR.join(detail)),
             ])
 

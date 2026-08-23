@@ -385,3 +385,113 @@ def test_the_html_header_reports_audio_on_a_sound_card(tmp_path: Path):
     assert "Audio Files" in text and "Video Files" not in text
     assert "48 kHz" in text and "24-bit" in text
 
+
+# ------------------------------------------------------- the slate from iXML
+
+
+def _slated_job(tmp_path: Path) -> Job:
+    """A sound job whose takes carry iXML, as a recorder would leave them."""
+    from offloader.models import SoundInfo
+
+    job = _sound_job(tmp_path)
+    for index, entry in enumerate(job.files, start=1):
+        entry.media.sound = SoundInfo(
+            project="ChairsDoc", scene="12A", take=str(index), tape="SR082226",
+            note="wind on the boom", circled=(index == 2),
+            recorder="Sound Devices 833", track_names=["Boom", "Lav 1"],
+            timecode_rate=25.0,
+        )
+        entry.media.timecode = "10:00:00:00 NDF"
+    return job
+
+
+def test_the_pdf_shows_the_sound_slate(tmp_path: Path):
+    path = write_pdf(_slated_job(tmp_path), tmp_path / "JobReport.pdf")
+    with fitz.open(path) as document:
+        text = "".join(page.get_text() for page in document)
+
+    assert "Roll SR082226" in text and "Scene 12A" in text and "Take 1" in text
+    assert "Note: wind on the boom" in text
+    assert "CIRCLED" in text
+    assert "10:00:00:00 NDF" in text
+
+
+def test_the_pdf_names_the_tracks_instead_of_their_shape(tmp_path: Path):
+    """"Boom, Lav 1" tells an editor what "2 Stereo track" cannot."""
+    path = write_pdf(_slated_job(tmp_path), tmp_path / "JobReport.pdf")
+    with fitz.open(path) as document:
+        text = "".join(page.get_text() for page in document)
+    assert "Boom, Lav 1" in text
+    assert "Stereo track" not in text
+
+
+def test_an_unslated_sound_card_still_names_the_channel_shape(tmp_path: Path):
+    """No iXML means no track names, and the generic label is still right."""
+    path = write_pdf(_sound_job(tmp_path), tmp_path / "JobReport.pdf")
+    with fitz.open(path) as document:
+        text = "".join(page.get_text() for page in document)
+    assert "Stereo track" in text
+
+
+def test_the_slate_lines_survive_the_metadata_line_cap(tmp_path: Path):
+    """Seven baselines, and a slated take fills every one of them."""
+    from offloader.reports import layout
+    from offloader.reports.pdf import PdfReport
+
+    job = _slated_job(tmp_path)
+    writer = PdfReport.__new__(PdfReport)
+    writer.job = job
+    lines = writer._metadata_lines(job.files[0])
+    assert len(lines) <= len(layout.META_BASELINE_OFFSETS)
+    rendered = [" ".join(run.text for run in line) for line in lines]
+    assert any("Roll SR082226" in line for line in rendered), rendered
+    assert any("Boom, Lav 1" in line for line in rendered), rendered
+
+
+def test_the_csv_slate_columns_take_from_whichever_department_wrote_them(
+        tmp_path: Path):
+    path = write_csv(_slated_job(tmp_path), tmp_path / "JobReport.csv")
+    rows = list(csv.reader(path.open(encoding="utf-8")))
+    header, first, second = rows[2], rows[3], rows[4]
+
+    assert first[header.index("Reel")] == "SR082226"
+    assert first[header.index("Scene")] == "12A"
+    assert first[header.index("Take")] == "1"
+    assert first[header.index("Recorder")] == "Sound Devices 833"
+    assert first[header.index("Project")] == "ChairsDoc"
+    assert first[header.index("Track Names")] == "Boom; Lav 1"
+    assert first[header.index("Note")] == "wind on the boom"
+    # Only the second take was circled.
+    assert first[header.index("Good Take")] == "no"
+    assert second[header.index("Good Take")] == "yes"
+    assert all(len(row) == len(header) for row in rows[3:])
+
+
+def test_the_csv_camera_slate_still_wins_on_a_picture_card(sample_job: Job,
+                                                           tmp_path: Path):
+    path = write_csv(sample_job, tmp_path / "JobReport.csv")
+    rows = list(csv.reader(path.open(encoding="utf-8")))
+    header = rows[2]
+    for row in rows[3:]:
+        assert row[header.index("Recorder")] == ""
+        assert len(row) == len(header)
+
+
+def test_the_html_shows_the_slate_and_the_tracks(tmp_path: Path):
+    path = write_html(_slated_job(tmp_path), tmp_path / "JobReport.html")
+    text = path.read_text(encoding="utf-8")
+    assert "Roll SR082226" in text
+    assert "Sound Devices 833" in text
+    assert "1 Boom" in text and "2 Lav 1" in text
+    assert "wind on the boom" in text
+
+
+def test_the_html_escapes_what_the_card_wrote(tmp_path: Path):
+    """iXML is attacker-controlled text; it must not reach the page as markup."""
+    job = _slated_job(tmp_path)
+    job.files[0].media.sound.note = "<script>alert(1)</script>"
+    path = write_html(job, tmp_path / "JobReport.html")
+    text = path.read_text(encoding="utf-8")
+    assert "<script>alert(1)</script>" not in text
+    assert "&lt;script&gt;" in text
+

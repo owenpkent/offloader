@@ -50,13 +50,16 @@ reference exactly.
 | Band | x 13 → 779, height 80.9, on odd-indexed rows |
 | Band fill | rgb(0.3333, 0.4667, 0.6914) at 15 % alpha |
 | Filename | x 15, baseline `top + 8`, 8 pt bold `#4c4c4c` |
-| Metadata baselines | `top +` 19, 28, 37, 46, 55 |
+| Metadata baselines | `top +` 19, 28, 37, 46, 55, 64, 73 |
+| Metadata lines | capped at the number of baselines; extras are dropped, not overflowed |
 | Metadata type | 6 pt; labels bold `#666666`, values `#7f7f7f` |
 | Contact sheet | x 232.0 → 782.3, 4 cells of 137.575 × 78 at `top` |
 
 The metadata block holds, in order: checksum · size and created · container,
-resolution, codec and frame rate · duration, timecode and frame count · audio
-tracks. Lines with nothing to report are omitted rather than left blank.
+resolution, codec and frame rate · duration, timecode and frame count · the
+slate · audio tracks. Lines with nothing to report are omitted rather than left
+blank. The reference uses the first five baselines; the last two exist for the
+slate lines a camera or a recorder can add.
 
 Long lines shrink to fit the 217 pt column beside the strip — the reference
 drops its duration/timecode line to 5.7 pt for exactly this reason.
@@ -65,6 +68,11 @@ drops its duration/timecode line to 5.7 pt for exactly this reason.
 
 The contact sheet is replaced by a 78 × 78 filmstrip glyph at x 15, and the text
 block shifts to x 95.95.
+
+A sound card's rows use the slate baselines: checksum, size and created,
+container, duration and timecode, the sound slate with its circled-take flag,
+the mixer's note, and the track line. That is seven, which is the cap, so a
+fully-slated take fills the block exactly.
 
 On a card with **no** video stream anywhere, the header grid's `Video Files`
 cell reads `Audio Files` and carries the audio count instead. The grid keeps its

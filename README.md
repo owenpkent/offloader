@@ -188,17 +188,29 @@ offloader offload --source E:\ --dest D:\audio\082226\SOUND_A --name SOUND_A
 - **Format reads as sound.** `WAVE · 48 kHz · 24-bit · 2 ch` instead of a
   resolution and frame rate. A clip's audio line is left exactly as the
   reference renders it, so picture reports still match ShotPut digit for digit.
-- **Timecode comes off the BWF.** A broadcast WAV stores its origin as
-  `time_reference`, the sample count since midnight, which is divided by the
-  sample rate to give the start clock. It is rendered `10:00:00.000`, not
-  `10:00:00:00`: the frame rate to convert the remainder into frames lives in
-  iXML, which ffprobe does not read, so the milliseconds are exact where frames
-  would be a guess.
+- **The slate comes off the iXML.** Scene, take, sound roll, the mixer's note,
+  the circled-take flag and what each track was are read straight out of the
+  `iXML` chunk, which ffprobe does not surface at all. The report reads
+  `Roll SR082226 · Scene 12A · Take 3   CIRCLED` over
+  `Boom, Lav 1   LINEAR PCM   48 kHz   24-bit`, naming the channels rather than
+  describing their shape.
+- **Timecode is real frame timecode when the card says enough for one.** A
+  broadcast WAV stores its origin as a sample count since midnight, in `bext`
+  and again in iXML. Dividing it by the sample rate gives the clock; turning
+  the remainder into frames needs the rate in `SPEED/TIMECODE_RATE`, which only
+  iXML carries. With iXML the report shows `10:00:00:00 NDF`. Without it,
+  `10:00:00.000` -- milliseconds, because a frame count there would mean
+  picking a rate at random and printing a guess in the field the report exists
+  for. See [`docs/ixml.md`](docs/ixml.md).
 - **No thumbnails are attempted.** A file with no picture already renders with
   the filmstrip glyph in place of the contact sheet.
 
-The CSV gains `Audio Codec`, `Audio Channels`, `Sample Rate (Hz)` and
-`Bit Depth` columns, blank for files with no audio track.
+The CSV gains `Audio Codec`, `Audio Channels`, `Sample Rate (Hz)`, `Bit Depth`,
+`Recorder`, `Project`, `Track Names` and `Note` columns, blank for files that
+carry none of it. The existing `Reel`, `Scene`, `Take` and `Good Take` columns
+are filled from whichever department wrote the slate: a sound roll lands in
+`Reel`, and a circled take reads as a good take, so one column means one thing
+whichever cart the card came off.
 
 ## Generic data transfers
 
@@ -379,6 +391,7 @@ general-purpose tool reports a filename, a size, and a placeholder icon.
 | [`docs/performance.md`](docs/performance.md) | Why not robocopy, with benchmarks and the confounds that made the first run worthless |
 | [`docs/braw.md`](docs/braw.md) | Blackmagic RAW container parsing, proxy pairing, and the interrupted-recording check |
 | [`docs/ascmhl.md`](docs/ascmhl.md) | ASC MHL v2.0, and how it was validated against the reference implementation |
+| [`docs/ixml.md`](docs/ixml.md) | Broadcast WAV chunk walking, the iXML slate, and where sound timecode comes from |
 
 ## Library
 
