@@ -121,6 +121,13 @@ class PresetEditor(QDialog):
         self._preserve.setChecked(self._source.preserve_structure)
         self._skip = QCheckBox("Skip files already present at matching size")
         self._skip.setChecked(self._source.skip_existing)
+        self._proxies_first = QCheckBox("Copy proxies before the originals")
+        self._proxies_first.setToolTip(
+            "Proxy folders are tiny next to camera originals, so moving them "
+            "first costs the job almost nothing and lets an edit start while "
+            "the originals are still copying. The report is unaffected: it "
+            "always reads in tree order.")
+        self._proxies_first.setChecked(self._source.proxies_first)
 
         self._excludes = QLineEdit(", ".join(self._source.excludes))
         self._excludes.setPlaceholderText("*.tmp, *.thm")
@@ -152,6 +159,7 @@ class PresetEditor(QDialog):
         form.addRow("PDF footer", self._footer)
         form.addRow("", self._preserve)
         form.addRow("", self._skip)
+        form.addRow("", self._proxies_first)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self._accept)
@@ -193,6 +201,7 @@ class PresetEditor(QDialog):
             naming_template=self._naming.text().strip() or "{card}",
             preserve_structure=self._preserve.isChecked(),
             skip_existing=self._skip.isChecked(),
+            proxies_first=self._proxies_first.isChecked(),
             excludes=excludes,
             logo=Path(logo_text) if logo_text else None,
             footer=footer_text or None,

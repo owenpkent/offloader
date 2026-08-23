@@ -22,7 +22,67 @@ project uses [semantic versioning][semver].
   and is selectable in the desktop app's Simple mode and preset editor. This is
   a one-way verified transfer, not two-way sync — see `ROADMAP.md`.
 
+- **The sound slate, read from the iXML chunk.** ffprobe does not surface iXML
+  at all, so every field a sound report is read for was invisible: scene, take,
+  sound roll, the mixer's note, the circled-take flag, and what each track was.
+  `offloader.ixml` reads the RIFF chunks directly, the way `braw` reads the
+  `moov` atom, for a few seeks and a few KB. The PDF now reads
+  `Roll SR082226 / Scene 12A / Take 3   CIRCLED` over
+  `Boom, Lav 1   LINEAR PCM   48 kHz   24-bit`, naming the channels rather than
+  describing their shape, and the CSV gains `Recorder`, `Project`,
+  `Track Names` and `Note` while filling the existing `Reel`, `Scene`, `Take`
+  and `Good Take` columns from whichever department wrote the slate.
+
+  It also settles the timecode. `SPEED/TIMECODE_RATE` is the frame rate the
+  `bext` sample count needed and could not supply, so a slated take now renders
+  as `10:00:00:00 NDF` instead of the millisecond clock. Without iXML the
+  milliseconds stay, for the same reason as before: a frame count with no rate
+  behind it is a guess.
+
+  A card is untrusted input, so the walk is bounded at every step, the payload
+  is capped, RF64's `ds64` sizes are honoured so a trailing chunk past 4 GB is
+  still reachable, Wave64 is declined rather than misread, and a doctype or
+  entity declaration is refused outright -- which closes billion-laughs and XXE
+  without taking on `defusedxml`. See [`docs/ixml.md`](docs/ixml.md).
+
+- **Sound recorder cards are a first-class offload.** The `media` profile
+  already probed `.wav/.aif/.bwf`, but a card of production sound reported
+  `(0 video)`, rendered a picture report with the interesting fields blank, and
+  dropped the one field a sound report is read for. Now: `Job.audio_files` and
+  `MediaInfo.is_audio` alongside the video count, kept disjoint so a clip with
+  dialogue counts once and the numbers still add up; the summary grid's `Video
+  Files` cell reads `Audio Files` on a card with no picture, borrowing the cell
+  rather than growing the four-row reference layout; bit depth captured from
+  ffprobe; the format line reading `48 kHz / 24-bit`; and start timecode
+  recovered from the broadcast WAV's `time_reference` sample count. Where that
+  count is all the file gives up, it renders as the millisecond clock
+  `10:00:00.000` rather than an invented frame count -- the entry above turns it
+  into real frame timecode whenever iXML supplies the rate. A clip's own
+  audio line is left exactly as the reference renders it, so picture reports
+  still match ShotPut digit for digit. The CSV gains `Audio Codec`,
+  `Audio Channels`, `Sample Rate (Hz)` and `Bit Depth`.
+
+- **`run.py`, a launcher that needs no install.** `python run.py` opens the
+  desktop app and `python run.py <anything>` forwards to the CLI untouched,
+  exit codes included. It prepends `src/` to the import path, so a fresh clone
+  or a branch checked out beside an older `pip install offloader` runs the code
+  you are actually looking at rather than site-packages.
+
 ### Changed
+
+- **Proxies now copy before the originals.** Camera proxies are a rounding
+  error next to the originals (a 27-clip BRAW card is ~110 GB of original
+  against ~0.4 GB of H.264), so moving them first costs well under a percent of
+  the job's runtime and hands the edit something to cut with minutes in, rather
+  than after the last original has landed. It also improves the contact sheet:
+  thumbnails for an original ffmpeg cannot decode are borrowed from the
+  matching proxy, and that read now comes off the destination disk instead of
+  competing with the copy for the card. This is ordering only: the same files
+  are copied, and the report still reads in tree order, so the paperwork is
+  byte-identical whichever way the job ran. Use `--originals-first` (or the
+  "Copy proxies before the originals" checkbox in Simple mode and the preset
+  editor) for the old order. Presets saved before this option existed inherit
+  the new default.
 
 - **Transient read failures now retry at the failing chunk, not the whole
   file.** The reader reopens the source and resumes from the last chunk it

@@ -87,6 +87,9 @@ class AudioTrack:
     codec: str = "LINEAR PCM"
     bit_rate_kbps: float | None = None
     sample_rate_hz: int | None = None
+    #: Bits per sample. A sound report is read as "48 kHz / 24-bit", so the
+    #: depth is not decoration on an audio-only card -- it is half the format.
+    bit_depth: int | None = None
 
 
 @dataclass
@@ -126,6 +129,56 @@ class CameraInfo:
 
 
 @dataclass
+class SoundInfo:
+    """What a field recorder wrote about the take.
+
+    Sourced from the `iXML` chunk of a broadcast WAV, with `bext` filling in
+    what iXML has no field for. Kept separate from `CameraInfo` deliberately: a
+    sound recorder is not a camera, and folding "who recorded this" into a type
+    whose fields are model, lens and colour science would make both halves read
+    as lies on the card that did not write them.
+    """
+
+    project: str | None = None
+    scene: str | None = None
+    take: str | None = None
+    tape: str | None = None             # the sound roll, the reel's equivalent
+    note: str | None = None             # the mixer's note on the take
+    circled: bool | None = None         # the sound department's "good take"
+    file_uid: str | None = None
+    recorder: str | None = None         # bext Originator: "Sound Devices 833"
+    description: str | None = None      # bext Description
+    origination: str | None = None      # bext date and time of recording
+    track_names: list[str] = field(default_factory=list)
+    #: The frame rate the start timecode should be read at. Only iXML carries
+    #: it, which is why a WAV without iXML can only be given a clock.
+    timecode_rate: float | None = None
+    drop_frame: bool = False
+    sample_rate_hz: int | None = None
+    samples_since_midnight: int | None = None
+
+    def slate(self) -> str | None:
+        parts = [f"Roll {self.tape}" if self.tape else None,
+                 f"Scene {self.scene}" if self.scene else None,
+                 f"Take {self.take}" if self.take else None]
+        present = [p for p in parts if p]
+        return " · ".join(present) if present else None
+
+    def tracks(self) -> str | None:
+        """"1 Boom   2 Lav" -- what each channel actually was."""
+        if not self.track_names:
+            return None
+        return "   ".join(f"{index} {name}"
+                          for index, name in enumerate(self.track_names, start=1))
+
+    def __bool__(self) -> bool:
+        return any((self.project, self.scene, self.take, self.tape, self.note,
+                    self.circled is not None, self.file_uid, self.recorder,
+                    self.description, self.origination, self.track_names,
+                    self.timecode_rate, self.samples_since_midnight is not None))
+
+
+@dataclass
 class MediaInfo:
     """Everything ffprobe told us about a media file. All fields optional:
     non-media files carry an empty MediaInfo and render without a metadata
@@ -141,10 +194,21 @@ class MediaInfo:
     timecode: str | None = None           # "12:54:38:12 NDF"
     audio_tracks: list[AudioTrack] = field(default_factory=list)
     camera: CameraInfo = field(default_factory=CameraInfo)
+    sound: SoundInfo = field(default_factory=SoundInfo)
 
     @property
     def is_video(self) -> bool:
         return self.width is not None and self.height is not None
+
+    @property
+    def is_audio(self) -> bool:
+        """A file that carries sound and no picture.
+
+        Deliberately not "has an audio track": a clip with dialogue is a video
+        file, and counting it as both would make the header numbers overlap and
+        stop adding up to anything a reader could check.
+        """
+        return not self.is_video and bool(self.audio_tracks)
 
 
 @dataclass
@@ -200,6 +264,10 @@ class FileEntry:
     def is_video(self) -> bool:
         return self.media.is_video
 
+    @property
+    def is_audio(self) -> bool:
+        return self.media.is_audio
+
 
 @dataclass
 class Job:
@@ -237,6 +305,19 @@ class Job:
     @property
     def video_files(self) -> int:
         return sum(1 for f in self.files if f.is_video)
+
+    @property
+    def audio_files(self) -> int:
+        return sum(1 for f in self.files if f.is_audio)
+
+    @property
+    def is_audio_only(self) -> bool:
+        """A sound recorder's card: sound and no picture anywhere on it.
+
+        Reports use this to decide which count is worth the one cell the
+        reference layout gives them.
+        """
+        return self.audio_files > 0 and self.video_files == 0
 
     @property
     def elapsed_sec(self) -> float:

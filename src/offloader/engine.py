@@ -215,6 +215,10 @@ class OffloadOptions:
     preserve_structure: bool = True
     #: Skip files that already exist at the destination with a matching size.
     skip_existing: bool = False
+    #: Move the camera's proxy directories before the originals. Ordering only:
+    #: the same files are copied either way, and the report still reads in tree
+    #: order. See `order_for_transfer`.
+    proxies_first: bool = True
     job_name: str | None = None
     thumbnail_dir: Path | None = None
     extra_probe: bool = True
@@ -284,6 +288,47 @@ def scan(root: Path, excludes: Iterable[str] = DEFAULT_EXCLUDES) -> list[Path]:
             if not is_excluded(candidate, patterns):
                 found.append(candidate)
     return found
+
+
+def is_proxy(path: Path, source_root: Path) -> bool:
+    """Whether `path` sits inside a proxy directory under `source_root`."""
+    try:
+        relative = Path(path).relative_to(source_root)
+    except ValueError:                   # not under this root at all
+        return False
+    names = {name.lower() for name in companions.PROXY_DIRECTORIES}
+    # parts[:-1] is the directories only -- a *file* called "proxy" is a clip
+    # with an unlucky name, not a proxy.
+    return any(part.lower() in names for part in relative.parts[:-1])
+
+
+def order_for_transfer(files: Sequence[Path], source_root: Path,
+                       proxies_first: bool = True) -> list[Path]:
+    """Scan order, with the proxy directories hoisted to the front.
+
+    Proxies are a rounding error next to the originals -- a typical 27-clip
+    BRAW card is ~110 GB of original against ~0.4 GB of H.264 -- so moving them
+    first costs the job well under a percent of its runtime and hands the edit
+    something to cut with minutes in, rather than after the last original has
+    landed. That is the whole reason this is the default.
+
+    It also improves the contact sheet. Thumbnails for a camera original ffmpeg
+    cannot decode are borrowed from the matching proxy, and
+    `companions.thumbnail_source` looks at the destination before the source:
+    with the proxies already down, that read comes off the destination disk
+    instead of competing with the copy for the card.
+
+    The partition is stable, so scan order survives inside each group, and a
+    card with no proxy directory is returned untouched.
+    """
+    if not proxies_first:
+        return list(files)
+    root = Path(source_root)
+    proxies = [path for path in files if is_proxy(path, root)]
+    if not proxies:
+        return list(files)
+    originals = [path for path in files if not is_proxy(path, root)]
+    return proxies + originals
 
 
 def _destination_for(source: Path, source_root: Path, dest_root: Path,
@@ -491,6 +536,11 @@ def run(source_root: Path, options: OffloadOptions,
                                      options.preserve_structure)
     counters = _Counters(job_bytes_total=sum(p.stat().st_size for p in files))
 
+    # `files` stays the tree order the card is laid out in and remains the
+    # authority on what the job contains; `transfer` is only the sequence the
+    # bytes move in. job.files is put back into `files` order before returning.
+    transfer = order_for_transfer(files, source_root, options.proxies_first)
+
     host = sysinfo.collect()
     job = Job(
         name=options.job_name or source_root.name,
@@ -514,7 +564,7 @@ def run(source_root: Path, options: OffloadOptions,
         if progress:
             progress(event)
 
-    for index, source in enumerate(files):
+    for index, source in enumerate(transfer):
         # Between files is the cheapest place to honour a pause or cancel.
         if control is not None:
             try:
@@ -786,6 +836,16 @@ def run(source_root: Path, options: OffloadOptions,
         job.files.append(entry)
 
     job.finished = _dt.datetime.now()
+
+    # Which order the bytes moved in is an I/O decision and nobody reading a
+    # report cares; a contact sheet that opened with the proxy folder and
+    # buried the clips behind it would be a regression. Sort the rows back into
+    # tree order so the paperwork is byte-identical whichever way this ran.
+    # Anything not in `position` (there should be nothing) sorts to the end
+    # rather than raising while a job is being written up.
+    position = {path: rank for rank, path in enumerate(files)}
+    job.files.sort(key=lambda entry: position.get(entry.source, len(files)))
+
     if job.cancelled:
         not_attempted = len(files) - len(job.files)
         if not_attempted > 0:

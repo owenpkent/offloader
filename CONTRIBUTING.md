@@ -50,14 +50,17 @@ test files, but if you run Qt code by hand:
 QT_QPA_PLATFORM=offscreen python -m pytest tests/test_gui.py
 ```
 
-## Testing without a camera card
+## Testing without a card
 
-Almost nobody has a 27 GB BRAW clip and a failing card reader to hand, so the
-suite fakes all of it:
+Almost nobody has a 27 GB BRAW clip, a sound cart and a failing card reader to
+hand, so the suite fakes all of it:
 
 | To exercise | Use |
 | --- | --- |
 | A BRAW file | `tests/test_braw.py::write_braw` builds a real container atom by atom |
+| A broadcast WAV | `tests/bwf.py::write_wav` assembles the RIFF chunks; ffmpeg cannot write an `iXML` chunk at all |
+| A sound card | `tests/bwf.py::write_sound_card` writes a folder of slated takes 90 seconds apart |
+| A hostile `iXML` chunk | `tests/test_ixml.py` sets a size past the end of the file, zeroes a chunk, or plants a doctype |
 | A flaky reader | `tests/test_retry.py` patches `builtins.open` to fail transiently |
 | A failing destination | `tests/test_data_safety.py` returns handles that raise on write |
 | Corruption | flip a byte and re-verify; size stays identical, checksum does not |
