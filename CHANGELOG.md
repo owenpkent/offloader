@@ -54,10 +54,10 @@ project uses [semantic versioning][semver].
   Files` cell reads `Audio Files` on a card with no picture, borrowing the cell
   rather than growing the four-row reference layout; bit depth captured from
   ffprobe; the format line reading `48 kHz / 24-bit`; and start timecode
-  recovered from the broadcast WAV's `time_reference` sample count. That clock
-  renders as `10:00:00.000` rather than `10:00:00:00`, because the frame rate
-  to convert the remainder lives in iXML, which ffprobe cannot read, and a
-  guessed rate in that field is worse than an honest millisecond. A clip's own
+  recovered from the broadcast WAV's `time_reference` sample count. Where that
+  count is all the file gives up, it renders as the millisecond clock
+  `10:00:00.000` rather than an invented frame count -- the entry above turns it
+  into real frame timecode whenever iXML supplies the rate. A clip's own
   audio line is left exactly as the reference renders it, so picture reports
   still match ShotPut digit for digit. The CSV gains `Audio Codec`,
   `Audio Channels`, `Sample Rate (Hz)` and `Bit Depth`.

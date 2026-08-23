@@ -11,8 +11,11 @@ re-verification downstream, and a self-contained HTML page.
 
 The flagship use is camera-card offload, with job reports that match the layout
 of [ShotPut Pro][spp]'s `JobReport.pdf` — a PDF contact sheet with per-clip
-metadata, ffprobe media details and Blackmagic RAW container checks. But that
-media layer is a profile, not the engine: `--profile data` (shorthand
+metadata, ffprobe media details and Blackmagic RAW container checks. The same
+profile covers the sound cart: a card of broadcast WAVs reports its slate,
+tracks and timecode rather than a picture report with the fields blank, see
+[Sound recorder cards](#sound-recorder-cards). But that media layer is a
+profile, not the engine: `--profile data` (shorthand
 `--generic`) offloads any large one-way transfer — datasets, disk images,
 render output, backups — with the same verified copy and manifests, and nothing
 depending on ffmpeg. See [Generic data transfers](#generic-data-transfers).
@@ -149,8 +152,9 @@ the destination, at the cost of reading everything twice.
 - **PDF** — the parity target. Header summary, one banded row per clip with a
   four-frame contact sheet and metadata, then a full source/destination listing
   with per-file verdicts.
-- **CSV** — one row per source/destination pair, with checksums, media and
-  camera metadata, and status. For spreadsheets and ingest scripts.
+- **CSV** — one row per source/destination pair, with checksums, media
+  metadata, the slate from whichever department wrote it (camera or sound), and
+  status. For spreadsheets and ingest scripts.
 - **MHL** — Media Hash List 1.1, paths relative to the file's own directory so
   it travels with the media. Written per destination.
 - **ASC MHL** — the format the ASC publishes and ARRI recommends. A numbered
@@ -161,6 +165,33 @@ the destination, at the cost of reading everything twice.
   [`docs/ascmhl.md`](docs/ascmhl.md).
 - **HTML** — self-contained; thumbnails inlined as data URIs, light and dark
   themes, no external requests.
+
+## Proxies first
+
+Camera proxies move before the originals by default. A 27-clip BRAW card is
+around 110 GB of original against 0.4 GB of H.264, so the proxies land in the
+first few seconds of a job that runs for the better part of an hour, and an
+edit can start cutting while the originals are still copying. The cost is well
+under a percent of the runtime.
+
+It also improves the contact sheet. Thumbnails for an original ffmpeg cannot
+decode are borrowed from the matching proxy, and the proxy is looked for at the
+destination before the source — so with the proxies already down, that read
+comes off the destination disk instead of competing with the copy for the card.
+
+**This is ordering only.** The same files are copied either way, and the report
+is sorted back into tree order before it is written, so the paperwork is
+identical whichever way the job ran — a contact sheet that opened with the
+proxy folder and buried the clips would be a worse report bought with a faster
+transfer.
+
+```sh
+offloader offload --source E:\ --dest D:\video\A001 --originals-first
+```
+
+`--originals-first` restores plain tree order, and both GUI modes have a
+checkbox. Presets saved before the option existed inherit the new default.
+A card with no proxy directory is unaffected.
 
 ## Sound recorder cards
 
@@ -299,6 +330,10 @@ Two modes, switched from the header:
   how often a preset gets used.
 - **Simple mode** — source, destinations and options on one screen, for a
   one-off where building a preset would be more work than the job.
+
+Both carry a **Copy proxies before the originals** checkbox, on by default. It
+changes only what moves first, never what is copied or how the report reads —
+see [Proxies first](#proxies-first).
 
 Down the left is the **drive panel**: every mounted volume with a capacity bar
 (amber past 80 %, red past 95 %) and one-click *Source* / *Destination* buttons.
