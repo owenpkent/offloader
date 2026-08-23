@@ -124,6 +124,35 @@ def format_timecode(frames: int, fps: float, drop_frame: bool = False) -> str:
     return f"{hours:02d}:{minutes:02d}:{secs:02d}:{fr:02d} {tag}"
 
 
+def format_sample_rate(hz: int | None) -> str | None:
+    """48000 -> "48 kHz", 44100 -> "44.1 kHz"."""
+    if not hz or hz <= 0:
+        return None
+    khz = hz / 1000.0
+    return f"{khz:g} kHz"
+
+
+def format_clock(seconds: float) -> str:
+    """Seconds since midnight as "HH:MM:SS.mmm".
+
+    Used for the start time of a broadcast WAV. It is deliberately not frame
+    timecode: a BWF stores its origin as a sample count, and the frame rate to
+    divide it by lives in iXML, which ffprobe does not read. Rendering
+    "10:00:00:00" would mean picking a rate at random and printing a guess in
+    the field a sound report is read for, so the sub-second part is shown as
+    milliseconds instead -- exact, and visibly not frames.
+    """
+    if seconds < 0:
+        seconds = 0.0
+    total = int(seconds)
+    ms = int(round((seconds - total) * 1000))
+    if ms == 1000:                       # rounding carried into the next second
+        total, ms = total + 1, 0
+    hours, rem = divmod(total, 3600)
+    minutes, secs = divmod(rem, 60)
+    return f"{hours % 24:02d}:{minutes:02d}:{secs:02d}.{ms:03d}"
+
+
 def format_fps(fps: float) -> str:
     """"24 FPS" for integral rates, "23.98 FPS" otherwise.
 

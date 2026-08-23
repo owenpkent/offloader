@@ -66,6 +66,14 @@ drops its duration/timecode line to 5.7 pt for exactly this reason.
 The contact sheet is replaced by a 78 × 78 filmstrip glyph at x 15, and the text
 block shifts to x 95.95.
 
+On a card with **no** video stream anywhere, the header grid's `Video Files`
+cell reads `Audio Files` and carries the audio count instead. The grid keeps its
+four rows and every coordinate: the cell is borrowed, not added, because the
+reference gives it exactly four and `Video Files: 0` is the one value on such a
+page that carries no information. The audio line also renders as
+`LINEAR PCM   48 kHz   24-bit   2304.00 kb/s` rather than the reference's
+`48000 hz` form, which is kept for files that do have a picture.
+
 ## Detail listing
 
 Introduced by a section header, then two lines per file. Offsets are cumulative

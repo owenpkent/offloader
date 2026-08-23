@@ -20,6 +20,7 @@ from ..util import (
     format_file_datetime,
     format_fps,
     format_job_datetime,
+    format_sample_rate,
     format_size,
 )
 
@@ -129,10 +130,22 @@ def _clip_meta(job: Job, entry: FileEntry) -> str:
         count = len(media.audio_tracks)
         name = channel_layout_name(track.channels, track.layout)
         detail = [track.codec]
-        if track.bit_rate_kbps:
-            detail.append(f"{track.bit_rate_kbps:.2f} kb/s")
-        if track.sample_rate_hz:
-            detail.append(f"{track.sample_rate_hz} hz")
+        if media.is_audio:
+            # On a sound card this line is the format line, so it reads the way
+            # a sound report reads. The video path is left as the PDF renders
+            # it, so the two documents still agree clip for clip.
+            rate = format_sample_rate(track.sample_rate_hz)
+            if rate:
+                detail.append(rate)
+            if track.bit_depth:
+                detail.append(f"{track.bit_depth}-bit")
+            if track.bit_rate_kbps:
+                detail.append(f"{track.bit_rate_kbps:.2f} kb/s")
+        else:
+            if track.bit_rate_kbps:
+                detail.append(f"{track.bit_rate_kbps:.2f} kb/s")
+            if track.sample_rate_hz:
+                detail.append(f"{track.sample_rate_hz} hz")
         rows.append(
             f"<div><b>{count} {_esc(name)} track{'s' if count > 1 else ''}</b> &nbsp; "
             + _esc(" &nbsp; ".join(detail)).replace("&amp;nbsp;", "&nbsp;")
@@ -157,7 +170,8 @@ def write_html(job: Job, path: Path, *, thumbnails: bool = True, **_options) -> 
         ("Total Time", format_elapsed(job.elapsed_sec)),
         ("System Ram", job.system_ram),
         ("Total Files", str(job.total_files)),
-        ("Video Files", str(job.video_files)),
+        (("Audio Files", str(job.audio_files)) if job.is_audio_only
+         else ("Video Files", str(job.video_files))),
         ("Source", str(job.source_root)),
     ]
 

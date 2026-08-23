@@ -162,6 +162,44 @@ the destination, at the cost of reading everything twice.
 - **HTML** — self-contained; thumbnails inlined as data URIs, light and dark
   themes, no external requests.
 
+## Sound recorder cards
+
+The `media` profile covers production sound as well as picture. A card of
+broadcast WAVs from a field recorder offloads and verifies like any other, and
+the paperwork reads as a sound report rather than a picture report with the
+interesting fields blank:
+
+```sh
+offloader offload --source E:\ --dest D:\audio\082226\SOUND_A --name SOUND_A
+```
+
+```
+  SOUND_A: Verified
+  48 files, 2.1 GB in 0:01:12  (48 audio)
+```
+
+- **The file counts stay disjoint.** A clip with dialogue is a video file, not
+  both, so the two numbers still add up to something a reader can check. A card
+  with picture and sound reports `(54 video, 12 audio)`.
+- **The header cell adapts rather than grows.** The reference layout gives the
+  summary grid exactly four rows, so on a card with no picture the `Video
+  Files` cell becomes `Audio Files`. `Video Files: 0` is the one number on such
+  a page that tells the reader nothing.
+- **Format reads as sound.** `WAVE · 48 kHz · 24-bit · 2 ch` instead of a
+  resolution and frame rate. A clip's audio line is left exactly as the
+  reference renders it, so picture reports still match ShotPut digit for digit.
+- **Timecode comes off the BWF.** A broadcast WAV stores its origin as
+  `time_reference`, the sample count since midnight, which is divided by the
+  sample rate to give the start clock. It is rendered `10:00:00.000`, not
+  `10:00:00:00`: the frame rate to convert the remainder into frames lives in
+  iXML, which ffprobe does not read, so the milliseconds are exact where frames
+  would be a guess.
+- **No thumbnails are attempted.** A file with no picture already renders with
+  the filmstrip glyph in place of the contact sheet.
+
+The CSV gains `Audio Codec`, `Audio Channels`, `Sample Rate (Hz)` and
+`Bit Depth` columns, blank for files with no audio track.
+
 ## Generic data transfers
 
 The copy engine has never been camera-specific: it streams the source once,

@@ -87,6 +87,9 @@ class AudioTrack:
     codec: str = "LINEAR PCM"
     bit_rate_kbps: float | None = None
     sample_rate_hz: int | None = None
+    #: Bits per sample. A sound report is read as "48 kHz / 24-bit", so the
+    #: depth is not decoration on an audio-only card -- it is half the format.
+    bit_depth: int | None = None
 
 
 @dataclass
@@ -146,6 +149,16 @@ class MediaInfo:
     def is_video(self) -> bool:
         return self.width is not None and self.height is not None
 
+    @property
+    def is_audio(self) -> bool:
+        """A file that carries sound and no picture.
+
+        Deliberately not "has an audio track": a clip with dialogue is a video
+        file, and counting it as both would make the header numbers overlap and
+        stop adding up to anything a reader could check.
+        """
+        return not self.is_video and bool(self.audio_tracks)
+
 
 @dataclass
 class Destination:
@@ -200,6 +213,10 @@ class FileEntry:
     def is_video(self) -> bool:
         return self.media.is_video
 
+    @property
+    def is_audio(self) -> bool:
+        return self.media.is_audio
+
 
 @dataclass
 class Job:
@@ -237,6 +254,19 @@ class Job:
     @property
     def video_files(self) -> int:
         return sum(1 for f in self.files if f.is_video)
+
+    @property
+    def audio_files(self) -> int:
+        return sum(1 for f in self.files if f.is_audio)
+
+    @property
+    def is_audio_only(self) -> bool:
+        """A sound recorder's card: sound and no picture anywhere on it.
+
+        Reports use this to decide which count is worth the one cell the
+        reference layout gives them.
+        """
+        return self.audio_files > 0 and self.video_files == 0
 
     @property
     def elapsed_sec(self) -> float:

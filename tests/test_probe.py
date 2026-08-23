@@ -193,3 +193,77 @@ def test_probe_survives_garbage_output(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(probe, "ffprobe_path", lambda: "ffprobe")
     monkeypatch.setattr(probe.subprocess, "run", lambda *a, **k: Result())
     assert probe.probe(tmp_path / "clip.mov").container is None
+
+
+# ------------------------------------------------------------------- audio
+
+
+def _wav(**tags) -> dict:
+    """A broadcast WAV as ffprobe reports it: one PCM stream, no video."""
+    return {
+        "format": {"format_name": "wav", "duration": "182.5", "tags": tags},
+        "streams": [{
+            "codec_type": "audio", "codec_name": "pcm_s24le",
+            "channels": 2, "channel_layout": "stereo",
+            "bit_rate": "2304000", "sample_rate": "48000",
+            "bits_per_raw_sample": "24", "bits_per_sample": 24,
+        }],
+    }
+
+
+def test_a_wav_is_audio_not_video():
+    info = probe._build(_wav())
+    assert info.container == "WAVE"
+    assert not info.is_video
+    assert info.is_audio
+    assert info.width is None and info.height is None
+
+
+def test_a_clip_with_dialogue_is_still_video():
+    """is_audio is "no picture", not "has sound" -- the counts must not overlap."""
+    info = probe._build(_payload())
+    assert info.audio_tracks and info.is_video
+    assert not info.is_audio
+
+
+def test_bit_depth_is_captured():
+    assert probe._build(_wav()).audio_tracks[0].bit_depth == 24
+
+
+def test_bit_depth_prefers_raw_sample_and_steps_past_a_zero():
+    data = _wav()
+    data["streams"][0]["bits_per_raw_sample"] = None
+    data["streams"][0]["bits_per_sample"] = 0      # what several codecs report
+    assert probe._build(data).audio_tracks[0].bit_depth is None
+
+    data["streams"][0]["bits_per_sample"] = 16
+    assert probe._build(data).audio_tracks[0].bit_depth == 16
+
+
+def test_bwf_time_reference_becomes_the_start_clock():
+    """1728000000 samples at 48 kHz is 36000 s, which is 10:00:00."""
+    info = probe._build(_wav(time_reference="1728000000"))
+    assert info.timecode == "10:00:00.000"
+
+
+def test_an_explicit_timecode_tag_wins_over_the_sample_count():
+    info = probe._build(_wav(timecode="09:00:00:00", time_reference="1728000000"))
+    assert info.timecode == "09:00:00:00"
+
+
+def test_a_wav_without_a_clock_reports_none():
+    """Better no timecode than a zero that reads as a real 00:00:00."""
+    assert probe._build(_wav()).timecode is None
+
+
+def test_time_reference_of_zero_is_a_real_midnight_start():
+    assert probe._build(_wav(time_reference="0")).timecode == "00:00:00.000"
+
+
+def test_a_broken_time_reference_does_not_raise():
+    assert probe._build(_wav(time_reference="not-a-number")).timecode is None
+
+
+def test_video_timecode_is_untouched_by_the_audio_path():
+    assert probe._build(_payload()).timecode == "12:54:38:12 NDF"
+

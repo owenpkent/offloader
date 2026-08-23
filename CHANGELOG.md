@@ -22,6 +22,23 @@ project uses [semantic versioning][semver].
   and is selectable in the desktop app's Simple mode and preset editor. This is
   a one-way verified transfer, not two-way sync — see `ROADMAP.md`.
 
+- **Sound recorder cards are a first-class offload.** The `media` profile
+  already probed `.wav/.aif/.bwf`, but a card of production sound reported
+  `(0 video)`, rendered a picture report with the interesting fields blank, and
+  dropped the one field a sound report is read for. Now: `Job.audio_files` and
+  `MediaInfo.is_audio` alongside the video count, kept disjoint so a clip with
+  dialogue counts once and the numbers still add up; the summary grid's `Video
+  Files` cell reads `Audio Files` on a card with no picture, borrowing the cell
+  rather than growing the four-row reference layout; bit depth captured from
+  ffprobe; the format line reading `48 kHz / 24-bit`; and start timecode
+  recovered from the broadcast WAV's `time_reference` sample count. That clock
+  renders as `10:00:00.000` rather than `10:00:00:00`, because the frame rate
+  to convert the remainder lives in iXML, which ffprobe cannot read, and a
+  guessed rate in that field is worse than an honest millisecond. A clip's own
+  audio line is left exactly as the reference renders it, so picture reports
+  still match ShotPut digit for digit. The CSV gains `Audio Codec`,
+  `Audio Channels`, `Sample Rate (Hz)` and `Bit Depth`.
+
 - **`run.py`, a launcher that needs no install.** `python run.py` opens the
   desktop app and `python run.py <anything>` forwards to the CLI untouched,
   exit codes included. It prepends `src/` to the import path, so a fresh clone

@@ -13,7 +13,7 @@ import subprocess
 from pathlib import Path
 
 from .models import AudioTrack, CameraInfo, MediaInfo
-from .util import format_timecode
+from .util import format_clock, format_timecode
 
 #: Extensions we bother probing. Everything else is treated as a data file and
 #: listed without a metadata block, exactly as the reference does for sidecars.
@@ -250,6 +250,10 @@ def _build(data: dict) -> MediaInfo:
     for stream in audios:
         codec = stream.get("codec_name", "")
         bit_rate = _as_float(stream.get("bit_rate"))
+        # `bits_per_raw_sample` is the honest depth for PCM; `bits_per_sample`
+        # is 0 on several compressed codecs, which `or` steps past.
+        depth = (_as_int(stream.get("bits_per_raw_sample"))
+                 or _as_int(stream.get("bits_per_sample")))
         info.audio_tracks.append(
             AudioTrack(
                 channels=_as_int(stream.get("channels")) or 0,
@@ -257,6 +261,24 @@ def _build(data: dict) -> MediaInfo:
                 codec=_AUDIO_CODECS.get(codec, codec.upper() or "Unknown"),
                 bit_rate_kbps=bit_rate / 1000.0 if bit_rate else None,
                 sample_rate_hz=_as_int(stream.get("sample_rate")),
+                bit_depth=depth or None,
             )
         )
+
+    if video is None and info.audio_tracks:
+        # The clock on a sound card. A broadcast WAV stores its origin as
+        # `time_reference`, the sample count since midnight, and that is the
+        # field the report is read for. The frame rate to turn it into frame
+        # timecode lives in iXML, which ffprobe does not read, so
+        # `format_clock` renders the remainder as milliseconds rather than
+        # inventing a rate -- see its docstring.
+        tags = _tags(fmt)
+        explicit = tags.get("timecode")
+        rate = info.audio_tracks[0].sample_rate_hz
+        reference = _as_int(tags.get("time_reference"))
+        if explicit:
+            info.timecode = explicit
+        elif reference is not None and rate:
+            info.timecode = format_clock(reference / rate)
+
     return info

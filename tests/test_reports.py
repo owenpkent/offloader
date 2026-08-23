@@ -265,3 +265,123 @@ def test_mhl_preserves_ordinary_unicode(sample_job: Job, tmp_path: Path):
     )
     root = ET.parse(write_mhl(sample_job, tmp_path / "j.mhl")).getroot()
     assert any("café_日本" in (n.findtext("file") or "") for n in root.findall("hash"))
+
+
+# ------------------------------------------------------- audio-only offloads
+
+
+def _sound_job(tmp_path: Path) -> Job:
+    """A sound recorder's card: broadcast WAVs, no picture anywhere."""
+    import datetime as _dt
+
+    from offloader.models import AudioTrack, Destination, FileEntry, MediaInfo
+
+    source_root = tmp_path / "SOUND_A"
+    dest_root = tmp_path / "backup"
+    now = _dt.datetime(2026, 8, 22, 10, 0, 0)
+
+    job = Job(name="SOUND_A", source_root=source_root, destination_roots=[dest_root],
+              started=now, finished=now + _dt.timedelta(minutes=1))
+    for index in (1, 2):
+        source = source_root / f"MIX_{index:03d}.wav"
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_bytes(b"RIFF" + b"0" * 512)
+        job.files.append(FileEntry(
+            source=source, source_root=source_root, size=576_712,
+            created=now.timestamp(), modified=now.timestamp(),
+            checksum=f"aaaa{index:04d}",
+            media=MediaInfo(
+                container="WAVE", duration_sec=182.5, timecode="10:00:00.000",
+                audio_tracks=[AudioTrack(channels=2, layout="stereo",
+                                         codec="LINEAR PCM", sample_rate_hz=48000,
+                                         bit_depth=24, bit_rate_kbps=2304.0)],
+            ),
+            destinations=[Destination(root=dest_root,
+                                      path=dest_root / f"MIX_{index:03d}.wav")],
+        ))
+    return job
+
+
+def test_a_sound_card_counts_audio_files_not_video(tmp_path: Path):
+    job = _sound_job(tmp_path)
+    assert (job.audio_files, job.video_files) == (2, 0)
+    assert job.is_audio_only
+
+
+def test_a_card_with_pictures_is_not_audio_only(sample_job: Job):
+    assert not sample_job.is_audio_only
+    assert sample_job.video_files >= 1
+
+
+def test_the_pdf_header_cell_reports_audio_on_a_sound_card(tmp_path: Path):
+    """The reference grid has four rows, so the cell is borrowed, not added."""
+    path = write_pdf(_sound_job(tmp_path), tmp_path / "JobReport.pdf")
+    with fitz.open(path) as document:
+        spans = _spans(document[0])
+        label = _find(spans, "Audio Files:")
+        with pytest.raises(AssertionError):
+            _find(spans, "Video Files:")
+
+    # And it sits exactly where "Video Files:" sits on a picture card.
+    reference = write_pdf(_sound_job(tmp_path), tmp_path / "again.pdf")
+    with fitz.open(reference) as document:
+        assert _find(_spans(document[0]), "Audio Files:")["bbox"] == label["bbox"]
+
+
+def test_the_pdf_header_cell_still_reports_video_on_a_picture_card(sample_job: Job,
+                                                                   tmp_path: Path):
+    path = write_pdf(sample_job, tmp_path / "JobReport.pdf")
+    with fitz.open(path) as document:
+        assert _find(_spans(document[0]), "Video Files:")
+
+
+def test_the_pdf_reads_a_sound_format_line_on_a_sound_card(tmp_path: Path):
+    path = write_pdf(_sound_job(tmp_path), tmp_path / "JobReport.pdf")
+    with fitz.open(path) as document:
+        text = "".join(page.get_text() for page in document)
+    assert "48 kHz" in text and "24-bit" in text
+    assert "TC: 10:00:00.000" in text
+    assert "48000 hz" not in text
+
+
+def test_the_video_audio_line_is_left_as_the_reference_renders_it(sample_job: Job,
+                                                                  tmp_path: Path):
+    """A clip's audio line matches ShotPut; only a sound card's is rewritten."""
+    path = write_pdf(sample_job, tmp_path / "JobReport.pdf")
+    with fitz.open(path) as document:
+        text = "".join(page.get_text() for page in document)
+    assert "48000 hz" in text
+    assert "24-bit" not in text
+
+
+def test_the_csv_carries_the_audio_columns(tmp_path: Path):
+    path = write_csv(_sound_job(tmp_path), tmp_path / "JobReport.csv")
+    rows = list(csv.reader(path.open(encoding="utf-8")))
+    header = rows[2]
+    for column in ("Audio Codec", "Audio Channels", "Sample Rate (Hz)", "Bit Depth"):
+        assert column in header
+    first = rows[3]
+    assert first[header.index("Sample Rate (Hz)")] == "48000"
+    assert first[header.index("Bit Depth")] == "24"
+    assert first[header.index("Resolution")] == ""
+    assert len(first) == len(header), "every row must still match the header width"
+
+
+def test_the_csv_audio_columns_are_blank_for_a_file_with_no_tracks(sample_job: Job,
+                                                                   tmp_path: Path):
+    for entry in sample_job.files:
+        entry.media.audio_tracks = []
+    path = write_csv(sample_job, tmp_path / "JobReport.csv")
+    rows = list(csv.reader(path.open(encoding="utf-8")))
+    header = rows[2]
+    for row in rows[3:]:
+        assert row[header.index("Audio Codec")] == ""
+        assert len(row) == len(header)
+
+
+def test_the_html_header_reports_audio_on_a_sound_card(tmp_path: Path):
+    path = write_html(_sound_job(tmp_path), tmp_path / "JobReport.html")
+    text = path.read_text(encoding="utf-8")
+    assert "Audio Files" in text and "Video Files" not in text
+    assert "48 kHz" in text and "24-bit" in text
+

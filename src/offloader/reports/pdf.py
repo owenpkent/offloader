@@ -25,6 +25,7 @@ from ..util import (
     format_file_datetime,
     format_fps,
     format_job_datetime,
+    format_sample_rate,
     format_size,
 )
 from . import fonts, icons, layout
@@ -229,7 +230,12 @@ class PdfReport:
                 ("Offload Start Date: ", format_job_datetime(job.started)),
                 ("Offload Finish Date: ", format_job_datetime(finished)),
                 ("Total Time: ", format_elapsed(job.elapsed_sec)),
-                ("Video Files: ", str(job.video_files)),
+                # The reference gives this grid exactly four rows, so a
+                # sound card borrows the cell rather than growing one. On a
+                # card with no picture, "Video Files: 0" is the only number on
+                # the page that tells the reader nothing.
+                (("Audio Files: ", str(job.audio_files)) if job.is_audio_only
+                 else ("Video Files: ", str(job.video_files))),
             ],
             [
                 ("", ""),
@@ -334,10 +340,23 @@ class PdfReport:
         for track in media.audio_tracks[:1]:
             name = channel_layout_name(track.channels, track.layout)
             detail = [track.codec]
-            if track.bit_rate_kbps:
-                detail.append(f"{track.bit_rate_kbps:.2f} kb/s")
-            if track.sample_rate_hz:
-                detail.append(f"{track.sample_rate_hz} hz")
+            if media.is_audio:
+                # On a sound card this line is the format line, not a footnote
+                # to a picture, so it reads the way a sound report reads:
+                # "48 kHz / 24-bit". The video path below is left exactly as
+                # the reference renders it.
+                rate = format_sample_rate(track.sample_rate_hz)
+                if rate:
+                    detail.append(rate)
+                if track.bit_depth:
+                    detail.append(f"{track.bit_depth}-bit")
+                if track.bit_rate_kbps:
+                    detail.append(f"{track.bit_rate_kbps:.2f} kb/s")
+            else:
+                if track.bit_rate_kbps:
+                    detail.append(f"{track.bit_rate_kbps:.2f} kb/s")
+                if track.sample_rate_hz:
+                    detail.append(f"{track.sample_rate_hz} hz")
             count = len(media.audio_tracks)
             lines.append([
                 _label(f"{count} {name} track" + ("s" if count > 1 else "")),

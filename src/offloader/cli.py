@@ -122,12 +122,20 @@ def _summarize(job: Job, reports: list[Path]) -> None:
     failed = [f for f in job.files if f.status is FileStatus.FAILED]
     print()
     print(f"  {job.name}: {job.final_status}")
-    # The video count is meaningful only when media was probed; a generic
-    # data transfer never looks inside a file, so reporting "0 video" would
-    # be noise rather than information.
-    video = f"  ({job.video_files} video)" if job.profile.probes_media else ""
+    # The counts are meaningful only when media was probed; a generic data
+    # transfer never looks inside a file, so reporting "0 video" would be noise
+    # rather than information. A sound card reports its audio count instead of
+    # a zero, and a card carrying both reports both.
+    counts = ""
+    if job.profile.probes_media:
+        parts = []
+        if job.video_files or not job.audio_files:
+            parts.append(f"{job.video_files} video")
+        if job.audio_files:
+            parts.append(f"{job.audio_files} audio")
+        counts = f"  ({', '.join(parts)})"
     print(f"  {job.total_files} files, {format_size(job.total_bytes)}"
-          f" in {format_elapsed(job.elapsed_sec)}{video}")
+          f" in {format_elapsed(job.elapsed_sec)}{counts}")
     print(f"  Verification: {job.verification_label}")
     for destination in job.destination_roots:
         print(f"  -> {destination}")

@@ -273,3 +273,61 @@ def test_report_command_has_no_ordering_flag_and_still_builds_options():
     assert not hasattr(args, "proxies_first")
     assert cli._options_from(args, [Path("d")]).proxies_first is True
 
+
+def _counted_job(video: int, audio: int, profile=None):
+    """A Job carrying `video` picture files and `audio` sound files."""
+    import datetime as _dt
+
+    from offloader.models import AudioTrack, FileEntry, Job, MediaInfo, Profile
+
+    now = _dt.datetime(2026, 8, 22, 10, 0, 0)
+    job = Job(name="J", source_root=Path("src"), destination_roots=[Path("dst")],
+              started=now, finished=now, profile=profile or Profile.MEDIA)
+    for index in range(video):
+        job.files.append(FileEntry(
+            source=Path(f"clip{index}.mov"), source_root=Path("src"), size=1,
+            created=now.timestamp(), modified=now.timestamp(),
+            media=MediaInfo(width=1920, height=1080,
+                            audio_tracks=[AudioTrack()])))
+    for index in range(audio):
+        job.files.append(FileEntry(
+            source=Path(f"mix{index}.wav"), source_root=Path("src"), size=1,
+            created=now.timestamp(), modified=now.timestamp(),
+            media=MediaInfo(audio_tracks=[AudioTrack()])))
+    return job
+
+
+def test_summary_counts_video_on_a_picture_card(capsys):
+    cli._summarize(_counted_job(video=3, audio=0), [])
+    assert "(3 video)" in capsys.readouterr().out
+
+
+def test_summary_counts_audio_on_a_sound_card(capsys):
+    """A sound card reporting "0 video" is the one line that says nothing."""
+    cli._summarize(_counted_job(video=0, audio=5), [])
+    out = capsys.readouterr().out
+    assert "(5 audio)" in out
+    assert "video" not in out
+
+
+def test_summary_counts_both_on_a_mixed_card(capsys):
+    cli._summarize(_counted_job(video=2, audio=4), [])
+    assert "(2 video, 4 audio)" in capsys.readouterr().out
+
+
+def test_summary_omits_counts_for_a_data_transfer(capsys):
+    from offloader.models import Profile
+
+    cli._summarize(_counted_job(video=0, audio=3, profile=Profile.DATA), [])
+    out = capsys.readouterr().out
+    assert "audio" not in out and "video" not in out
+
+
+def test_a_clip_with_dialogue_is_not_counted_twice(capsys):
+    """The two counts must stay disjoint or they stop adding up."""
+    job = _counted_job(video=3, audio=0)
+    assert job.video_files == 3
+    assert job.audio_files == 0
+    cli._summarize(job, [])
+    assert "(3 video)" in capsys.readouterr().out
+

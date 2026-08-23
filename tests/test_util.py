@@ -9,11 +9,13 @@ import pytest
 
 from offloader.util import (
     channel_layout_name,
+    format_clock,
     format_duration,
     format_elapsed,
     format_file_datetime,
     format_fps,
     format_job_datetime,
+    format_sample_rate,
     format_size,
     format_timecode,
 )
@@ -73,3 +75,33 @@ def test_channel_layout():
     assert channel_layout_name(2, "stereo") == "Stereo"
     assert channel_layout_name(1, "mono") == "Mono"
     assert channel_layout_name(6, None) == "5.1"
+
+
+@pytest.mark.parametrize("hz,expected", [
+    (48000, "48 kHz"),
+    (96000, "96 kHz"),
+    (44100, "44.1 kHz"),
+    (192000, "192 kHz"),
+    (0, None),
+    (-1, None),
+    (None, None),
+])
+def test_format_sample_rate(hz, expected):
+    assert format_sample_rate(hz) == expected
+
+
+@pytest.mark.parametrize("seconds,expected", [
+    (0, "00:00:00.000"),
+    (36000.0, "10:00:00.000"),          # a 10:00:00 BWF start
+    (36090.5, "10:01:30.500"),
+    (-5, "00:00:00.000"),               # a negative origin is not a time
+    (86400.0, "00:00:00.000"),          # a full day wraps rather than reading 24
+    (86399.9994, "23:59:59.999"),
+])
+def test_format_clock(seconds, expected):
+    assert format_clock(seconds) == expected
+
+
+def test_format_clock_carries_a_rounded_millisecond_into_the_second():
+    assert format_clock(59.9999) == "00:01:00.000"
+
