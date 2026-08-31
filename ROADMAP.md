@@ -19,6 +19,16 @@ an oversight.
 Engine, CLI, five report formats (PDF, CSV, MHL 1.1, ASC MHL v2.0, HTML), the
 desktop app, and cross-platform CI.
 
+Offloading from an **edit timeline** rather than a card: `offloader resolve`
+and `offload --timeline` read an NLE's interchange file with OpenTimelineIO,
+work out which of its media is already under a search root, and offload only
+what is not. See [`docs/timeline.md`](docs/timeline.md). It refuses to choose
+between two files that share a name, which is not fastidiousness: on the
+conform it was written against, thirteen names resolved to *different* files,
+eleven of them "MISSING MEDIA" stand-in slates from an earlier pass sitting
+beside the real archival footage that arrived later. A relink by filename picks
+one at random, and the clip reports as online either way.
+
 The PDF matches a real ShotPut Pro report's geometry, measured from its content
 streams. ASC MHL is diffed against the reference implementation's own worked
 example. BRAW metadata comes out of the container because ffprobe cannot read
@@ -108,6 +118,10 @@ already does the stem-matching this needs.
   the destination would do it.
 - **`--skip-existing` by checksum**, not size. Today it is explicitly a speed
   option and says so; a checksum variant would make it a safe one.
+  `timeline._same_file` is the comparison already written: size first, because
+  it settles almost every case for a stat, then the checksum. What is missing
+  is only the wiring into the engine's own skip, where the file being skipped
+  is at the destination rather than under another search root.
 - **Windows installer and code signing**, so it can be handed to someone who
   does not have Python.
 - **Per-job report templates and custom branding.**
