@@ -482,6 +482,35 @@ def test_read_then_resolve_end_to_end(tmp_path: Path, library: Path):
     assert report.gaps == []
 
 
+@pytest.mark.parametrize("url, expected", [
+    # Premiere on Windows, and Resolve's variant of the same.
+    ("file://localhost/E:/Media/a.mov", "E:/Media/a.mov"),
+    ("file:///E:/Media/a.mov", "E:/Media/a.mov"),
+    # An editor cutting on a Mac. The leading slash is part of the path and
+    # must survive: dropping it yields a *relative* path that still resolves
+    # by basename, so nothing looks broken while every "is it where the
+    # timeline says?" test quietly answers no.
+    ("file:///Volumes/Edit/a.mov", "/Volumes/Edit/a.mov"),
+    ("file://localhost/Volumes/Edit/a.mov", "/Volumes/Edit/a.mov"),
+    # Percent-escapes, because clip names contain spaces.
+    ("file:///Volumes/Edit%2014TB/Shop%20Machines.mp4",
+     "/Volumes/Edit 14TB/Shop Machines.mp4"),
+    # A bare path, from a hand-edited file.
+    ("E:/Media/a.mov", "E:/Media/a.mov"),
+])
+def test_file_urls_survive_both_platforms(url: str, expected: str):
+    """Pure function, so it runs identically on every runner."""
+    got = timeline._url_to_path(url)
+    assert got is not None
+    assert got.as_posix() == expected
+
+
+def test_a_unc_url_keeps_its_leading_pair():
+    got = timeline._url_to_path("file://server/share/a.mov")
+    assert got is not None
+    assert got.as_posix().startswith("//server/share")
+
+
 def test_unknown_suffix_is_refused_with_the_formats_it_knows(tmp_path: Path):
     path = tmp_path / "cut.premiereproj"
     path.write_text("not interchange", encoding="utf-8")

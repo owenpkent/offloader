@@ -41,6 +41,7 @@ have put a purple slate in a finished film and said "Verified" underneath it.
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
@@ -184,16 +185,43 @@ def _url_to_path(url: str) -> Path | None:
     NLEs are not consistent here: Premiere writes `file://localhost/E:/...`,
     Resolve writes `file:///E:/...`, and a hand-edited XML may carry a bare
     path. Percent-escapes are always possible because a clip name may contain
-    a space. Forward slashes are left alone -- `Path` accepts them on Windows,
-    and normalising them by hand is how a UNC path loses its leading pair.
+    a space.
+
+    The leading slash is the trap, and it is worth spelling out because
+    getting it wrong is invisible on one platform. After the scheme and any
+    `localhost` authority, what is left always begins with `/`:
+
+        file://localhost/E:/Media/a.mov   ->  /E:/Media/a.mov
+        file:///Volumes/Edit/a.mov        ->  /Volumes/Edit/a.mov
+
+    That slash belongs to a POSIX path and must stay, but on a Windows path it
+    sits in front of the drive letter and must go. Stripping it unconditionally
+    turns `/Volumes/Edit/a.mov` into the *relative* path `Volumes/Edit/a.mov`,
+    which still resolves by basename and so looks fine, while every "is it
+    where the timeline says?" test quietly answers no. An editor cutting on a
+    Mac addresses every clip that way, so this is the common case, not an edge.
+
+    Forward slashes are otherwise left alone: `Path` accepts them on Windows,
+    and rewriting them by hand is how a UNC path loses its leading pair.
     """
     if not url:
         return None
     text = unquote(url)
-    for prefix in ("file://localhost/", "file:///", "file://"):
-        if text.startswith(prefix):
-            text = text[len(prefix):]
-            break
+
+    if text.lower().startswith("file:"):
+        text = text[len("file:"):]
+        if text.startswith("//"):
+            rest = text[2:]
+            if rest.lower().startswith("localhost/"):
+                rest = rest[len("localhost"):]      # keeps the leading slash
+            elif not rest.startswith("/"):
+                # file://server/share/... is a UNC path; the pair is the point.
+                return Path("//" + rest) if rest else None
+            text = rest
+
+    # A drive letter behind the leading slash means this is a Windows path.
+    if re.match(r"^/[A-Za-z]:", text):
+        text = text[1:]
     if not text:
         return None
     return Path(text)
