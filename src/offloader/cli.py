@@ -5,9 +5,11 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 
 from . import PRODUCT_NAME, __version__, engine, hashers, longpath, probe, retry, thumbs
+from . import timeline as timeline_mod
 from .models import FileStatus, Job, Profile, VerificationMode
 from .reports import WRITERS
 from .util import format_elapsed, format_size
@@ -193,6 +195,25 @@ def _common_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--quiet", action="store_true", help="suppress progress")
 
 
+def _timeline_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--search-root", type=Path, action="append", default=[],
+                        dest="search_roots", metavar="PATH",
+                        help="where the media already lives (repeatable). "
+                             "Anything found here is not copied again")
+    parser.add_argument("--adapter", default=None, metavar="NAME",
+                        help="OpenTimelineIO adapter to read with "
+                             "(default: chosen from the file suffix)")
+    parser.add_argument("--no-proxy-substitution", dest="substitute_proxies",
+                        action="store_false", default=True,
+                        help="do not let a proxy already on disk stand in for "
+                             "a camera original the timeline references")
+    parser.add_argument("--layout", choices=("mirror", "flat"), default="mirror",
+                        help="'mirror' (default) keeps each file's path below "
+                             "its volume root, so where it came from stays "
+                             "visible and two same-named files cannot land on "
+                             "each other; 'flat' puts every file in one folder")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="offloader",
@@ -204,8 +225,12 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     offload = sub.add_parser("offload", help="copy and verify a source to destinations")
-    offload.add_argument("--source", type=Path, required=True,
-                         help="card or folder to offload")
+    what = offload.add_mutually_exclusive_group(required=True)
+    what.add_argument("--source", type=Path,
+                      help="card or folder to offload")
+    what.add_argument("--timeline", type=Path,
+                      help="edit timeline whose media to offload; only the "
+                           "files not already under a --search-root are copied")
     offload.add_argument("--dest", type=Path, action="append", required=True,
                          dest="destinations", metavar="PATH",
                          help="destination root (repeat for multiple copies)")
@@ -224,7 +249,20 @@ def build_parser() -> argparse.ArgumentParser:
     order.add_argument("--originals-first", dest="proxies_first",
                        action="store_false",
                        help="copy in plain tree order instead")
+    _timeline_options(offload)
     _common_options(offload)
+
+    resolve = sub.add_parser(
+        "resolve",
+        help="report which of a timeline's media is already here and which "
+             "is not, without copying anything")
+    resolve.add_argument("--timeline", type=Path, required=True,
+                         help="the edit timeline to resolve")
+    resolve.add_argument("--csv", type=Path, default=None, metavar="PATH",
+                         help="write the full per-reference table here")
+    resolve.add_argument("--quiet", action="store_true",
+                         help="print the counts only, not the detail")
+    _timeline_options(resolve)
 
     report = sub.add_parser(
         "report", help="regenerate reports from an existing tree without copying")
@@ -280,10 +318,111 @@ def _report_dir(args: argparse.Namespace, job: Job, fallback_root: Path) -> Path
     return fallback_root / f"{job.name}_Reports"
 
 
+def _resolve_timeline(args: argparse.Namespace) -> timeline_mod.Report:
+    """Read the timeline and work out what is already here."""
+    if not args.search_roots:
+        # A usage error, routed through main() like every other one so it
+        # reports as exit 2 rather than leaving by its own door.
+        raise ValueError(
+            "--timeline needs at least one --search-root: without one, every "
+            "reference is a gap and the whole cut would be copied"
+        )
+    references = timeline_mod.read_references(args.timeline, args.adapter)
+    return timeline_mod.resolve(
+        references, args.search_roots,
+        timeline=args.timeline,
+        excludes=tuple(engine.DEFAULT_EXCLUDES) + tuple(getattr(args, "exclude", [])),
+        substitute_proxies=args.substitute_proxies,
+    )
+
+
+#: Status to the line it prints. Ordered worst-first, so what needs a human
+#: is at the bottom of the terminal where it will be read.
+_STATUS_LINES = (
+    (timeline_mod.Status.PRESENT, "already here"),
+    (timeline_mod.Status.SUBSTITUTED, "satisfied by a proxy already here"),
+    (timeline_mod.Status.GAP, "not here, and copyable"),
+    (timeline_mod.Status.GENERATED, "no media in the timeline to supply"),
+    (timeline_mod.Status.MISSING, "not here and not where the timeline says"),
+    (timeline_mod.Status.AMBIGUOUS, "MORE THAN ONE CANDIDATE, not chosen"),
+)
+
+
+def _print_resolution(report: timeline_mod.Report, detail: bool = True) -> None:
+    counts = report.counts
+    total = len(report.resolutions)
+    print(f"{report.timeline.name}: {total} media references, "
+          f"{len(report.search_roots)} search root(s)")
+    for status, label in _STATUS_LINES:
+        if counts[status]:
+            print(f"  {counts[status]:5d}  {label}")
+    if report.gaps:
+        print(f"  {format_size(report.gap_bytes)} to copy")
+
+    if not detail:
+        return
+    for resolution in report.of(timeline_mod.Status.AMBIGUOUS,
+                                timeline_mod.Status.MISSING):
+        print(f"\n  [{resolution.status.value}] {resolution.name} "
+              f"(used {resolution.reference.uses}x)")
+        if resolution.note:
+            print(f"      {resolution.note}")
+        for candidate in resolution.alternatives:
+            print(f"      candidate: {candidate}")
+
+
+def _write_resolution_csv(report: timeline_mod.Report, path: Path) -> None:
+    import csv
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["file", "status", "uses", "timeline_path",
+                         "location", "other_candidates", "note"])
+        for r in report.resolutions:
+            writer.writerow([
+                r.name, r.status.value, r.reference.uses,
+                str(r.reference.target) if r.reference.target else "",
+                str(r.location) if r.location else "",
+                " | ".join(str(a) for a in r.alternatives),
+                r.note,
+            ])
+
+
+def cmd_resolve(args: argparse.Namespace) -> int:
+    report = _resolve_timeline(args)
+    _print_resolution(report, detail=not args.quiet)
+    if args.csv:
+        _write_resolution_csv(report, args.csv)
+        print(f"\nwrote {args.csv}")
+
+    # Exit non-zero on anything a human has to settle. A generated reference is
+    # reported but does not fail the command: no offload can supply it, so
+    # holding the exit code hostage to it would only teach a caller to ignore
+    # the code.
+    unsettled = report.counts[timeline_mod.Status.AMBIGUOUS] + \
+        report.counts[timeline_mod.Status.MISSING]
+    return 1 if unsettled else 0
+
+
 def cmd_offload(args: argparse.Namespace) -> int:
     options = _options_from(args, args.destinations)
+    source = args.source
+
+    if getattr(args, "timeline", None):
+        report = _resolve_timeline(args)
+        _print_resolution(report, detail=True)
+        selection = timeline_mod.selection(report, flat=args.layout == "flat")
+        if not selection:
+            print("\nnothing to copy: every reference is already here.")
+            return 0
+        print(f"\ncopying {len(selection)} file(s), "
+              f"{format_size(report.gap_bytes)}\n")
+        options = replace(options, selection=selection)
+        source = args.timeline
+
     progress = _Progress(not args.quiet)
-    job = engine.run(args.source, options, progress)
+    job = engine.run(source, options, progress)
     progress.done()
 
     reports = _write_reports(
@@ -403,7 +542,8 @@ def cmd_gui(_args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     handlers = {"offload": cmd_offload, "report": cmd_report,
-                "verify": cmd_verify, "info": cmd_info, "gui": cmd_gui}
+                "verify": cmd_verify, "info": cmd_info, "gui": cmd_gui,
+                "resolve": cmd_resolve}
     try:
         return handlers[args.command](args)
     except KeyboardInterrupt:
@@ -412,6 +552,9 @@ def main(argv: list[str] | None = None) -> int:
     except engine.UnsafeDestination as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return 3
+    except timeline_mod.TimelineSupportMissing as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 4
     except (OSError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

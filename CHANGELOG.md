@@ -10,6 +10,39 @@ project uses [semantic versioning][semver].
 
 ### Added
 
+- **Offloading from an edit timeline.** `offloader resolve --timeline cut.xml
+  --search-root E:\Media` reports which of a cut's media is already on the
+  drive and which is not; `offloader offload --timeline ...` copies the
+  difference, with the same verified copy, checksums and reports as a card.
+  Timelines are read with OpenTimelineIO (`pip install "offloader[timeline]"`),
+  covering FCP 7 XML, FCPXML, EDL, AAF and `.otio` — but trusted with media
+  references only, never with structure: on the file this was measured
+  against, the adapter recovered all 334 references exactly while reporting
+  29.97 fps and 12 audio tracks for a sequence that declares 24 and 23. See
+  [`docs/timeline.md`](docs/timeline.md).
+
+  The resolver **refuses to choose between two files that share a name.** On
+  that conform, 20 basenames had more than one copy under the search root:
+  seven byte-identical and harmless, thirteen genuinely different files,
+  eleven of those being "MISSING MEDIA" stand-in slates from an earlier pass
+  sitting beside the real archival footage. A relink by filename picks one at
+  random and the clip reports as online either way. Byte-identical duplicates
+  resolve normally and are not copied again, which on that job avoided 1.4 GB
+  of transfer and, more to the point, avoided manufacturing 32 filename
+  collisions on a drive that had none. A camera original may be satisfied by a
+  proxy already on the drive, but only where the frame counts agree — a proxy
+  one frame short moves every edit point after it.
+
+- **`OffloadOptions.selection`**, an explicit file set for `engine.run` in
+  place of scanning one source root. Files may come from any number of volumes
+  and each carries its own destination-relative path, so the engine infers no
+  layout. A selection is held to a narrower safety rule than a card's: a card
+  refuses a destination inside the source, which would wrongly refuse the
+  ordinary timeline case of collecting a cut's gaps into a folder on the drive
+  they were resolved against. Instead, no file being read may sit at or beneath
+  somewhere being written, and a destination-relative path that is absolute or
+  climbs out with `..` is refused before the job starts.
+
 - **A `data` profile for generic large-data transfers.** The verified copy
   engine was never camera-specific — it reads every byte once, checksums it,
   fans it out to N destinations and reads it back — but the metadata layer

@@ -109,6 +109,7 @@ def assert_safe_destinations(source_root: Path, destinations: Sequence[Path]) ->
 def assert_no_destination_collisions(
     sources: Sequence[Path], source_root: Path,
     destination_roots: Sequence[Path], preserve_structure: bool,
+    relatives: dict[Path, Path] | None = None,
 ) -> None:
     """Refuse a layout that maps two source files onto one destination path.
 
@@ -122,13 +123,23 @@ def assert_no_destination_collisions(
     Paths are compared with `os.path.normcase`, so on Windows this also
     catches two names differing only in case: distinct on the case-sensitive
     volume they came from, one file on the volume they are going to.
+
+    `relatives` maps a source to its destination-relative path, for a
+    selection whose layout the engine did not derive. It matters more there
+    than for a card, not less: a selection is drawn from several volumes at
+    once, so two files of the same name arriving from different trees is the
+    normal case rather than the unlucky one.
     """
     claimed: dict[str, Path] = {}
     collisions: list[tuple[Path, Path, Path]] = []
 
     for source in sources:
         for root in destination_roots:
-            target = _destination_for(source, source_root, root, preserve_structure)
+            if relatives is not None:
+                target = root / relatives[source]
+            else:
+                target = _destination_for(source, source_root, root,
+                                          preserve_structure)
             key = os.path.normcase(str(target))
             if key in claimed:
                 collisions.append((claimed[key], source, target))
@@ -204,6 +215,80 @@ class ProgressEvent:
 ProgressCallback = Callable[[ProgressEvent], None]
 
 
+@dataclass(frozen=True)
+class SelectedFile:
+    """One file to offload, and where it lands under each destination root.
+
+    A scanned card is a single tree, so a destination path can be derived from
+    the source root. A selection is not: `timeline.selection` draws files from
+    several volumes at once, and how they are laid out at the destination is
+    the selector's decision rather than something the engine can infer. Each
+    file therefore carries its own destination-relative path, and the engine
+    infers nothing.
+    """
+
+    source: Path
+    #: Where this file lands beneath each destination root. Relative, and
+    #: checked to be: see `assert_selection_is_safe`.
+    relative: Path
+    #: The tree the file was found in. Reporting only -- `FileEntry.relative`
+    #: uses it to show a path a reader can place.
+    root: Path = Path()
+
+
+def assert_selection_is_safe(selection: Sequence[SelectedFile],
+                             destinations: Sequence[Path]) -> None:
+    """Refuse a selection that could destroy what it is copying.
+
+    `assert_safe_destinations` asks whether the destination is inside the
+    source, which is the right question for a card: the source root *is* the
+    card, and writing into it is how you lose it. It is the wrong question for
+    a selection, where the search roots are a library being read and the
+    destination is very often a new folder inside it -- resolving a cut
+    against `E:/ChairsDoc` and collecting its gaps into
+    `E:/ChairsDoc/RowV6_Media` is the ordinary case, not a mistake.
+
+    The property that actually matters is narrower, and checkable exactly: no
+    file being read may sit at or beneath somewhere being written. That admits
+    the ordinary case and still refuses the one that eats data.
+
+    A relative path that is absolute, or that climbs out with `..`, would
+    escape the destination root and write somewhere the caller never named.
+    Both are refused here, before any byte moves, rather than at the point of
+    use where they would leave a half-copied job behind.
+    """
+    resolved_dests: dict[Path, Path] = {}
+    for destination in destinations:
+        resolved = Path(destination).resolve()
+        if resolved in resolved_dests:
+            raise UnsafeDestination(
+                f"destinations {resolved_dests[resolved]} and {destination} "
+                "are the same directory"
+            )
+        resolved_dests[resolved] = Path(destination)
+
+    for entry in selection:
+        relative = Path(entry.relative)
+        if relative.is_absolute() or relative.drive or relative.anchor:
+            raise UnsafeDestination(
+                f"selection for {entry.source} has an absolute destination "
+                f"path {relative}; it must be relative to the destination root"
+            )
+        if any(part == os.pardir for part in relative.parts):
+            raise UnsafeDestination(
+                f"selection for {entry.source} escapes the destination with "
+                f"{relative}"
+            )
+
+        source = Path(entry.source).resolve()
+        for resolved, original in resolved_dests.items():
+            if source == resolved or resolved in source.parents:
+                raise UnsafeDestination(
+                    f"{entry.source} is inside the destination {original}; "
+                    "offloading it would copy a file over itself"
+                )
+
+
 @dataclass
 class OffloadOptions:
     destinations: Sequence[Path]
@@ -229,6 +314,13 @@ class OffloadOptions:
     #: How hard to try again when a read fails for a transient-looking reason.
     #: Marginal cards and readers routinely succeed on a second attempt.
     retry: retry_mod.RetryPolicy = field(default_factory=retry_mod.RetryPolicy)
+    #: An explicit file set to offload, in place of scanning the source root.
+    #: Files may come from any number of volumes and each carries its own
+    #: destination-relative path, so `preserve_structure` and `excludes` do
+    #: not apply -- the selector has already decided both. `proxies_first`
+    #: does not apply either: a selection is transferred in the order given,
+    #: which is the only order the selector can be held to.
+    selection: Sequence[SelectedFile] | None = None
 
     def __post_init__(self) -> None:
         # The data profile is defined by the absence of media work, so enforce
@@ -520,6 +612,11 @@ def run(source_root: Path, options: OffloadOptions,
     Pass a `JobControl` to allow pausing or cancelling mid-flight; a cancelled
     job returns normally, with `Job.cancelled` set and the files it did finish
     intact.
+
+    With `options.selection` set, the file set is taken from the selection
+    instead of by scanning, and `source_root` becomes a label for the job
+    rather than a tree to walk -- it may be a timeline file, which is what the
+    files were selected from.
     """
     source_root = Path(source_root)
     if not source_root.exists():
@@ -529,21 +626,44 @@ def run(source_root: Path, options: OffloadOptions,
     dest_roots = [Path(d) for d in options.destinations]
     if not dest_roots:
         raise ValueError("at least one destination is required")
-    assert_safe_destinations(source_root, dest_roots)
 
-    files = scan(source_root, options.excludes)
+    #: Per-file destination-relative paths, for a selection. None for a card,
+    #: where the destination is derived from the source root as it always was.
+    relatives: dict[Path, Path] | None = None
+
+    if options.selection is not None:
+        assert_selection_is_safe(options.selection, dest_roots)
+        files = [Path(entry.source) for entry in options.selection]
+        seen = {os.path.normcase(str(p)) for p in files}
+        if len(seen) != len(files):
+            raise ValueError("selection lists the same source file twice")
+        relatives = {Path(e.source): Path(e.relative) for e in options.selection}
+        roots = {Path(e.source): Path(e.root) for e in options.selection}
+    else:
+        assert_safe_destinations(source_root, dest_roots)
+        files = scan(source_root, options.excludes)
+        roots = {}
+
     assert_no_destination_collisions(files, source_root, dest_roots,
-                                     options.preserve_structure)
+                                     options.preserve_structure, relatives)
     counters = _Counters(job_bytes_total=sum(p.stat().st_size for p in files))
 
     # `files` stays the tree order the card is laid out in and remains the
     # authority on what the job contains; `transfer` is only the sequence the
     # bytes move in. job.files is put back into `files` order before returning.
-    transfer = order_for_transfer(files, source_root, options.proxies_first)
+    # A selection is already in the order its selector chose, and reordering
+    # by proxy directory would only second-guess that.
+    if options.selection is not None:
+        transfer = list(files)
+    else:
+        transfer = order_for_transfer(files, source_root, options.proxies_first)
 
     host = sysinfo.collect()
     job = Job(
-        name=options.job_name or source_root.name,
+        # A selection names its job after the timeline it came from, and a
+        # timeline is a file: ".xml" in a report header helps nobody.
+        name=options.job_name or (source_root.stem if source_root.is_file()
+                                  else source_root.name),
         source_root=source_root,
         destination_roots=dest_roots,
         verification=options.verification,
@@ -576,16 +696,22 @@ def run(source_root: Path, options: OffloadOptions,
         stat = source.stat()
         entry = FileEntry(
             source=source,
-            source_root=source_root,
+            # For a selection this is the tree the file came from, not the job
+            # label, so the report shows a path a reader can place.
+            source_root=roots.get(source, source_root),
             size=stat.st_size,
             created=getattr(stat, "st_birthtime", stat.st_ctime),
             modified=stat.st_mtime,
         )
 
-        targets = [
-            _destination_for(source, source_root, root, options.preserve_structure)
-            for root in dest_roots
-        ]
+        if relatives is not None:
+            targets = [root / relatives[source] for root in dest_roots]
+        else:
+            targets = [
+                _destination_for(source, source_root, root,
+                                 options.preserve_structure)
+                for root in dest_roots
+            ]
 
         emit(ProgressEvent(index, len(files), source.name, "copy",
                            0, stat.st_size,
@@ -825,7 +951,7 @@ def run(source_root: Path, options: OffloadOptions,
                     entry.thumbnail_source = picture
                 elif companions.needs_proxy(source):
                     picture, used_proxy = companions.thumbnail_source(
-                        source, source_root)
+                        source, roots.get(source, source_root))
                     if used_proxy:
                         entry.thumbnail_source = picture
 
