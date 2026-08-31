@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from dataclasses import replace
@@ -249,8 +250,30 @@ def build_parser() -> argparse.ArgumentParser:
     order.add_argument("--originals-first", dest="proxies_first",
                        action="store_false",
                        help="copy in plain tree order instead")
+    offload.add_argument("--control-file", type=Path, default=None, metavar="PATH",
+                         help="make the job pausable from another terminal: "
+                              "it reads this file between chunks. Drive it with "
+                              "'offloader control PATH --pause|--resume|--cancel'")
     _timeline_options(offload)
     _common_options(offload)
+
+    control = sub.add_parser(
+        "control",
+        help="pause, resume or cancel a running offload through its "
+             "--control-file")
+    control.add_argument("path", type=Path,
+                         help="the --control-file the job was started with")
+    state = control.add_mutually_exclusive_group()
+    state.add_argument("--pause", action="store_const", dest="state",
+                       const=engine.FileControl.PAUSE,
+                       help="hold the job at the next 8 MiB chunk")
+    state.add_argument("--resume", action="store_const", dest="state",
+                       const=engine.FileControl.RUN, help="let it continue")
+    state.add_argument("--cancel", action="store_const", dest="state",
+                       const=engine.FileControl.CANCEL,
+                       help="stop it; finished files are kept, the file in "
+                            "flight is discarded")
+    control.set_defaults(state=None)
 
     resolve = sub.add_parser(
         "resolve",
@@ -389,6 +412,29 @@ def _write_resolution_csv(report: timeline_mod.Report, path: Path) -> None:
             ])
 
 
+def cmd_control(args: argparse.Namespace) -> int:
+    """Read or set a running job's control file."""
+    control = engine.FileControl(args.path)
+    if args.state is None:
+        if not args.path.exists():
+            print(f"no control file at {args.path}", file=sys.stderr)
+            return 2
+        state = control.read()
+        print(state if state is not None
+              else "unreadable, so the job continues in its current state")
+        return 0
+
+    # Written whole and moved into place: a job polling between chunks can
+    # otherwise read a file that has been truncated but not yet rewritten,
+    # which is precisely the "no opinion" case this avoids needing.
+    args.path.parent.mkdir(parents=True, exist_ok=True)
+    staging = args.path.with_name(args.path.name + ".writing")
+    staging.write_text(args.state + "\n", encoding="utf-8")
+    os.replace(staging, args.path)
+    print(f"{args.state} -> {args.path}")
+    return 0
+
+
 def cmd_resolve(args: argparse.Namespace) -> int:
     report = _resolve_timeline(args)
     _print_resolution(report, detail=not args.quiet)
@@ -421,8 +467,21 @@ def cmd_offload(args: argparse.Namespace) -> int:
         options = replace(options, selection=selection)
         source = args.timeline
 
+    control = None
+    if args.control_file:
+        def announce(state: str) -> None:
+            # From the reader thread, and the progress line is written from
+            # this one, so start on a fresh line rather than overwriting it.
+            print(f"\n[{state}] {args.control_file}", file=sys.stderr, flush=True)
+
+        control = engine.FileControl(args.control_file, on_change=announce)
+        control.claim()
+        if not args.quiet:
+            print(f"pausable: offloader control \"{args.control_file}\" --pause",
+                  file=sys.stderr)
+
     progress = _Progress(not args.quiet)
-    job = engine.run(source, options, progress)
+    job = engine.run(source, options, progress, control)
     progress.done()
 
     reports = _write_reports(
@@ -543,7 +602,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     handlers = {"offload": cmd_offload, "report": cmd_report,
                 "verify": cmd_verify, "info": cmd_info, "gui": cmd_gui,
-                "resolve": cmd_resolve}
+                "resolve": cmd_resolve, "control": cmd_control}
     try:
         return handlers[args.command](args)
     except KeyboardInterrupt:

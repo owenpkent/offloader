@@ -198,6 +198,106 @@ class JobControl:
             raise JobCancelled()
 
 
+class FileControl(JobControl):
+    """A `JobControl` driven by a file, so another process can pause a job.
+
+    The desktop app has transport buttons and a `JobControl` to wire them to.
+    The CLI has neither, and usually has no console to press a key in either: a
+    1.9 TB offload is started detached, over ssh, or by a scheduler, and the
+    person who wants it paused is not sitting at that terminal. So the
+    instruction has to arrive from outside the process.
+
+    A file is the smallest thing that works everywhere. It needs no signal
+    support -- Windows has almost none beyond SIGINT, and this tool is
+    Windows-first -- no port, no daemon and no shared memory. It survives the
+    terminal going away, any user with write access can set it, and it can be
+    *read* to see what state a job is in.
+
+    The file holds one word: `run`, `pause` or `cancel`. Anything else --
+    empty, garbled, half-written, or unreadable because another process has it
+    open at that moment -- is **no opinion**, and leaves the job in whatever
+    state it is already in. That asymmetry is deliberate. Inferring `cancel`
+    from a damaged control file would let a stray byte stop an offload that is
+    hours in, and a control file is exactly the kind of thing that gets
+    clobbered by a sync client or a text editor writing in two steps.
+
+    Polling is rate-limited by `poll` seconds because `checkpoint()` runs once
+    per 8 MiB chunk -- around 16 times a second at 130 MB/s -- and the control
+    file may well be on a network path.
+    """
+
+    RUN = "run"
+    PAUSE = "pause"
+    CANCEL = "cancel"
+    STATES = (RUN, PAUSE, CANCEL)
+
+    def __init__(self, path: Path, poll: float = 0.5,
+                 on_change: Callable[[str], None] | None = None) -> None:
+        super().__init__()
+        self.path = Path(path)
+        self.poll = max(0.05, poll)
+        self._on_change = on_change
+        self._state = self.RUN
+        self._checked = 0.0
+        self._lock = threading.Lock()
+
+    @property
+    def state(self) -> str:
+        return self._state
+
+    def claim(self) -> None:
+        """Write `run`, taking ownership of the path for this job.
+
+        A control file left saying `pause` by a previous job would otherwise
+        stop the next one before it copied a byte, and the reason would not be
+        obvious to anyone watching. A job starts by saying what it is doing.
+        """
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(self.RUN + "\n", encoding="utf-8")
+
+    def read(self) -> str | None:
+        """The word in the file, or None for "no opinion"."""
+        try:
+            text = self.path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            # Deleting the file releases the job rather than stranding it.
+            return self.RUN
+        except OSError:
+            return None
+        word = text.strip().lower().split()
+        if not word or word[0] not in self.STATES:
+            return None
+        return word[0]
+
+    def sync(self, force: bool = False) -> None:
+        with self._lock:
+            now = time.monotonic()
+            if not force and now - self._checked < self.poll:
+                return
+            self._checked = now
+        state = self.read()
+        if state is None or state == self._state:
+            return
+        self._state = state
+        if state == self.PAUSE:
+            self.pause()
+        elif state == self.RUN:
+            self.resume()
+        elif state == self.CANCEL:
+            self.cancel()
+        if self._on_change is not None:
+            self._on_change(state)
+
+    def checkpoint(self) -> None:
+        self.sync()
+        # Poll while held, or a `resume` written to the file would never be
+        # seen: JobControl.checkpoint would be blocked inside Event.wait().
+        while self.paused and not self.cancelled:
+            time.sleep(self.poll)
+            self.sync(force=True)
+        super().checkpoint()
+
+
 @dataclass
 class ProgressEvent:
     """Emitted as the job runs, for CLI progress bars and (later) the GUI."""

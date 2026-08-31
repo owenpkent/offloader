@@ -92,6 +92,7 @@ offloader verify D:\video\080426\A001
 | --- | --- |
 | `offload` | copy and verify a source to one or more destinations |
 | `resolve` | report which of an edit timeline's media is already here, copying nothing |
+| `control` | pause, resume or cancel a running offload from another terminal |
 | `verify` | re-check an offloaded tree against its manifests |
 | `report` | regenerate paperwork for an existing tree, copying nothing |
 | `info` | show tool and environment status |
@@ -117,6 +118,7 @@ offloader verify D:\video\080426\A001
 | `--exclude GLOB` | extra filename pattern to skip; repeatable |
 | `--flat` | do not recreate the source folder structure; refused if two files would land on one path |
 | `--skip-existing` | skip files already present at matching size |
+| `--control-file PATH` | make the job pausable from another terminal; see [Pausing a running job](#pausing-a-running-job) |
 | `--proxies-first` | copy the camera's proxy folders before the originals (default) |
 | `--originals-first` | copy in plain tree order instead |
 | `--retries N` | attempts per failing read on a transient error (default 3, 1 disables) |
@@ -127,6 +129,47 @@ offloader verify D:\video\080426\A001
 Exit status is `0` on success, `1` if any file failed verification, `2` on a
 usage or I/O error, `3` if a destination was refused as unsafe, `4` if a
 timeline could not be read for want of an adapter.
+
+### Pausing a running job
+
+A long offload gets started detached, over ssh, or by a scheduler, and the
+person who wants it paused is rarely sitting at that terminal. Start it with a
+control file and it can be driven from anywhere:
+
+```sh
+offloader offload --source E:\ --dest D:\A001 --control-file D:\A001\job.control
+
+# from any other terminal
+offloader control D:\A001\job.control --pause
+offloader control D:\A001\job.control --resume
+offloader control D:\A001\job.control --cancel
+offloader control D:\A001\job.control            # what state is it in?
+```
+
+The job reads the file **once per 8 MiB chunk**, so a pause takes effect inside
+a second even in the middle of a 14 GB clip. Paused, it holds its place with
+the file still in flight; resumed, it carries on from that chunk rather than
+restarting the file. A cancel keeps every finished file and discards the one in
+flight, which never had its real name.
+
+The file holds one word: `run`, `pause` or `cancel`. Deleting it releases the
+job. **Anything else is "no opinion" and leaves the job exactly as it is** —
+empty, garbled, half-written, or momentarily unreadable because another process
+has it open. That asymmetry is deliberate: inferring `cancel` from a damaged
+control file would let a stray byte stop an offload that is nine hours in, and
+a small text file is precisely what a sync client rewrites in two steps.
+`offloader control` writes through a staging file and renames it into place, so
+a job polling between chunks can never read a half-written instruction.
+
+Starting a job also *claims* the path by writing `run` to it. A control file
+left saying `pause` by a previous job would otherwise stop the next one before
+it copied a byte, with nothing on screen to explain why.
+
+Why a file rather than a signal or a keypress: Windows has almost no signal
+support beyond SIGINT, a detached job has no console to press a key in, and a
+file needs no port and no daemon, survives the terminal going away, and can be
+read to see what a job is doing. The desktop app drives the same `JobControl`
+through its transport buttons.
 
 ### From an edit timeline
 

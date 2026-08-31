@@ -10,6 +10,25 @@ project uses [semantic versioning][semver].
 
 ### Added
 
+- **Pause, resume and cancel from the command line.** `JobControl` has existed
+  since the desktop app needed transport buttons, and is checked once per 8 MiB
+  chunk, but the CLI never passed one — so a job started in a terminal could
+  only be killed. `--control-file PATH` wires one to a file, and
+  `offloader control PATH --pause|--resume|--cancel` drives it from anywhere.
+  A file rather than a signal or a keypress because Windows has almost no
+  signal support, a detached job has no console to type into, and a file needs
+  no port or daemon, survives the terminal closing, and can be read to see what
+  a job is doing.
+
+  The failure modes are the interesting part. The file holds one word;
+  **anything else — empty, garbled, half-written, momentarily locked — is "no
+  opinion" and leaves the job in the state it is already in**, because
+  inferring `cancel` from a damaged control file would let a stray byte stop an
+  offload that is nine hours in. `offloader control` writes through a staging
+  file and renames it into place, so a job polling between chunks cannot read a
+  truncated instruction. Starting a job writes `run` to the path first, so a
+  stale `pause` from a previous job cannot silently stop the next one.
+
 - **Offloading from an edit timeline.** `offloader resolve --timeline cut.xml
   --search-root E:\Media` reports which of a cut's media is already on the
   drive and which is not; `offloader offload --timeline ...` copies the
@@ -32,6 +51,14 @@ project uses [semantic versioning][semver].
   collisions on a drive that had none. A camera original may be satisfied by a
   proxy already on the drive, but only where the frame counts agree — a proxy
   one frame short moves every edit point after it.
+
+  A `file:` URL keeps its leading slash unless a drive letter follows it.
+  Stripping it unconditionally turns `/Volumes/Edit/a.mov` into the *relative*
+  path `Volumes/Edit/a.mov`, which still resolves by basename and so looks
+  correct on Windows, while every "is it where the timeline says?" test quietly
+  answers no. An editor cutting on a Mac addresses every clip that way, so it
+  is the common case rather than an edge; CI on macOS and Linux is what caught
+  it.
 
 - **`OffloadOptions.selection`**, an explicit file set for `engine.run` in
   place of scanning one source root. Files may come from any number of volumes
