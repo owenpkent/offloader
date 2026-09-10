@@ -136,6 +136,93 @@ published hashes. Promote the exact tested artifact; a rebuild needs its own
 qualification. Confirm access to the existing signing setup before making it
 a build dependency. No new signing purchase or account setup is implied here.
 
+## Windows signing flow, matching Alpha-OSK
+
+This signing flow is planned. Do not invoke the hardware key or sign artifacts
+until signing is explicitly requested. The current build and CI artifacts
+remain unsigned.
+
+**Signing is mandatory for a Windows release, including a public beta.**
+Unsigned CI artifacts are development outputs and must not be promoted to a
+release download.
+
+Use Alpha-OSK's existing local build pattern and the same OK Studio Inc.
+certificate, SafeNet hardware token, Windows SDK SignTool, and DigiCert
+timestamp service. A new signing provider or hosted signing service is not
+needed for this release.
+
+Planned interface for `build/windows/build.py`:
+
+| Mode | Behavior |
+| --- | --- |
+| Default invocation | Build, sign application binaries, assemble NSIS installer, sign installer, verify signatures |
+| `--no-sign` | Explicit unsigned development build; required in hosted PR CI; not eligible for publication |
+| `--skip-build` | Repackage and sign the existing bundle after confirming its version and source identity |
+| `--verify-only` | Verify existing application/installer signatures without signing or rebuilding |
+| `--no-installer` | Produce the portable bundle; signing still defaults on |
+
+These modes are planned, not implemented in the current unsigned builder.
+The release sequence is:
+
+1. Freeze the source commit and version; pass source checks.
+2. Build the application bundle in the recorded packaging environment.
+3. Sign the Offloader application binaries and verify native dependency
+   signature coverage under the policy below.
+4. Assemble the installer from that signed bundle.
+5. Sign the installer, then verify trust, intended publisher, timestamps, and
+   version metadata for the application and installer.
+6. Run artifact smoke tests and clean-machine installation checks against
+   those exact signed files.
+7. Calculate final checksums and prepare the draft release with its inventory.
+8. Publish only after every gate passes and release publication is requested.
+
+The planned normal build command signs by default, as in Alpha-OSK. Any
+signing or verification failure blocks promotion to the draft/publish stages.
+A failed or cancelled hardware
+prompt leaves the candidate unqualified; it must never trigger an unsigned
+fallback. A rebuild or any binary change invalidates the prior qualification
+and restarts signing and artifact checks.
+
+The workstation has Windows SDK SignTool and the existing OK Studio Inc.
+code-signing certificate in the current-user store, with a private-key
+association. The certificate expires on 2026-12-31; recheck validity and token
+availability at release time. Store visibility does not prove the hardware
+key is unlocked.
+
+1. **Implement release signing.** Keep development and hosted PR builds
+   unsigned through the explicit `--no-sign` option. Add `sign.py` as the
+   shared helper called by the default build for both application binaries
+   and the installer. Select the existing OK Studio certificate by its exact
+   thumbprint, with a local override for certificate renewal. Never commit a
+   PIN or private key. Use the current-user token setup from a normal shell.
+2. **Define signature coverage.** Inventory the desktop executable, CLI,
+   bundled DLLs/Python extensions, and eventual installer. Decide how to
+   preserve valid vendor signatures and verify publisher identity for each
+   category before implementing bulk signing. Reject incomplete bundles and
+   paths that escape through symlinks or junctions.
+3. **Sign and timestamp.** Use SHA-256 file and timestamp digests with RFC 3161.
+   The installed SignTool rejected the HTTPS form of DigiCert's timestamp URL;
+   Alpha-OSK's HTTP endpoint reached the signing step. Validate the returned
+   timestamp cryptographically. Treat missing tools, certificate problems,
+   cancelled PIN prompts, timestamp failures, and signing failures as failures
+   of the signed build. Never silently emit an unsigned release.
+4. **Verify the result.** Require Authenticode trust, the intended signer,
+   a valid timestamp, and matching executable version metadata. Add automated
+   tests for wrong signer, missing timestamp, cancelled signing, and invalid
+   bundle paths without accessing the real hardware key.
+5. **Integrate the installer.** Sign application binaries before assembling
+   the installer, then sign and verify the installer. Run smoke tests on the
+   signed output, calculate final checksums, and retain an artifact/signature
+   inventory. This stage depends on the installer implementation.
+6. **Qualify and publish later.** On a clean Windows account, check the
+   displayed publisher and normal launch/install behavior. Keep hardware-key
+   signing on the release workstation initially; hosted PR CI should never
+   require the token. Publish only the exact signed artifacts that passed
+   qualification, after a separate release instruction.
+
+Implementation reference: Microsoft's
+[SignTool documentation](https://learn.microsoft.com/en-us/windows/win32/seccrypto/signtool).
+
 ## Candidate acceptance matrix
 
 Use dedicated fixture folders and disposable copies, never the sole copy of
@@ -190,6 +277,9 @@ do not substitute a source test run for validation of the shipped bundle.
   verify a transfer, and how to report a problem. Include a screenshot and a
   short card-to-two-destinations demo using non-sensitive sample material.
 - [ ] Verify signing and checksums on assets downloaded from the draft.
+- [ ] Confirm every Windows download passed the mandatory signing flow above;
+  block publication if any artifact is unsigned, has the wrong signer, lacks
+  a valid timestamp, or differs from the qualified candidate.
 - [ ] Review the concrete draft, then publish the prerelease and source tag
   against the tested commit. Keep repository targets explicit.
 - [ ] Validate the public download links, perform one installed smoke test,

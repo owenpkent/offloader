@@ -60,8 +60,13 @@ bundle built successfully and passed the smoke checks below. It contains
 661 tests with 3 skips and 87% line coverage. Wheel/sdist builds, isolated
 wheel installation, lint, and diff checks also passed. The packaging environment
 uses the exact versions in `requirements-build.txt`; the source test run used
-the existing development dependencies. Hosted CI and independent clean-machine
-testing have not been run for this change.
+the existing development dependencies.
+
+[Hosted CI for 5963d04](https://github.com/owenpkent/offloader/actions/runs/34530344380)
+passed on Windows, Linux, and macOS, including the Windows bundle, package
+build, and property-test soak jobs. Independent clean-machine testing remains
+pending. The future signed release flow is defined in the
+[release plan](release-plan.md#windows-signing-flow-matching-alpha-osk).
 
 Run the headless smoke checks:
 
