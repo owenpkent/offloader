@@ -1,6 +1,6 @@
 """Verified copy for large data transfers, with camera-card offload and
 ShotPut Pro-compatible reporting built in."""
 
-__version__ = "0.1.0"
+from ._version import __version__ as __version__
 
 PRODUCT_NAME = "Offloader"

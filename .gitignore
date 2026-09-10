@@ -1,9 +1,13 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
-build/
+/build/*
+!/build/windows/
+/build/windows/__pycache__/
+/.pyinstaller/
 dist/
 .venv/
+.venv-build/
 venv/
 .pytest_cache/
 .coverage

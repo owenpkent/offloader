@@ -41,6 +41,11 @@ remains the fallback for everything the chunk retry cannot reach.
 
 ## Next
 
+The proposed first packaged Windows beta is tracked in
+[`docs/release-plan.md`](docs/release-plan.md), with packaging, signing,
+integrity gates, a private pilot, and recovery steps. It adapts Alpha-OSK's
+release process to Offloader's data-safety requirements.
+
 ### Verify what is already written
 
 `offloader verify` checks file hashes. ASC MHL also records **directory content

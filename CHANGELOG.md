@@ -10,6 +10,13 @@ project uses [semantic versioning][semver].
 
 ### Added
 
+- An unsigned Windows directory bundle with desktop and CLI executables,
+  pinned packaging dependencies, embedded version metadata, and headless
+  artifact checks in CI. Installer and signing work remain pending.
+- One release version source for Python package metadata, the application,
+  reports, and Windows executable metadata. CI also installs the built wheel
+  outside the checkout to check its CLI and version consistency.
+
 - **Pause, resume and cancel from the command line.** `JobControl` has existed
   since the desktop app needed transport buttons, and is checked once per 8 MiB
   chunk, but the CLI never passed one — so a job started in a terminal could

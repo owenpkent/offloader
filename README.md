@@ -514,6 +514,8 @@ general-purpose tool reports a filename, a size, and a placeholder icon.
 | Document | What is in it |
 | --- | --- |
 | [`ROADMAP.md`](ROADMAP.md) | What is next, why, and what this will not become |
+| [`docs/release-plan.md`](docs/release-plan.md) | Windows beta release sequence, packaging, signing, acceptance gates, and recovery |
+| [`docs/build-windows.md`](docs/build-windows.md) | Build and smoke-test the unsigned Windows desktop and CLI bundle |
 | [`docs/data-safety.md`](docs/data-safety.md) | Threat model: what is guaranteed, what is not, and the bugs behind each guarantee |
 | [`docs/report-layout.md`](docs/report-layout.md) | Every coordinate of the PDF, measured off the reference report |
 | [`docs/performance.md`](docs/performance.md) | Why not robocopy, with benchmarks and the confounds that made the first run worthless |
@@ -558,7 +560,8 @@ ruff check src tests
 pytest --cov=offloader --cov-report=term-missing
 ```
 
-482 tests at 83% line coverage. They cover formatting against the reference's
+661 tests passed with 3 skipped and 87% line coverage on Windows/Python 3.12
+in the latest local run. They cover formatting against the reference's
 exact strings, checksum vectors and streaming equivalence, copy/verify
 behaviour including simulated destination corruption, pause/resume/cancel
 concurrency, retry discrimination, BRAW container parsing, ffprobe parsing,

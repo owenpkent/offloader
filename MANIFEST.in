@@ -1,0 +1,5 @@
+include AGENTS.md CONTRIBUTING.md SECURITY.md ROADMAP.md CHANGELOG.md run.py
+include requirements-build.txt
+recursive-include build/windows *.py *.spec
+recursive-include scripts *.py
+recursive-include docs *.md
