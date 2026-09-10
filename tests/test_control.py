@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 from offloader import engine
 from offloader.models import FileStatus, VerificationMode
@@ -206,9 +207,10 @@ def test_file_control_pauses_and_resumes_a_running_offload(tmp_path: Path):
                                                     control=control)),
         daemon=True,
     )
-    worker.start()
-
+    # The first checkpoint must see pause, even when the whole fixture could
+    # finish before the next rate-limited control-file poll.
     path.write_text("pause\n", encoding="utf-8")
+    worker.start()
     deadline = time.monotonic() + 5
     while not control.paused and time.monotonic() < deadline:
         time.sleep(0.02)
@@ -239,7 +241,11 @@ def test_deleting_the_control_file_releases_a_paused_job(tmp_path: Path):
     assert not control.paused
 
 
-def test_file_control_cancels_a_running_offload(tmp_path: Path):
+def test_file_control_cancels_a_running_offload(tmp_path: Path, monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(
+        engine, "time", SimpleNamespace(monotonic=lambda: clock[0], sleep=time.sleep),
+    )
     source = tmp_path / "card"
     source.mkdir()
     for index in range(12):
@@ -258,6 +264,9 @@ def test_file_control_cancels_a_running_offload(tmp_path: Path):
         seen.add(event.file_name)
         if len(seen) == 3:
             path.write_text("cancel\n", encoding="utf-8")
+            # poll=0 is clamped to 50 ms. Make the next real checkpoint poll
+            # eligible without depending on disk speed or sleeping in the test.
+            clock[0] += 1.0
 
     job = engine.run(source, _options(tmp_path), progress, control)
 
@@ -288,8 +297,8 @@ def test_cancel_reaches_a_job_that_is_already_paused(tmp_path: Path):
                                                     control=control)),
         daemon=True,
     )
-    worker.start()
     path.write_text("pause\n", encoding="utf-8")
+    worker.start()
     deadline = time.monotonic() + 5
     while not control.paused and time.monotonic() < deadline:
         time.sleep(0.02)
