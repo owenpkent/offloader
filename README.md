@@ -515,7 +515,7 @@ general-purpose tool reports a filename, a size, and a placeholder icon.
 | --- | --- |
 | [`ROADMAP.md`](ROADMAP.md) | What is next, why, and what this will not become |
 | [`docs/release-plan.md`](docs/release-plan.md) | Windows beta release sequence, packaging, signing, acceptance gates, and recovery |
-| [`docs/build-windows.md`](docs/build-windows.md) | Build and smoke-test the unsigned Windows desktop and CLI bundle |
+| [`docs/build-windows.md`](docs/build-windows.md) | Build, sign, and check Windows desktop bundles and installers |
 | [`docs/data-safety.md`](docs/data-safety.md) | Threat model: what is guaranteed, what is not, and the bugs behind each guarantee |
 | [`docs/report-layout.md`](docs/report-layout.md) | Every coordinate of the PDF, measured off the reference report |
 | [`docs/performance.md`](docs/performance.md) | Why not robocopy, with benchmarks and the confounds that made the first run worthless |
@@ -554,19 +554,20 @@ what makes the report layer testable without moving bytes.
 
 ```sh
 pip install -e ".[dev]"
-pytest                      # 482 tests, ~20s
+pytest                      # run the full suite
 pytest --fuzz               # same suite, 3000 examples per property (~3 min)
 ruff check src tests
 pytest --cov=offloader --cov-report=term-missing
 ```
 
-661 tests passed with 3 skipped and 87% line coverage on Windows/Python 3.12
+727 tests passed with 5 skipped and 85% line coverage on Windows/Python 3.12
 in the latest local run. They cover formatting against the reference's
 exact strings, checksum vectors and streaming equivalence, copy/verify
 behaviour including simulated destination corruption, pause/resume/cancel
 concurrency, retry discrimination, BRAW container parsing, ffprobe parsing,
 preset and history persistence, card detection, PDF geometry read back with
-PyMuPDF, the CLI, and the GUI.
+PyMuPDF, the CLI, the GUI, and Windows installation ownership, rollback,
+locking, build provenance, and signing failure handling.
 
 The GUI tests run on Qt's offscreen platform and drive the real queue
 controller — the worker thread actually copies files — so they cover the wiring

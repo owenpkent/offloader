@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller definition for the unsigned Offloader Windows directory."""
+"""PyInstaller definition for Offloader's Windows applications and maintenance."""
 
 from __future__ import annotations
 
@@ -119,9 +119,27 @@ gui_exe = EXE(
     version=version_resource(VERSION, "Offloader.exe", "Offloader desktop application"),
 )
 
+# Maintenance must run outside the installation while replacing/removing it.
+# A separate onefile executable needs neither installed Python nor Qt.
+maintenance_analysis = Analysis(
+    [str(REPO / "build/windows/maintenance_entry.py")],
+    pathex=[str(SRC)], datas=[], hiddenimports=[],
+    excludes=["PySide6", "reportlab", "opentimelineio", "otio_fcp_adapter"],
+)
+maintenance_exe = EXE(
+    PYZ(maintenance_analysis.pure),
+    maintenance_analysis.scripts,
+    maintenance_analysis.binaries,
+    maintenance_analysis.datas,
+    name="offloader-maintenance",
+    debug=False, strip=False, upx=False, console=True,
+    version=version_resource(VERSION, "offloader-maintenance.exe", "Offloader maintenance"),
+)
+
 COLLECT(
     gui_exe,
     cli_exe,
+    maintenance_exe,
     gui_analysis.binaries,
     gui_analysis.datas,
     cli_analysis.binaries,

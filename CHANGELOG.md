@@ -10,9 +10,12 @@ project uses [semantic versioning][semver].
 
 ### Added
 
-- An unsigned Windows directory bundle with desktop and CLI executables,
-  pinned packaging dependencies, embedded version metadata, and headless
-  artifact checks in CI. Installer and signing work remain pending.
+- Windows desktop/CLI bundles and an NSIS installer, with pinned dependencies,
+  embedded version metadata, signing by default, explicit unsigned CI builds,
+  source/file inventories, checksums, and headless artifact checks. Installation
+  uses an application lifetime lock and inventoried files for replacement,
+  rollback, and uninstall; configuration/history are preserved. Real signing
+  and clean-machine installation qualification remain pending.
 - One release version source for Python package metadata, the application,
   reports, and Windows executable metadata. CI also installs the built wheel
   outside the checkout to check its CLI and version consistency.

@@ -5,6 +5,7 @@ __pycache__/
 !/build/windows/
 /build/windows/__pycache__/
 /.pyinstaller/
+/.python-build/
 dist/
 .venv/
 .venv-build/

@@ -8,7 +8,7 @@ import traceback
 from pathlib import Path
 
 
-def main() -> int:
+def _main() -> int:
     # The smoke runner uses the real frozen event loop without opening a window
     # indefinitely on CI. This variable has no effect during normal launches.
     if os.environ.get("OFFLOADER_GUI_SMOKE") == "1":
@@ -32,6 +32,13 @@ def main() -> int:
     from offloader.gui.app import main as gui_main
 
     return gui_main(sys.argv)
+
+
+def main() -> int:
+    from offloader.installation_lock import frozen_installation_lock
+
+    with frozen_installation_lock():
+        return _main()
 
 
 if __name__ == "__main__":

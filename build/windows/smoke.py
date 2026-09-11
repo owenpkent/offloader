@@ -6,6 +6,7 @@ import argparse
 import ctypes
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -142,6 +143,32 @@ def main() -> int:
             root,
             expected=1,
         )
+
+        # Exercise the shipped onefile helper without UAC, registry writes,
+        # shortcuts, or changes to a real installation.
+        from offloader.installation_lock import installation_lock
+
+        helper = args.bundle.resolve() / "offloader-maintenance.exe"
+        installed = root / "Installed Offloader"
+        install_command = [str(helper), "install", "--payload", str(args.bundle.resolve()),
+                           "--target", str(installed)]
+        run(install_command, env, root)
+        installed_cli = installed / "offloader-cli.exe"
+        if run([str(installed_cli), "--version"], env, root).strip() != version.strip():
+            raise RuntimeError("Installed CLI version differs from the bundle")
+        unrelated = installed / "user-notes.txt"
+        unrelated.write_text("preserve this file", encoding="utf-8")
+        with installation_lock(installed):
+            run(install_command, env, root, expected=3)
+            run([str(helper), "uninstall", "--target", str(installed)], env, root, expected=3)
+        with installation_lock(installed, exclusive=True):
+            run([str(installed_cli), "--version"], env, root, expected=4)
+        run(install_command, env, root)
+        extracted_helper = root / "maintenance.exe"
+        shutil.copyfile(installed / "offloader-maintenance.exe", extracted_helper)
+        run([str(extracted_helper), "uninstall", "--target", str(installed)], env, root)
+        if installed_cli.exists() or unrelated.read_text(encoding="utf-8") != "preserve this file":
+            raise RuntimeError("Uninstall did not preserve the application ownership boundary")
 
     print(f"smoke checks passed: {args.bundle.resolve()}")
     return 0

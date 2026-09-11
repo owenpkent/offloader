@@ -6,16 +6,26 @@ not a commitment to a launch date. Completed implementation is recorded below.
 
 ## Implementation progress
 
-The first slice now has a single version source in `src/offloader/_version.py`,
-pinned Windows packaging dependencies, an unsigned PyInstaller directory
-bundle with GUI and CLI executables, and automated artifact checks. CI now
-includes Windows bundle checks and fresh-environment wheel installation.
+The implementation now has a single version source in `src/offloader/_version.py`,
+pinned Windows packaging dependencies, a PyInstaller bundle with GUI, CLI, and
+maintenance executables, and source and bundle inventories. The Windows builder
+supports the default signed flow plus `--no-sign`, `--skip-build`,
+`--verify-only`, and `--no-installer`. It emits signed-build inventories and
+SHA-256 checksums, and can assemble the NSIS installer.
+
+The installer uses transactional maintenance operations and a shared installed
+GUI/CLI lifetime lock. Every running instance, including an idle one, must
+close before maintenance proceeds, and maintenance never force-kills it. The
+optional Finish launch runs under the desktop user's token and is being
+implemented now. CI includes Windows bundle checks and fresh-environment wheel
+installation.
 See [build-windows.md](build-windows.md) for commands and validation details.
 
-The installer, signing, complete third-party license inventory/SBOM, safe
-installation during active jobs, private pilot, and clean-machine qualification
-remain pending. The tables below retain the pre-implementation assessment and
-the planned stage gates; creating a bundle does not complete those gates.
+Hardware-key signing, clean-machine interactive installation and alternate
+credential checks, the complete third-party license inventory/SBOM, private
+pilot, public release workflow, and release qualification remain pending. The
+tables below retain the planned stage gates; implementation does not complete
+those gates.
 
 ## Release target
 
@@ -41,9 +51,9 @@ tests or builds were run for this documentation task.
 | Area | Present in the checkout | Work needed for release |
 | --- | --- | --- |
 | Product | Engine, CLI, Qt desktop app, reports, BRAW/BWF support, optional timeline import | Exercise the frozen application against representative workflows |
-| Version | `0.1.0` appears independently in `pyproject.toml` and `src/offloader/__init__.py` | One source used by package metadata, app, installer, reports, and release assets |
+| Version | One source in `src/offloader/_version.py` used by package metadata and the Windows bundle | Confirm the frozen release identity across all published assets |
 | CI | Windows/macOS/Linux tests on Python 3.13, Linux Python 3.10, ffmpeg job, property-test soak, wheel/sdist build and metadata checks | Install built artifacts in fresh environments; build and smoke-test Windows desktop artifacts |
-| Distribution | Source installation instructions and CI package artifacts | Frozen bundle, installer, signing, release workflow, installation documentation |
+| Distribution | Frozen bundle, NSIS installer path, source and bundle inventories, and checksums | Hardware-key signing, clean-machine installation, release workflow, and publication documentation |
 | Dependencies | Minimum versions and optional extras | Recorded build environment and pinned release dependency sets |
 | Media tools | ffmpeg/ffprobe discovered externally; copying works without them | Explicit installer dependency policy and useful missing-tool messaging |
 | Integrity | Detailed guarantees and remaining limits in `data-safety.md` | Release-specific regression evidence and operational validation |
@@ -62,7 +72,7 @@ Reference checkout: `C:/Users/owenp/dev/alpha-osk`.
 | Reference | Offloader adaptation |
 | --- | --- |
 | `src/__version__.py` and release rules in `AGENTS.md` | Establish one version source and enforce agreement before building |
-| `build/windows/build.py`, `.spec`, `installer.nsh`, `sign.py` | Use a PyInstaller bundle, NSIS installer, and explicit signing stage, adapted to Offloader's entry points and dependencies |
+| `build/windows/build.py`, `.spec`, `installer.nsh`, `sign.py` | PyInstaller bundle, NSIS installer, transactional maintenance, and explicit signing stage adapted to Offloader's entry points and dependencies |
 | `docs/build/WINDOWS.md` release checklist | Publish the dependency lockfile and software bill of materials (SBOM) alongside the installer; verify embedded executable versions and signatures |
 | Exact versioned installer naming | Define `Offloader-Setup-{version}.exe`; keep the contract stable |
 | Dedicated `alpha-osk-releases` repository | Make the publication target explicit. Default to the existing `owenpkent/offloader` repo; a second repo is optional infrastructure |
@@ -139,9 +149,10 @@ a build dependency. No new signing purchase or account setup is implied here.
 
 ## Installer flow and Alpha-OSK parity
 
-Planned behavior, not an implemented installer. The current PR produces a
-directory bundle. The public Windows download will be
-`Offloader-Setup-{version}.exe`, a signed NSIS installer requiring no Python.
+The repository now contains the NSIS installer and transactional maintenance
+path. The public Windows download will be `Offloader-Setup-{version}.exe`, a
+signed NSIS installer requiring no Python. Clean-machine installation,
+alternate credentials, and public release remain qualification gates.
 
 **First install:** open the installer, approve UAC with OK Studio Inc. shown
 as publisher, then proceed through Welcome, License, Install Location,
@@ -205,9 +216,9 @@ state paths, file ownership, and active-job guarantees.
 
 ## Windows signing flow, matching Alpha-OSK
 
-This signing flow is planned. Do not invoke the hardware key or sign artifacts
-until signing is explicitly requested. The current build and CI artifacts
-remain unsigned.
+The builder implements this signing flow. Hardware-key signing remains a
+release operation and is still pending qualification. `--no-sign` is the
+explicit path for development and hosted CI artifacts.
 
 **Signing is mandatory for a Windows release, including a public beta.**
 Unsigned CI artifacts are development outputs and must not be promoted to a
@@ -218,7 +229,7 @@ certificate, SafeNet hardware token, Windows SDK SignTool, and DigiCert
 timestamp service. A new signing provider or hosted signing service is not
 needed for this release.
 
-Planned interface for `build/windows/build.py`:
+Implemented interface for `build/windows/build.py`:
 
 | Mode | Behavior |
 | --- | --- |
@@ -228,7 +239,8 @@ Planned interface for `build/windows/build.py`:
 | `--verify-only` | Verify existing application/installer signatures without signing or rebuilding |
 | `--no-installer` | Produce the portable bundle; signing still defaults on |
 
-These modes are planned, not implemented in the current unsigned builder.
+These modes are implemented; signed release use still requires the hardware
+key, signature qualification, and the release gates below.
 The release sequence is:
 
 1. Freeze the source commit and version; pass source checks.
@@ -368,7 +380,9 @@ format; do not ask users to delete state as the default recovery procedure.
 
 ## First implementation slice
 
-Version unification and the unsigned local Windows bundle are implemented.
-Headless artifact checks pass; the clean-account GUI walkthrough remains to
-be done. Next add the installer, safe job handling, signing, and candidate
-qualification in the order above.
+Version unification, artifact identity and inventory, the NSIS installer path,
+transactional maintenance, shared installed-instance locking, signing hooks,
+and checksum records are implemented. The clean-account GUI walkthrough,
+hardware-key signing, alternate-credential install checks, complete license
+inventory/SBOM, private pilot, release workflow, and candidate qualification
+remain to be done.
