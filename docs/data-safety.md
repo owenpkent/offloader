@@ -182,6 +182,13 @@ volume they are going to.
 
 ## What is still not protected
 
+Packaged Windows applications also hold a shared installation lock for their
+whole lifetime. Installer maintenance requires exclusive access and refuses
+to change application files while any GUI or CLI instance remains open.
+It does not terminate a transfer or coordinate destinations between offloads.
+Application-file ownership, rollback, and remaining installation qualification
+are described in [build-windows.md](build-windows.md#installation-safety).
+
 Stated plainly, because a list of guarantees is only useful if its edges are
 known.
 
