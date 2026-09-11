@@ -84,9 +84,10 @@ credentials, update endpoints, or installation paths.
   unused, use `0.1.0b1` for the first public beta and `v0.1.0b1` for its tag.
   Test the mapping to numeric Windows executable/installer version fields.
   Otherwise choose the next unused version before freezing the candidate.
-- **Install:** prefer a per-user install that runs without administrator
-  rights. Keep configuration/history outside the application directory and
-  preserve them on upgrade and ordinary uninstall.
+- **Install:** match Alpha-OSK's signed NSIS wizard and default to
+  `C:/Program Files/Offloader`, with UAC for installation. Launch the app as
+  the original, non-elevated user. Keep configuration/history in that user's
+  `%APPDATA%/Offloader`, preserving them on upgrade and ordinary uninstall.
 - **Distribution:** GitHub prerelease with signed installer, SHA-256 checksums,
   source commit, release notes, dependency lockfile, SBOM, and license inventory. Keep CI
   wheel/sdist artifacts; defer PyPI publication until it serves an actual need.
@@ -135,6 +136,72 @@ before installer assembly, sign the installer afterward, then calculate the
 published hashes. Promote the exact tested artifact; a rebuild needs its own
 qualification. Confirm access to the existing signing setup before making it
 a build dependency. No new signing purchase or account setup is implied here.
+
+## Installer flow and Alpha-OSK parity
+
+Planned behavior, not an implemented installer. The current PR produces a
+directory bundle. The public Windows download will be
+`Offloader-Setup-{version}.exe`, a signed NSIS installer requiring no Python.
+
+**First install:** open the installer, approve UAC with OK Studio Inc. shown
+as publisher, then proceed through Welcome, License, Install Location,
+Shortcut Options, Install Progress, and Finish. Finish offers Launch Offloader,
+running under the original user's identity rather than the installer's admin
+token. Desktop and Start Menu shortcuts default on; Back/Next navigation must
+preserve the user's choices. The Start Menu also includes an uninstall entry.
+
+Alpha-OSK's additional research-participation page is product-specific. There
+is no corresponding Offloader feature or consent page to add.
+
+| Behavior | Alpha-OSK reference | Planned Offloader behavior |
+| --- | --- | --- |
+| Packaging | Versioned, branded, signed NSIS setup executable | Same flow with Offloader identity, icon, artwork, and version metadata |
+| Install location | Program Files x64 by default; UAC elevation | Program Files/Offloader by default, with a location page and validated target |
+| Shortcuts | Desktop and Start Menu choices, checked by default; All Users context | Same choices and defaults; no automatic start-at-login registration |
+| Installed components | Complete PyInstaller bundle and uninstaller | Desktop app, CLI, shared runtime, notices, and uninstaller; preserve external ffmpeg policy |
+| Windows app listing | Name, version, publisher, location, icon, uninstall command | Matching Installed Apps entry with Offloader-specific keys; validate scope under alternate admin credentials |
+| Finish/launch | Launch checkbox uses the original user's shell | Same user-facing launch option; never run Offloader with inherited installer elevation |
+| Existing installation | Close app, remove previous installed files, replace with new version | Check GUI and CLI first; block if a transfer is active, then close idle instances gracefully before replacement |
+| User state | Silent upgrade preserves learned data and settings | Preserve presets, history, and settings; installation never reads or changes camera media, destinations, or reports |
+| Silent installation | `/S` and an explicit computed `/D=` target; user-context relaunch | Support silent operation and explicit validated target; active jobs cause a nonzero exit without modifying the installation |
+| Uninstall | Confirmation and progress; optional removal of user data | Confirmation and progress; keep user data by default, with an explicit optional settings/history removal choice |
+
+**Upgrade/reinstall:** identify the existing Offloader installation, check
+for active GUI and CLI jobs, and refuse replacement until they finish or the
+user cancels them through Offloader. Check again before changing files to
+close the race with a newly started job. For idle instances, request a normal
+exit. Never use a force-kill fallback. Remove obsolete application-owned files,
+install the new signed bundle, refresh shortcuts and the app listing, and
+offer relaunch. Check every cleanup/install exit code; failure must not show
+a success page or launch a half-installed app. Preserve recoverable prior
+application files until replacement succeeds.
+
+**Uninstall:** apply the same active-job guard. Remove installed application
+files, shortcuts, and app registration. Preserve per-user configuration unless
+the user explicitly chooses its removal. Silent upgrade cleanup always keeps
+user data. Remove only inventoried application files, never recursively erase
+an arbitrary install directory that might contain user material.
+
+**Updater boundary:** installer parity includes the silent-install contract,
+user-context relaunch, and safe settings preservation. An in-app download/
+update client is still a separate deferred feature. Future callers must verify
+the installer signature, publisher, and version before elevation. Preserve
+NSIS's `/D=` contract: last argument, unquoted even when the path has spaces,
+and computed from a trusted installation target rather than an unvalidated
+registry command. A generic unattended deployment must not launch an app in
+a missing or unrelated user's session.
+
+**Acceptance gates:** exercise first install, custom path, same-version
+reinstall, upgrade, failed upgrade recovery, silent install, and uninstall on
+a clean Windows account. Include alternate admin credentials, Desktop/Start
+Menu choices with Back/Next, settings preservation, and an active GUI or CLI
+transfer during upgrade/uninstall. Confirm the signed publisher, app version,
+normal-user launch, CLI behavior, and absence of any media/report changes.
+
+Reference code in the Alpha-OSK checkout: `build/windows/build.py` function
+`_generate_nsi_script`, `build/windows/installer.nsh`, and `src/updater.py`.
+Reuse the intended installer experience while testing Offloader's own identity,
+state paths, file ownership, and active-job guarantees.
 
 ## Windows signing flow, matching Alpha-OSK
 
