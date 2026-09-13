@@ -8,7 +8,70 @@ project uses [semantic versioning][semver].
 
 ## [Unreleased]
 
+### Changed
+
+- **Full verification is the default.** The read-back is the only mode that
+  proves what is on the destination device, and the default should be the one
+  whose "Verified" means the most. Applies to the engine's options, new
+  presets, Simple mode and the CLI's `--verify`; `source-only` remains one
+  flag or one dropdown away for the run that is racing a deadline. The cost
+  is one extra read of each copy at the destination's own read speed.
+- **Jobs offloaded from a card's root are named after the volume label.** A
+  root has no folder name, so the job — and every report named after it —
+  was called "Offload". It is now called what the operator calls the card:
+  the label, e.g. "A003". Applies to the engine, the queue's naming
+  templates (`{card}`), and Simple mode's placeholder.
+- **The PDF's document title carries the route and the date.** A stack of
+  reports in a file manager all read "Offload Job Report"; the title is now
+  "A003 Job Report — E:\ → D:\skate video — 2026-08-09".
+
+### Fixed
+
+- **A decoder ffmpeg lacks is probed once per job, not per clip.** Extracting
+  thumbnails from BRAW with a stock ffmpeg fails identically for every clip;
+  each one still paid four doomed process spawns. The first clip of a suffix
+  that produces no frames now marks that suffix dead for the rest of the job
+  (camera proxies, being ordinary MP4/MOV, are unaffected).
+
+- **The queue's throughput and ETA measure the last five seconds, not the life
+  of the job.** The old figure was `bytes / total elapsed`, which folds the
+  pre-copy card scan and every between-file probe stall into the number
+  forever — a real offload read 3.5 MB/s while clips were demonstrably flying
+  past, and the ETA was wrong in the same direction. The rate now comes from a
+  trailing window, decays visibly during a stall instead of freezing, and
+  survives the copy→verify counter reset.
+
+- **The drive panel no longer waits on the slowest network share.** Volume
+  probes run concurrently instead of serially — the refresh costs the slowest
+  probe, not the sum — and local drives are delivered before network shares,
+  so the card reader next to the machine never queues behind an SMB
+  round-trip. While the shares are still answering, the rows from the last
+  scan stay up rather than flickering out, and the Refresh button says
+  "Scanning…" instead of looking like a button that does nothing.
+- **A running job is visible as one.** The queue panel now carries a summary
+  line — stage, current file, percent, live rate and ETA — instead of leaving
+  the evidence in a thin strip of 30 px rows. The progress bar gained a
+  percent label and colours that survive the row being selected (the running
+  row is auto-selected, and an accent bar on the accent selection was
+  invisible on exactly the row that mattered). The rate and progress columns
+  are fixed-width, so updating values no longer shove the numbers being read.
+  A once-a-second repaint lets the displayed rate visibly decay during a
+  stall instead of freezing at its last healthy value.
+- **Simple mode's form rows no longer clip.** Inputs and checkboxes declare
+  the height their styling actually needs; at fractional display scales
+  (125%) the computed hint fell short and every field's text was sliced at
+  the bottom.
+
 ### Added
+
+- **"Start offload" says "Add to queue" when that is what it does.** Jobs run
+  one at a time; while one is running the button enqueues, and the ready line
+  says the job runs after the current one.
+- **Checksum pickers say what the choice costs.** MD5 sat in the same list as
+  XXHash3-64 looking like an equal choice; on the copy path, where every byte
+  is hashed once per stream, it is ~40x slower and can cap copy speed. The
+  desktop pickers, `--hash` help and `offloader info` now carry a speed note
+  per algorithm ("fastest", "~40x slower, legacy compatibility only", …).
 
 - **A `data` profile for generic large-data transfers.** The verified copy
   engine was never camera-specific — it reads every byte once, checksums it,
@@ -21,6 +84,77 @@ project uses [semantic versioning][semver].
   profile is a first-class field on `OffloadOptions`, `Job` and saved presets,
   and is selectable in the desktop app's Simple mode and preset editor. This is
   a one-way verified transfer, not two-way sync — see `ROADMAP.md`.
+- **`--paranoid` reads every source file twice and compares.** The gap it
+  closes: a read that returns wrong bytes *without raising*. The checksum is
+  computed from whatever came back, so the destination faithfully matches a
+  corrupted source and verifies clean at every level — file hashes, directory
+  hashes, the lot. Nothing but reading twice can see it. A disagreement is
+  retried rather than adjudicated, because there is no basis for deciding which
+  read was the true one; a source that will not read the same twice fails the
+  file and leaves nothing behind. The page cache is dropped before the second
+  read, and the job says so when it could not be, since a re-read served from
+  memory compares the first read against itself. Costs a full second pass, which
+  is why it is opt-in.
+- **Sidecars and proxies are grouped with the clip they belong to.** A
+  `.sidecar` carries a BRAW's grade; delivered without its clip it is nothing,
+  and a clip delivered without it has silently lost the grade. Matching is by
+  stem, reusing what proxy pairing already did, and an ambiguous stem is left
+  unlinked rather than guessed at. A clip that copies while a file belonging to
+  it does not is now a job warning instead of two rows twenty lines apart. The
+  HTML report shows them together and the CSV gains a `Companion Of` column.
+  Media profile only: a companion is a file belonging to a *clip*, and under
+  `--profile data` nothing is a clip, so a dataset is not told that
+  `capture.xmp` belongs to `capture.h5` on the strength of a shared stem.
+- **`offloader verify` now re-checks the ASC MHL directory hashes**, which were
+  written from the start and never read back. A rename or a moved file leaves
+  every individual file hashing exactly as recorded, so no file-level check can
+  object to it; the structure hash exists precisely to catch that, and now does.
+  Content matching while structure does not is reported as `RENAMED`, which is a
+  much stronger statement than the "not in manifest" line it used to produce.
+
+  Verifying this way means hashing files the manifest does not list — that is
+  what proves a rename is only a rename — while honouring the manifest's own
+  `ignore` patterns. Directory hashes that a failed file already accounts for
+  say so rather than repeating themselves up to the root.
+
+  A manifest now records where the job's reports went, alongside `ascmhl`. They
+  are written into the destination after it, so they are on disk when a verifier
+  recomputes but were never in what it recomputes against — without the pattern,
+  a card that had just been copied reported its own `JobReport.pdf` as a change
+  to the tree. The path is recorded rather than the conventional name, since
+  `--report-dir` moves it; histories written before it was recorded are read with
+  `*_Reports` allowed for.
+
+### Changed
+
+- **The preset editor is grouped into Preset, Copying and Reports.** Sixteen
+  fields in one flat column read as a wall, and the two or three bearing on any
+  given change were never next to each other. Checkboxes now sit together under
+  one label instead of each taking a blank one, `Job name` is called `Job name
+  template` to distinguish it from Simple mode's literal job name, and
+  `Skip files already present at matching size` carries a tooltip saying what it
+  does not compare.
+- **A transient read failure is retried at the chunk that failed, not by
+  restarting the file.** Recovering a bad sector near the end of a 79 GB clip
+  used to mean re-reading all 79 GB; it now costs one 8 MiB re-read. This turned
+  out not to need the hasher rewind it looked like it would: a chunk is only
+  hashed once it has been delivered whole, so a failed read has produced no
+  state to unwind. The source is reopened and sought back to the failed offset,
+  since a reader that dropped off the bus needs its handle re-established.
+  Writes still restart the whole file — a write that fails part-way leaves the
+  destination at a length the copy loop does not know. Once a chunk has had
+  every attempt the policy allows, the whole-file retry no longer repeats them
+  against the same fault.
+- **A verify report that failed only on its directory hashes says so first.**
+  It used to open with the file tally — `3 checked: 3 ok` — on a report that did
+  not pass, which reads as a pass to anyone scanning. That combination is now
+  stated as what it is: the bytes are intact and the tree is not. Reports with
+  file failures are unchanged; they already led with them.
+- **Recovered reads are reported once per file, not once per chunk.** A card
+  failing over a contiguous stretch produced one warning every 8 MiB, burying
+  every other warning in the job. A single bad sector still names its offset
+  exactly, because there the byte is the useful fact; a run of them is bounded
+  by the first and the last, because there it is not.
 
 ### Fixed
 

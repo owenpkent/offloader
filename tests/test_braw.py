@@ -348,6 +348,66 @@ def test_needs_proxy_covers_the_undecodable_formats():
     assert not companions.needs_proxy(Path("clip.mp4"))
 
 
+# ------------------------------------------------------------- grouping
+
+
+def test_a_sidecar_is_grouped_with_its_clip(tmp_path: Path):
+    clip = write_braw(tmp_path / "A001_C001.braw")
+    sidecar = tmp_path / "A001_C001.sidecar"
+    sidecar.write_bytes(b"colour metadata")
+
+    assert companions.group([clip, sidecar]) == {sidecar: clip}
+
+
+def test_a_proxy_is_grouped_with_the_clip_a_folder_up(tmp_path: Path):
+    card = tmp_path / "A001"
+    (card / "Proxy").mkdir(parents=True)
+    clip = write_braw(card / "A001_C001.braw")
+    proxy = card / "Proxy" / "A001_C001.mp4"
+    proxy.write_bytes(b"proxy")
+
+    assert companions.group([clip, proxy]) == {proxy: clip}
+
+
+def test_an_ambiguous_stem_is_left_ungrouped(tmp_path: Path):
+    """Two takes of the same name in different folders, one sidecar between
+    them. Naming the wrong clip would be worse than saying nothing, because the
+    only value of the link is that it can be trusted."""
+    first = write_braw(tmp_path / "Day1" / "A001_C001.braw")
+    second = write_braw(tmp_path / "Day2" / "A001_C001.braw")
+    sidecar = tmp_path / "A001_C001.sidecar"
+    sidecar.write_bytes(b"whose?")
+
+    assert companions.group([first, second, sidecar]) == {}
+
+
+def test_a_sidecar_beside_one_of_two_takes_picks_the_near_one(tmp_path: Path):
+    first = write_braw(tmp_path / "Day1" / "A001_C001.braw")
+    second = write_braw(tmp_path / "Day2" / "A001_C001.braw")
+    sidecar = tmp_path / "Day2" / "A001_C001.sidecar"
+    sidecar.write_bytes(b"day two")
+
+    assert companions.group([first, second, sidecar]) == {sidecar: second}
+
+
+def test_an_orphan_sidecar_is_not_invented_a_clip(tmp_path: Path):
+    sidecar = tmp_path / "A001_C009.sidecar"
+    sidecar.write_bytes(b"no clip here")
+    clip = write_braw(tmp_path / "A001_C001.braw")
+
+    assert companions.group([clip, sidecar]) == {}
+
+
+def test_clips_are_never_companions_of_each_other(tmp_path: Path):
+    """Two ordinary takes sharing a stem are two takes, not a pair."""
+    one = tmp_path / "A001_C001.mov"
+    two = tmp_path / "A001_C001.mp4"
+    for path in (one, two):
+        path.write_bytes(b"a take")
+
+    assert companions.group([one, two]) == {}
+
+
 # ------------------------------------------------------------------ real file
 
 #: A real Blackmagic PYXIS 6K still, if one happens to be around. The synthetic

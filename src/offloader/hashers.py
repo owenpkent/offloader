@@ -28,9 +28,21 @@ class Algorithm:
     factory: Callable[[], Hasher] | None
     #: MHL/ASC-MHL element name, or None if the format has no slot for it.
     mhl_tag: str | None = None
+    #: What choosing this costs, shown wherever the algorithm is picked. The
+    #: ratios are single-thread throughput against XXHash3-64, measured with
+    #: 8 MiB blocks; exact numbers vary by CPU, the ordering does not. They
+    #: matter because the engine hashes every byte once per stream — source
+    #: plus each destination — on the copy path, so a slow hash is a ceiling
+    #: on copy speed, not an afterthought.
+    speed: str = ""
 
     def new(self) -> Hasher | None:
         return self.factory() if self.factory else None
+
+    @property
+    def picker_label(self) -> str:
+        """Label with the cost attached, e.g. "MD5 — ~40x slower"."""
+        return f"{self.label} — {self.speed}" if self.speed else self.label
 
 
 #: Base58 alphabet used by C4 (SMPTE ST 2114) — no 0, O, I or l.
@@ -74,15 +86,24 @@ class _NullHasher:
 
 
 ALGORITHMS: dict[str, Algorithm] = {
-    "xxh3-64": Algorithm("xxh3-64", "XXHash3-64", xxhash.xxh3_64, "xxh3"),
-    "xxh3-128": Algorithm("xxh3-128", "XXHash3-128", xxhash.xxh3_128, "xxh3-128"),
-    "xxh64": Algorithm("xxh64", "XXHash-64", xxhash.xxh64, "xxh64"),
-    "xxh64be": Algorithm("xxh64be", "XXHash-64BE", xxhash.xxh64, "xxh64be"),
-    "md5": Algorithm("md5", "MD5", hashlib.md5, "md5"),
-    "sha1": Algorithm("sha1", "SHA-1", hashlib.sha1, "sha1"),
-    "sha256": Algorithm("sha256", "SHA-256", hashlib.sha256, "sha256"),
-    "c4": Algorithm("c4", "C4", C4Hasher, "c4"),
-    "none": Algorithm("none", "None", None, None),
+    "xxh3-64": Algorithm("xxh3-64", "XXHash3-64", xxhash.xxh3_64, "xxh3",
+                         speed="fastest"),
+    "xxh3-128": Algorithm("xxh3-128", "XXHash3-128", xxhash.xxh3_128, "xxh3-128",
+                          speed="fastest"),
+    "xxh64": Algorithm("xxh64", "XXHash-64", xxhash.xxh64, "xxh64",
+                       speed="fast"),
+    "xxh64be": Algorithm("xxh64be", "XXHash-64BE", xxhash.xxh64, "xxh64be",
+                         speed="fast"),
+    "md5": Algorithm("md5", "MD5", hashlib.md5, "md5",
+                     speed="~40x slower, legacy compatibility only"),
+    "sha1": Algorithm("sha1", "SHA-1", hashlib.sha1, "sha1",
+                      speed="~14x slower"),
+    "sha256": Algorithm("sha256", "SHA-256", hashlib.sha256, "sha256",
+                        speed="~15x slower, tamper-evident"),
+    "c4": Algorithm("c4", "C4", C4Hasher, "c4",
+                    speed="~40x slower, tamper-evident"),
+    "none": Algorithm("none", "None", None, None,
+                      speed="no checksum, nothing verified"),
 }
 
 DEFAULT_ALGORITHM = "xxh3-64"
