@@ -54,7 +54,8 @@ The builder writes `.offloader-build.json` inside the bundle, an external
 coverage, and `SHA256SUMS.txt` for the final installer, ZIP, and inventory.
 A failed build leaves `.offloader-build-incomplete`; it must not be promoted.
 Source changes during a build invalidate the candidate. These inventories are
-provenance and tamper checks, not a complete third-party license inventory or SBOM.
+provenance and tamper checks. The third-party licence inventory and the SBOM
+are separate outputs of the same build, described below.
 
 ## Signing
 
@@ -128,8 +129,7 @@ PEP 440 forms are rejected rather than silently truncated.
 
 The spec excludes optional timeline import, disables UPX, and includes the
 project license and distribution metadata. ffmpeg and ffprobe remain external.
-Missing media tools reduce metadata/thumbnails, not copy verification. A
-release-ready third-party license inventory and SBOM remain separate work.
+Missing media tools reduce metadata/thumbnails, not copy verification.
 
 ## Bill of materials and licences
 
@@ -218,6 +218,14 @@ rather than recreating it, so a signed asset already uploaded is not discarded.
 that no job in the workflow attaches what it built to a release.
 
 ## Check the artifact
+
+Source validation on 2026-09-21 (Windows x64, Python 3.13.5): 855 tests passed
+with 12 skips; lint passed over `src`, `tests`, `scripts` and `build/windows`.
+The source archive was built and checked to contain the Windows builder. This
+run covers the update client, the tag-triggered candidate workflow and the
+bill of materials. **It is a source test run and nothing more:** no bundle was
+frozen, nothing was signed, and no installer was executed, so it establishes
+none of the gates below.
 
 Installer implementation validation on 2026-09-10 (Windows x64, Python 3.12.10,
 NSIS 3.12): 727 tests passed with 5 skips and 85% line coverage. Lint passed.

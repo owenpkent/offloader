@@ -18,6 +18,12 @@ takes priority over features, throughput, and presentation.
   [docs/release-plan.md](docs/release-plan.md) for the proposed Windows beta.
   The release plan describes future work; verify the checkout before claiming
   an installer, signing pipeline, or release gate exists.
+- Packaging, signing, the bill of materials and the tag-triggered candidate
+  workflow are in [docs/build-windows.md](docs/build-windows.md); what an
+  update checks before it runs anything is in
+  [docs/updates.md](docs/updates.md). Hardware-key signing and clean-machine
+  qualification are still gates, so a build being implemented is not a
+  release being possible.
 - Inspect the working tree before edits. Preserve unrelated user changes.
   Keep this guide concise and link to detailed documentation rather than
   copying it wholesale.
@@ -56,6 +62,7 @@ All module paths below are relative to `src/offloader/`.
 | Timeline import | `timeline.py`: optional OpenTimelineIO integration, media resolution, and ambiguity handling |
 | Desktop | `gui/main_window.py`, `gui/worker.py`, `gui/queue_view.py`, mode/editor widgets, and `gui/drives.py` |
 | Persistent state | `config.py`, `presets.py`, `history.py`; `volumes.py` discovers storage and `naming.py` handles naming |
+| Installation and updates | `installation.py` and `installation_lock.py` for transactional maintenance and the shared installed-instance lock; `update.py` finds, verifies and hands over a release, wrapped for the app by `gui/updates.py`. Neither may force-close a running transfer; see [docs/updates.md](docs/updates.md) |
 
 Python 3.10+ is supported. Core dependencies are xxhash and ReportLab; PySide6
 is the GUI extra. Timeline dependencies are separate extras. ffmpeg/ffprobe
