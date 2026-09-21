@@ -82,6 +82,7 @@ offloader verify D:\video\080426\A001
 | `report` | regenerate paperwork for an existing tree, copying nothing |
 | `info` | show tool and environment status |
 | `gui` | launch the desktop app (also `offloader-gui`) |
+| `shell` | add or remove the Explorer right-click entry (Windows) |
 
 ### `offload` and `report`
 
@@ -127,6 +128,27 @@ For an ASC MHL history it also recomputes the directory content and structure
 hashes, which is the only check that catches a rename or a moved file — every
 file involved still hashes exactly as recorded. See
 [`docs/ascmhl.md`](docs/ascmhl.md#directory-hashes).
+
+### `shell` — the Explorer right-click entry
+
+```sh
+offloader shell --install      # add it, and write the icon it uses
+offloader shell                # say whether it is installed
+offloader shell --uninstall    # remove it
+```
+
+Adds **Offload this card** to a drive's context menu and **Offload this folder**
+to a directory's, both opening the desktop app with that path already in the
+source field. Everything goes under `HKEY_CURRENT_USER`, so it needs no
+administrator and affects no other account.
+
+The icon is the same filmstrip the PDF header draws, rendered to a multi-size
+`.ico` at install time rather than shipped — the repository carries no binary
+artwork.
+
+Windows 11 builds its short context menu from packaged COM handlers, so a
+registry verb like this one appears under **Show more options** (or Shift+F10,
+which opens the classic menu directly).
 
 ### Verification modes
 
