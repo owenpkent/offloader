@@ -10,6 +10,24 @@ project uses [semantic versioning][semver].
 
 ### Added
 
+- **The desktop app checks for updates, and declines while a job is running.**
+  One check a couple of seconds after the window opens, saying nothing unless
+  there is something to say, with the release named in the header and
+  **Help, Check for updates now** for an answer either way. **Options, Check
+  for updates on launch** turns the automatic check off. The check and the
+  signature probe run on a pool thread, so an unreachable network delays
+  nothing.
+
+  Installing follows the installer's refusal rather than working around it: a
+  running *or paused* job declines the update with the reason, since a paused
+  job is a partially written destination waiting to continue. Otherwise the
+  installer is downloaded and verified, the queue is checked a second time
+  because a job can start while the bytes arrive, and the app then closes
+  itself so maintenance can proceed. That close is what makes the update
+  possible, so it is announced rather than surprising. Progress is throttled
+  to roughly one signal per 256 KB but always reports the final block, so the
+  bar finishes instead of stopping just short.
+
 - **A tag-triggered release candidate workflow.** Pushing `v*` gates the tag
   against `src/offloader/_version.py` before spending a packaging run on it,
   builds the unsigned bundle and installer on `windows-latest`, confirms every

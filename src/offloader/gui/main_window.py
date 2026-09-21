@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
     QMainWindow,
     QMessageBox,
+    QProgressDialog,
     QSplitter,
     QStackedWidget,
     QVBoxLayout,
@@ -26,6 +27,7 @@ from .drives import DrivesPanel
 from .preset_mode import PresetModePanel
 from .queue_view import QueuePanel, reveal
 from .simple_mode import SimpleModePanel
+from .updates import UpdateController, refusal
 from .widgets import button, label, row
 from .worker import JobState, QueueController
 
@@ -34,6 +36,10 @@ DEFAULT_SETTINGS = {
     "sound_on_completion": True,
     "warn_on_duplicate": True,
     "mode": "preset",
+    # On by default, and one network request: a packaged copy that never
+    # learns a fix exists is the worse default for a tool people trust with
+    # original media.
+    "check_for_updates": True,
 }
 
 
@@ -69,6 +75,18 @@ class MainWindow(QMainWindow):
 
         self.queue = QueuePanel(self.controller)
 
+        self._announce_update = False
+        self._update_progress: QProgressDialog | None = None
+        self._update_banner = label("", "muted")
+        self._update_banner.setStyleSheet(f"color: {theme.ACCENT};")
+        self._update_banner.setVisible(False)
+        self.updates = UpdateController(self)
+        self.updates.found.connect(self._on_update_available)
+        self.updates.upToDate.connect(self._on_update_absent)
+        self.updates.progress.connect(self._on_update_progress)
+        self.updates.ready.connect(self._on_update_ready)
+        self.updates.failed.connect(self._on_update_failed)
+
         # ----------------------------------------------------------- chrome
         self._preset_button = button("Presets")
         self._simple_button = button("Simple")
@@ -87,6 +105,9 @@ class MainWindow(QMainWindow):
             self._preset_button,
             self._simple_button,
             None,
+            # Right of the stretch, so an available update is visible without
+            # taking a dialog's worth of attention from whatever is running.
+            self._update_banner,
         )
 
         left = QWidget()
@@ -122,6 +143,13 @@ class MainWindow(QMainWindow):
 
         self._set_mode(1 if self.settings.get("mode") == "simple" else 0)
         self.drives.start()
+
+        if self.settings.get("check_for_updates", True):
+            # Deferred rather than run here: the first paint should not wait on
+            # a network round trip, and a failure must not stop the window
+            # opening.
+            QTimer.singleShot(2500,
+                              lambda: self._check_for_updates(announce=False))
 
     # ---------------------------------------------------------------- chrome
     def _build_menu(self) -> None:
@@ -166,10 +194,119 @@ class MainWindow(QMainWindow):
         open_config.triggered.connect(lambda: reveal(config_file(SETTINGS_FILE)))
         options_menu.addAction(open_config)
 
+        self._update_action = QAction("Check for updates on launch", self,
+                                      checkable=True)
+        self._update_action.setChecked(bool(self.settings["check_for_updates"]))
+        self._update_action.toggled.connect(
+            lambda on: self._save_setting("check_for_updates", on))
+        options_menu.addAction(self._update_action)
+
         help_menu = self.menuBar().addMenu("&Help")
+        self._check_updates = QAction("Check for updates now", self)
+        self._check_updates.triggered.connect(
+            lambda: self._check_for_updates(announce=True))
+        help_menu.addAction(self._check_updates)
+        help_menu.addSeparator()
         about = QAction("About", self)
         about.triggered.connect(self._show_about)
         help_menu.addAction(about)
+
+    # ---------------------------------------------------------------- updates
+    def _check_for_updates(self, *, announce: bool) -> None:
+        """`announce` reports "you are up to date"; the automatic check does
+        not, because an unasked-for check should only ever speak up when there
+        is something to say."""
+        self._announce_update = announce
+        if not self.updates.check_now():
+            if announce:
+                self.statusBar().showMessage(
+                    "An update check is already running.", 5000)
+
+    def _on_update_available(self, release) -> None:
+        self._update_banner.setText(
+            f"Offloader {release.version} is available. "
+            f"Help → Check for updates now to install it.")
+        self._update_banner.setVisible(True)
+        if not self._announce_update:
+            return
+        refused = refusal(
+            [item.state for item in self.controller.items])
+        if refused is not None:
+            QMessageBox.information(self, "Update available", refused)
+            return
+        notes = (release.notes or "").strip()
+        detail = f"\n\n{notes[:800]}" if notes else ""
+        answer = QMessageBox.question(
+            self, "Update available",
+            f"Offloader {release.version} is available; this copy is "
+            f"{__version__}.\n\nIt will be downloaded and its signature "
+            f"checked before anything runs. Offloader then has to close for "
+            f"the installer to replace it.{detail}\n\nDownload it now?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+        if answer != QMessageBox.Yes:
+            return
+        self._update_progress = QProgressDialog(
+            f"Downloading Offloader {release.version}…", "Cancel", 0, 100,
+            self)
+        self._update_progress.setWindowTitle("Update")
+        self._update_progress.setWindowModality(Qt.WindowModal)
+        self._update_progress.setAutoClose(False)
+        self._update_progress.show()
+        self.updates.prepare()
+
+    def _on_update_progress(self, done: int, total: int) -> None:
+        if self._update_progress is None:
+            return
+        if total:
+            self._update_progress.setMaximum(100)
+            self._update_progress.setValue(min(100, done * 100 // total))
+        else:
+            self._update_progress.setMaximum(0)
+
+    def _on_update_ready(self, release, digest: str) -> None:
+        if self._update_progress is not None:
+            self._update_progress.close()
+            self._update_progress = None
+        # Checked again here, not only before the download: a job can be
+        # started while the bytes are arriving, and this is the last moment
+        # before the installer is asked to replace a running application.
+        refused = refusal(
+            [item.state for item in self.controller.items])
+        if refused is not None:
+            QMessageBox.information(self, "Update ready", refused)
+            return
+        answer = QMessageBox.question(
+            self, "Install update",
+            f"Offloader {release.version} is verified and ready.\n\n"
+            f"SHA-256 {digest[:16]}…\n\nOffloader will close so the "
+            f"installer can replace it. Install now?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+        if answer != QMessageBox.Yes:
+            return
+        try:
+            self.updates.install()
+        except Exception as exc:
+            QMessageBox.warning(self, "Update", f"Could not start the "
+                                                f"installer: {exc}")
+            return
+        # Closing is what lets the installer proceed, so it is done only after
+        # the elevated process has actually started.
+        self.close()
+
+    def _on_update_failed(self, message: str) -> None:
+        if self._update_progress is not None:
+            self._update_progress.close()
+            self._update_progress = None
+        if self._announce_update:
+            QMessageBox.warning(self, "Update", message)
+        else:
+            self.statusBar().showMessage(f"Update check: {message}", 8000)
+
+    def _on_update_absent(self) -> None:
+        if self._announce_update:
+            QMessageBox.information(
+                self, "Up to date",
+                f"Offloader {__version__} is the newest release available.")
 
     def _save_setting(self, key: str, value) -> None:
         self.settings[key] = value

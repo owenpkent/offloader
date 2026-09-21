@@ -93,9 +93,29 @@ place where the installer's own transactional recovery manages it (see
 `installation.py`); the updater does not attempt a second recovery mechanism
 on top. Nothing is deleted by the updater itself.
 
-**There is no automatic check yet.** `offloader update` is explicit. An in-app
-check, a notification and a timer belong with the desktop interface and are
-not implemented here; see [release-plan.md](release-plan.md).
+## In the desktop app
+
+The app checks once, a couple of seconds after the window opens, and says
+nothing unless there is something to say: an unrequested check that reports
+"you are up to date" is noise. When a release is found, the header carries a
+line naming it. **Help, Check for updates now** runs the same check and does
+report either outcome, and **Options, Check for updates on launch** turns the
+automatic one off. The check runs on a pool thread, so a slow or unreachable
+network delays nothing and a failure appears in the status bar rather than in
+a dialog.
+
+Installing from the app follows the refusal above rather than working around
+it. If any job is running or paused, the update is declined with the reason;
+a paused job counts, because it is a partially written destination waiting to
+continue. Otherwise the installer is downloaded, verified, and the app asks
+once more before closing itself so the installer can proceed. The app closing
+is what makes the update possible, so it is announced rather than surprising,
+and the queue is checked a second time immediately before it happens: a job
+can be started while the bytes are arriving.
+
+`src/offloader/gui/updates.py` holds that sequence, with every step
+injectable, so `tests/test_gui_updates.py` drives all of it, including each
+refusal, without a network, a certificate or an installer.
 
 ## Reference
 
