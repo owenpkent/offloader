@@ -15,7 +15,10 @@ import threading
 import time
 from pathlib import Path
 
+import pytest
+
 from offloader import engine, retry
+from offloader.hashers import hash_file
 from offloader.models import Profile, VerificationMode
 
 
@@ -141,6 +144,115 @@ def test_zero_disables_the_watchdog(tmp_path: Path, monkeypatch):
 
     assert "stalled" not in stages
     assert not any("stalled" in w for w in job.warnings)
+
+
+class _ShortReader:
+    """A reader that never returns as much as it was asked for.
+
+    Legitimate behaviour for a handle — `read(n)` may return fewer bytes
+    without being at end of file — and the sub-read loop has to keep asking
+    rather than treat a short read as the end.
+    """
+
+    def __init__(self, handle, cap: int):
+        self._handle = handle
+        self._cap = cap
+
+    def read(self, size=-1):
+        if size is None or size < 0:
+            return self._handle.read(size)
+        return self._handle.read(min(size, self._cap))
+
+    def seek(self, offset, whence=0):
+        return self._handle.seek(offset, whence)
+
+    def close(self):
+        self._handle.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self._handle.close()
+
+
+def _cap_source_reads(monkeypatch, card: Path, cap: int) -> None:
+    real_open = builtins.open
+
+    def capped_open(path, mode="r", *args, **kwargs):
+        handle = real_open(path, mode, *args, **kwargs)
+        try:
+            inside = Path(path).resolve().is_relative_to(card.resolve())
+        except (OSError, ValueError):
+            inside = False
+        if inside and "r" in str(mode) and "b" in str(mode):
+            return _ShortReader(handle, cap)
+        return handle
+
+    monkeypatch.setattr(builtins, "open", capped_open)
+
+
+@pytest.mark.parametrize("size", [
+    1,                                    # a single short chunk
+    engine.SUBCHUNK_SIZE - 1,             # just under one sub-read
+    engine.SUBCHUNK_SIZE,                 # exactly one
+    engine.SUBCHUNK_SIZE + 1,             # spilling into a second
+    engine.CHUNK_SIZE + engine.SUBCHUNK_SIZE + 7,   # past a chunk boundary
+])
+def test_sub_reads_reassemble_the_file_exactly(tmp_path: Path, size: int):
+    """The data path. Reads are assembled from sub-reads now, so a fencepost
+    in that loop would drop or duplicate bytes at a boundary — and the
+    checksum is computed from what the loop produced, so a corrupted copy
+    would faithfully match a corrupted source and verify clean. Compared
+    against the bytes on disk rather than against another run of the same
+    code."""
+    card = tmp_path / "card"
+    card.mkdir()
+    payload = bytes(range(251)) * (size // 251 + 1)
+    payload = payload[:size]
+    (card / "A001_C001.mov").write_bytes(payload)
+
+    job = engine.run(card, _options(tmp_path, stall_after=0.0,
+                                    verification=VerificationMode.FULL))
+
+    assert job.final_status == "Verified"
+    landed = tmp_path / "dest" / "A001_C001.mov"
+    assert landed.read_bytes() == payload
+    assert job.files[0].checksum == hash_file(card / "A001_C001.mov",
+                                              "xxh3-64")
+
+
+def test_a_short_read_is_not_mistaken_for_the_end_of_the_file(
+        tmp_path: Path, monkeypatch):
+    """`read(n)` returning fewer than n bytes does not mean end of file. If
+    the sub-read loop treated it that way, every chunk would be truncated to
+    the first short read and the copy would be silently cut off — while still
+    hashing consistently, because source and destination see the same
+    truncation."""
+    card = tmp_path / "card"
+    card.mkdir()
+    payload = b"IRREPLACEABLE " * 900_000          # several chunks
+    (card / "A001_C001.mov").write_bytes(payload)
+
+    # Well under SUBCHUNK_SIZE, so every single read comes back short.
+    _cap_source_reads(monkeypatch, card, cap=7919)
+    job = engine.run(card, _options(tmp_path, stall_after=0.0,
+                                    verification=VerificationMode.FULL))
+    monkeypatch.undo()
+
+    assert job.final_status == "Verified"
+    assert (tmp_path / "dest" / "A001_C001.mov").read_bytes() == payload
+
+
+def test_the_stall_warning_reports_the_longest_gap(tmp_path: Path, monkeypatch):
+    """"Stalled for up to 8s" is the number worth having; the last gap seen
+    would under-report a job whose worst pause came early."""
+    job, _ = _run(tmp_path, monkeypatch, b"x" * 2048,
+                  pauses=[0.9], stall_after=0.2)
+
+    stalled = [w for w in job.warnings if "stalled" in w]
+    assert len(stalled) == 1, "one warning per file, not one per poll"
+    assert "no bytes arriving" in stalled[0]
 
 
 def test_a_cancel_is_noticed_while_a_read_hangs(tmp_path: Path, monkeypatch):
