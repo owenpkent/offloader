@@ -89,6 +89,48 @@ VOLUMES = [
 ]
 
 
+def stub_volume_scan() -> None:
+    """Replace the drive panel's scan, and refuse to run if there is nothing
+    to replace.
+
+    This used to assign `drives.list_volumes`. The panel's scan was later
+    rewritten around `scan_batches`, and since nothing verified the target
+    still existed, the assignment quietly began creating a new unused attribute
+    instead of overriding anything. The real scan then ran on every render, and
+    real drive labels and free space — including network shares — could reach
+    the PNGs that go in a public README. Whether they did came down to which
+    write landed last, because the network batch arrives seconds after the
+    local one.
+
+    So: patch the funnel every scan goes through, and make a missing name stop
+    the run rather than hand the panel back to the machine.
+    """
+    if not callable(getattr(drives, "scan_batches", None)):
+        raise SystemExit(
+            "tools/screenshots.py: drives.scan_batches is gone, so the drive "
+            "panel would scan this machine and put its real volumes in the "
+            "screenshots. Point the stub at whatever the panel calls now.")
+    # One final batch: no second delivery to race the first, and the panel
+    # never sees a non-final batch it would merge network shares into.
+    drives.scan_batches = lambda: iter([(list(VOLUMES), True)])
+
+
+def assert_no_real_volumes(window: MainWindow) -> None:
+    """Fail if anything but the invented volumes reached the panel.
+
+    The stub above is the guard; this is the check that the guard worked. It
+    reads what is actually on screen, so it survives the next rewrite of the
+    scan in a way that patching a function name did not.
+    """
+    invented = {volume.label for volume in VOLUMES}
+    showing = {row.volume.label for row in window.drives._rows}
+    leaked = showing - invented
+    if leaked:
+        raise SystemExit(
+            "tools/screenshots.py: the drive panel is showing real volumes "
+            f"({', '.join(sorted(leaked))}); refusing to write screenshots.")
+
+
 def seed_config() -> None:
     (config_dir() / "presets.json").write_text(
         json.dumps([p.to_dict() for p in PRESETS], indent=2), encoding="utf-8")
@@ -139,8 +181,7 @@ def main(argv: list[str] | None = None) -> int:
     out.mkdir(parents=True, exist_ok=True)
     seed_config()
 
-    # The panel scans real volumes on a worker thread; give it ours instead.
-    drives.list_volumes = lambda: list(VOLUMES)
+    stub_volume_scan()
 
     app = QApplication([])
     theme.apply(app)
@@ -162,6 +203,7 @@ def main(argv: list[str] | None = None) -> int:
 
     window._set_mode(0)
     settle(app)
+    assert_no_real_volumes(window)
     shoot(window, out, "app-preset-mode.png")
 
     window._set_mode(1)
@@ -171,6 +213,9 @@ def main(argv: list[str] | None = None) -> int:
     window.simple.destinations.set_paths([Path(r"D:\Archive\2026"),
                                           Path(r"N:\cold\2026")])
     settle(app)
+    # Checked again: the panel polls every few seconds, so a scan that slipped
+    # past the stub would land between the two pictures.
+    assert_no_real_volumes(window)
     shoot(window, out, "app-simple-mode.png")
 
     editor = PresetEditor(PRESETS[2])
