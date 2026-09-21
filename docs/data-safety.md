@@ -202,7 +202,7 @@ known.
 - **Concurrent instances.** One app instance serialises its queue. Two instances
   pointed at the same destination are not coordinated.
 
-## Marginal media
+## Marginal media and dropped links
 
 Cards and readers fail intermittently long before they fail for good. A read
 that fails for a transient-looking reason is retried — three attempts by
@@ -215,6 +215,20 @@ delay, so only errors with a plausible transient cause qualify: `EIO`, `EBUSY`,
 `ETIMEDOUT`, and on Windows `ERROR_NOT_READY`, `ERROR_CRC`,
 `ERROR_SHARING_VIOLATION` (usually antivirus, usually brief) and
 `ERROR_IO_DEVICE`. `ENOENT` and `ENOSPC` fail immediately.
+
+A source on a network share qualifies for the same treatment, because it fails
+the same way: an SMB session over a VPN or a WAN link dies mid-transfer and
+takes the open handle with it, while the path is perfectly reachable either side
+of the drop. So the network-mount codes are retried too — `ERROR_BAD_NETPATH`,
+`ERROR_NETWORK_BUSY`, `ERROR_BAD_NET_RESP`, `ERROR_UNEXP_NET_ERR`,
+`ERROR_NETNAME_DELETED`, `ERROR_REQ_NOT_ACCEP`, the two unreachables and
+`ERROR_NO_SYSTEM_RESOURCES`, plus `ECONNRESET`, `ENETRESET`, `EPIPE` and
+`ESTALE` on a POSIX mount. A read proves the path resolved a moment earlier, so
+mid-copy these are a session that died rather than a name that was never right.
+
+`ERROR_UNEXP_NET_ERR` is the one Explorer reports as **0x8007003B**, "an
+unexpected network error occurred", before abandoning the entire transfer. Here
+it costs one re-read of the chunk in flight.
 
 A failed *read* is retried at the chunk it failed on, not by restarting the
 file. A chunk is only hashed once it has arrived whole, so a read that failed

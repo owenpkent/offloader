@@ -54,6 +54,24 @@ def test_windows_error_codes(winerror: int, expected: bool):
     assert retry.is_transient(_os_error(errno.EIO, winerror=winerror)) is expected
 
 
+@pytest.mark.parametrize("winerror", [53, 54, 58, 59, 64, 71, 1231, 1232, 1450])
+def test_dropped_network_session_is_retried(winerror: int):
+    """A source on an SMB share over a VPN loses its session mid-copy and the
+    handle with it. 59 (ERROR_UNEXP_NET_ERR) is the one Explorer reports as
+    0x8007003B before abandoning the whole transfer; the engine reopens and
+    resumes from the last delivered chunk instead."""
+    assert retry.is_transient(_os_error(errno.EIO, winerror=winerror))
+
+
+@pytest.mark.parametrize("code", [errno.ECONNRESET, errno.ENETRESET,
+                                  errno.EHOSTUNREACH, errno.ENOTCONN,
+                                  errno.EPIPE, errno.ESTALE])
+def test_posix_network_mount_errors_are_retried(code: int):
+    """The same drop seen through a POSIX mount, where there is no winerror to
+    short-circuit on."""
+    assert retry.is_transient(_os_error(code))
+
+
 def test_non_os_errors_are_never_retried():
     assert not retry.is_transient(ValueError("nope"))
     assert not retry.is_transient(KeyboardInterrupt())
