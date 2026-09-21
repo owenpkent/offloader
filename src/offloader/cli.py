@@ -250,6 +250,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("info", help="show tool and environment status")
     sub.add_parser("gui", help="launch the desktop interface")
+
+    shell = sub.add_parser(
+        "shell", help="manage the Explorer right-click entry (Windows)")
+    shell.add_argument("--install", action="store_true",
+                       help="add 'Offload this card' to the context menu for "
+                            "drives and folders, and write the icon it uses")
+    shell.add_argument("--uninstall", action="store_true",
+                       help="remove the context-menu entry")
     return parser
 
 
@@ -403,10 +411,42 @@ def cmd_gui(_args: argparse.Namespace) -> int:
     return gui_main([sys.argv[0]])
 
 
+def cmd_shell(args: argparse.Namespace) -> int:
+    from . import shellicon, shellmenu
+
+    if args.install and args.uninstall:
+        print("error: --install and --uninstall are opposites", file=sys.stderr)
+        return 2
+
+    if args.uninstall:
+        removed = shellmenu.uninstall()
+        print("Context-menu entry removed." if removed
+              else "Nothing to remove; the entry was not installed.")
+        return 0
+
+    if args.install:
+        icon = shellicon.write()
+        for entry in shellmenu.install(icon):
+            print(f"  {entry.label}  (on right-clicking a {entry.applies_to})")
+        print(f"\nIcon written to {icon}")
+        print(f"Runs: {shellmenu.launcher()}")
+        # Said plainly: Windows 11's short menu is built from packaged COM
+        # handlers, so an operator looking only there concludes this failed.
+        print("\nWindows 11 lists registry verbs under 'Show more options' "
+              "(or Shift+F10 for the classic menu directly).")
+        return 0
+
+    print(f"Context-menu entry: {'installed' if shellmenu.installed() else 'not installed'}")
+    print("  offloader shell --install    add it")
+    print("  offloader shell --uninstall  remove it")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     handlers = {"offload": cmd_offload, "report": cmd_report,
-                "verify": cmd_verify, "info": cmd_info, "gui": cmd_gui}
+                "verify": cmd_verify, "info": cmd_info, "gui": cmd_gui,
+                "shell": cmd_shell}
     try:
         return handlers[args.command](args)
     except KeyboardInterrupt:

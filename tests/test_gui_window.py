@@ -45,6 +45,48 @@ def window(qapp, tmp_path, monkeypatch):
     window.close()
 
 
+def test_a_source_given_at_startup_is_prefilled(qapp, tmp_path, monkeypatch):
+    """What the Explorer context-menu entry passes. A right-clicked card that
+    arrived as an argument and then had to be picked again by hand would make
+    the menu entry pointless."""
+    from offloader import history as history_module
+    from offloader import presets as presets_module
+
+    monkeypatch.setattr(presets_module, "config_file", lambda n: tmp_path / n)
+    monkeypatch.setattr(history_module, "config_file", lambda n: tmp_path / n)
+    monkeypatch.setattr(mw, "config_file", lambda n: tmp_path / n)
+
+    card = tmp_path / "A001"
+    card.mkdir()
+    window = mw.MainWindow(card)
+    window.drives.stop()
+    try:
+        # Both panels, because the window remembers which mode it was left in
+        # and the entry cannot know which one the operator will see.
+        assert window.simple.drop_zone.path == card
+        assert window.presets.drop_zone.path == card
+    finally:
+        window.controller.shutdown(2000)
+        window.close()
+
+
+def test_no_source_leaves_the_drop_zone_empty(qapp, tmp_path, monkeypatch):
+    from offloader import history as history_module
+    from offloader import presets as presets_module
+
+    monkeypatch.setattr(presets_module, "config_file", lambda n: tmp_path / n)
+    monkeypatch.setattr(history_module, "config_file", lambda n: tmp_path / n)
+    monkeypatch.setattr(mw, "config_file", lambda n: tmp_path / n)
+
+    window = mw.MainWindow()
+    window.drives.stop()
+    try:
+        assert window.simple.drop_zone.path is None
+    finally:
+        window.controller.shutdown(2000)
+        window.close()
+
+
 @pytest.fixture
 def prompts(monkeypatch):
     """Capture message boxes instead of showing them."""

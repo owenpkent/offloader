@@ -10,6 +10,19 @@ project uses [semantic versioning][semver].
 
 ### Added
 
+- **An Explorer right-click entry: `offloader shell --install`.** Adds "Offload
+  this card" to a drive's context menu and "Offload this folder" to a
+  directory's, each opening the app with that path already in the source field.
+  Written under `HKEY_CURRENT_USER`, so it needs no administrator and touches
+  no other account, and removed again by `--uninstall`. Windows 11 lists
+  registry verbs under "Show more options", which the command says rather than
+  leaving the operator hunting a menu that looks like it failed to install.
+- **An icon, drawn rather than shipped.** The filmstrip from the PDF header,
+  rendered to a multi-size `.ico` (16 to 256, simplifying as it shrinks) with
+  `zlib` and `struct` — no Pillow, no new dependency and no binary artwork in
+  the repository. The desktop app now uses the same mark as its window icon,
+  built in memory, so the shell entry, the window and the report header finally
+  agree on what this tool looks like.
 - **A stall is reported instead of looking like a slow link.** A hung network
   handle raises nothing — it just stops returning bytes — so nothing could be
   retried and the job sat at a stale throughput figure. Source reads are now
