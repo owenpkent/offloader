@@ -23,6 +23,15 @@ project uses [semantic versioning][semver].
   the repository. The desktop app now uses the same mark as its window icon,
   built in memory, so the shell entry, the window and the report header finally
   agree on what this tool looks like.
+- **A file list beside the queue, showing both checksums.** The interface could
+  say a job was "Verified" but never showed the evidence — the source hash and
+  the destination's, per file — which was only in the CSV and the PDF. The
+  selected job's files now sit next to the queue: size, both hashes head:tail
+  (`3F2A:05D1`, because a prefix cannot distinguish a match from a near-miss),
+  the full values and every destination path in the tooltip, and a doubled
+  check mark for a copy that was written *and* read back. Destinations that
+  disagree with one another read `mismatch` rather than showing the first and
+  hiding the rest.
 - **A stall is reported instead of looking like a slow link.** A hung network
   handle raises nothing — it just stops returning bytes — so nothing could be
   retried and the job sat at a stale throughput figure. Source reads are now
