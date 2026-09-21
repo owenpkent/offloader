@@ -72,6 +72,38 @@ def test_posix_network_mount_errors_are_retried(code: int):
     assert retry.is_transient(_os_error(code))
 
 
+def test_a_windows_error_code_decides_over_the_mapped_errno():
+    """Python maps a winerror onto whichever errno it thinks fits, and for a
+    dropped session that mapping can land on something in the permanent set.
+    The winerror is the specific fact and has to win, or the errno silently
+    vetoes a code that was deliberately added."""
+    dropped = _os_error(errno.ENOENT, winerror=59)
+    assert retry.is_transient(dropped)
+
+
+def test_a_permanent_windows_code_is_not_rescued_by_a_transient_errno():
+    """The precedence has to cut both ways, or it is not precedence — it is
+    just a second chance for anything with the right errno."""
+    denied = _os_error(errno.EIO, winerror=5)
+    assert not retry.is_transient(denied)
+
+
+def test_an_unknown_windows_code_is_not_retried():
+    """The default is to fail. A code nobody has reasoned about is not given
+    the benefit of the doubt, because the cost of guessing wrong is a delay
+    that hides the real fault."""
+    assert not retry.is_transient(_os_error(errno.EIO, winerror=999999))
+
+
+def test_exhausted_wrapping_a_network_drop_is_not_retried_again():
+    """A chunk-level loop raises Exhausted once it has spent its attempts.
+    Retrying it at a coarser level would repeat the same attempts against the
+    same dead session and re-read everything that already succeeded."""
+    spent = retry.Exhausted("read failed at offset 0 after 3 attempts")
+    spent.winerror = 59
+    assert not retry.is_transient(spent)
+
+
 def test_non_os_errors_are_never_retried():
     assert not retry.is_transient(ValueError("nope"))
     assert not retry.is_transient(KeyboardInterrupt())
