@@ -424,14 +424,33 @@ def test_an_unreadable_signature_probe_is_a_failure(tmp_path: Path):
 # ------------------------------------------------------------------ applying
 
 
-def test_the_target_is_computed_not_read_from_the_registry(monkeypatch):
+def test_the_target_is_computed_not_read_from_the_registry(monkeypatch,
+                                                           tmp_path: Path):
     """The uninstall key is writable by anything running as the user, so a
-    planted value would redirect an elevated silent install."""
-    monkeypatch.setattr(sys, "frozen", True, raising=False)
-    monkeypatch.setattr(sys, "executable",
-                        r"C:\Program Files\Offloader\offloader.exe")
+    planted value would redirect an elevated silent install.
 
-    assert update.install_target() == Path(r"C:\Program Files\Offloader")
+    Uses a real directory rather than a literal Windows path: `install_target`
+    resolves the running executable, and a backslash is not a separator off
+    Windows, so a hardcoded `C:\\...` resolves against the working directory
+    and the assertion would only hold on one platform.
+    """
+    installed = tmp_path / "Offloader"
+    installed.mkdir()
+    executable = installed / "Offloader.exe"
+    executable.write_bytes(b"MZ")
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(executable))
+
+    assert update.install_target() == installed.resolve()
+
+
+def test_an_unfrozen_checkout_falls_back_to_program_files(monkeypatch):
+    """Not a path a release takes, but it must not resolve to the source tree
+    and offer to install over it."""
+    monkeypatch.setattr(sys, "frozen", False, raising=False)
+    monkeypatch.setenv("ProgramFiles", r"C:\Program Files")
+
+    assert update.install_target() == Path(r"C:\Program Files") / "Offloader"
 
 
 def test_the_install_directory_argument_is_last_and_unquoted():
