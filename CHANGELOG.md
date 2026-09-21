@@ -10,6 +10,31 @@ project uses [semantic versioning][semver].
 
 ### Added
 
+- **A bill of materials, third-party notices and a pinned lockfile.** Every
+  build emits a CycloneDX 1.6 SBOM, a human-readable notices inventory and a
+  pinned requirements file, checksummed with the other release outputs.
+
+  The set is the runtime dependency closure of the installed package, not the
+  build environment: the release inventory already records every distribution
+  present, which on a developer machine includes pytest and ruff. Right for
+  reproducing a build, wrong as a statement about what ships. A package that
+  is required but not installed is an error rather than a silent omission.
+
+  Each component records **which metadata field its licence came from**, since
+  a PEP 639 `License-Expression` is a precise claim and a classifier's "BSD
+  License" is not. Prose in the free-text field is marked as loose rather than
+  truncated into something resembling an SPDX identifier, and only a real
+  expression is emitted as CycloneDX `expression`. The serial number is derived
+  from the contents, so the same inputs produce the same document and two SBOMs
+  can be diffed.
+
+  Licences with redistribution conditions beyond attribution are flagged for
+  review and listed on stderr. **Qt ships under `LGPL-3.0-only OR GPL-2.0-only
+  OR GPL-3.0-only` while Offloader is MIT**, so all four PySide6/shiboken6
+  packages are flagged. That is deliberately a prompt and not a verdict: what
+  those terms require of a frozen bundle is a decision for a person, and the
+  tool's job is to make it impossible to miss.
+
 - **The desktop app checks for updates, and declines while a job is running.**
   One check a couple of seconds after the window opens, saying nothing unless
   there is something to say, with the release named in the header and

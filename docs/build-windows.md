@@ -131,6 +131,49 @@ project license and distribution metadata. ffmpeg and ffprobe remain external.
 Missing media tools reduce metadata/thumbnails, not copy verification. A
 release-ready third-party license inventory and SBOM remain separate work.
 
+## Bill of materials and licences
+
+A build emits three files describing what ships, alongside the bundle:
+
+| File | What it is |
+| --- | --- |
+| `Offloader-{version}-sbom.cyclonedx.json` | CycloneDX 1.6 SBOM, for anything that consumes one automatically |
+| `Offloader-{version}-third-party-notices.txt` | The human-readable inventory that travels with the installer |
+| `Offloader-{version}-requirements.txt` | The shipped set, pinned, so it can be reproduced |
+
+They can be regenerated on their own:
+
+```powershell
+python build\windows\sbom.py --out dist\windows
+```
+
+The set is the **runtime dependency closure of the installed package**, which
+is not the same as the build environment. The release inventory already
+records every distribution present, and on a developer machine that includes
+pytest and ruff: right for reproducing a build, wrong as a statement about
+what is distributed. So the closure is resolved from package metadata with the
+`gui` extra included and `dev` excluded, and a package that is required but
+not installed is an error rather than a silent omission.
+
+Each component records **where its licence claim came from**, because the
+three metadata fields do not carry equal weight: a PEP 639
+`License-Expression` is precise, a classifier's "BSD License" is approximate,
+and the free-text field is sometimes a paragraph. Prose is marked as loose
+rather than truncated into something that looks like an SPDX identifier, and
+only a real expression is emitted as CycloneDX `expression`.
+
+Components under a licence with redistribution conditions beyond attribution
+are flagged `[review]`, and the generator exits with them listed on stderr.
+That is a prompt, not a verdict. **Qt ships under
+`LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only` while Offloader is MIT**, so
+PySide6, PySide6_Essentials, PySide6_Addons and shiboken6 are all flagged: what
+that requires of a frozen bundle is a decision for a person, and the tool's job
+is to make it impossible to miss rather than to answer it.
+
+The SBOM's serial number is derived from its contents, so two builds of the
+same inputs produce the same document and two SBOMs can be diffed to see what
+actually moved.
+
 ## Tagging a candidate
 
 Pushing a `v*` tag runs

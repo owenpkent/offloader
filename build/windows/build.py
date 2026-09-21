@@ -57,8 +57,23 @@ def check_signatures(bundle: Path, *, signing: bool, version: str) -> list[dict]
     return records
 
 
+def sbom_names(version: str) -> set[str]:
+    """The bill-of-materials files a release carries.
+
+    Named in one place because `save_outputs` checksums them and
+    `validate_outputs` refuses anything it did not expect, so the two have to
+    agree or a build fails at its own verification step.
+    """
+    return {
+        f"Offloader-{version}-sbom.cyclonedx.json",
+        f"Offloader-{version}-third-party-notices.txt",
+        f"Offloader-{version}-requirements.txt",
+    }
+
+
 def save_outputs(bundle: Path, setup: Path | None, identity: dict,
                  signatures: list[dict], signed: bool) -> None:
+    import sbom
     from artifacts import bundle_inventory
 
     version = identity["version"]
@@ -77,7 +92,7 @@ def save_outputs(bundle: Path, setup: Path | None, identity: dict,
         for path in sorted(bundle.rglob("*")):
             if path.is_file():
                 output.write(path, f"Offloader/{path.relative_to(bundle).as_posix()}")
-    outputs = [archive, inventory]
+    outputs = [archive, inventory, *sbom.write_all(DIST, identity)]
     if setup is not None:
         outputs.append(setup)
     lines = []
@@ -101,7 +116,8 @@ def validate_outputs(bundle: Path, setup: Path | None, identity: dict) -> None:
         raise RuntimeError("Output inventory is unsigned or belongs to different sources")
     if record.get("files") != bundle_inventory(bundle):
         raise RuntimeError("Output inventory no longer matches the bundle")
-    expected = {inventory.name, f"Offloader-{version}-windows-x64.zip"}
+    expected = {inventory.name, f"Offloader-{version}-windows-x64.zip",
+                *sbom_names(version)}
     if setup is not None:
         expected.add(setup.name)
     checksums = {}

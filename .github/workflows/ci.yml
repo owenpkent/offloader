@@ -126,7 +126,7 @@ jobs:
           python -c "import glob, tarfile;
           names = tarfile.open(glob.glob('dist/*.tar.gz')[0]).getnames();
           assert all(any(n.endswith('/build/windows/' + f) for n in names)
-          for f in ('build.py', 'sign.py', 'offloader.spec', 'installer.nsi'))"
+          for f in ('build.py', 'sign.py', 'sbom.py', 'offloader.spec', 'installer.nsi'))"
       - name: Install and check the built wheel outside the checkout
         run: python scripts/check_wheel.py dist/*.whl
       - uses: actions/upload-artifact@v4
@@ -156,5 +156,8 @@ jobs:
             dist/windows/Offloader-*.exe
             dist/windows/Offloader-*.zip
             dist/windows/Offloader-*-inventory.json
+            dist/windows/Offloader-*-sbom.cyclonedx.json
+            dist/windows/Offloader-*-third-party-notices.txt
+            dist/windows/Offloader-*-requirements.txt
             dist/windows/SHA256SUMS.txt
           if-no-files-found: error
