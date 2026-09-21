@@ -24,6 +24,7 @@ from offloader.gui.file_list import (  # noqa: E402
     COL_DESTINATION,
     COL_MARK,
     COL_SOURCE,
+    MARKS,
     FileListPanel,
     FileModel,
     abbreviate,
@@ -137,6 +138,58 @@ def test_destinations_disagreeing_with_each_other_say_mismatch(qapp):
     assert _display(model, 0, COL_DESTINATION) == "mismatch"
     assert _colour(model, 0, COL_DESTINATION).name() == \
         theme.status_color("failed")
+
+
+def test_destinations_that_all_agree_show_the_hash(qapp):
+    """The counterpart to the mismatch case, and the one a two-destination
+    preset produces every time. Only disagreement was covered, so a check
+    that reported `mismatch` for every multi-destination job would have
+    passed — and made the normal case look like a fault."""
+    checksum = "28f7e67d9b39ea9b"
+    model = FileModel()
+    model.set_job(_job(_entry("A.braw", checksum,
+                              [(checksum, FileStatus.VERIFIED),
+                               (checksum, FileStatus.VERIFIED)])))
+
+    assert _display(model, 0, COL_DESTINATION) == "28F7:EA9B"
+    assert _colour(model, 0, COL_DESTINATION).name() == \
+        theme.status_color("verified")
+
+
+def test_the_tooltip_lists_every_destination(qapp):
+    """With two copies, seeing only one of them in the tooltip would hide
+    which of the pair was the one that failed."""
+    checksum = "28f7e67d9b39ea9b"
+    model = FileModel()
+    model.set_job(_job(_entry("A.braw", checksum,
+                              [(checksum, FileStatus.VERIFIED),
+                               (checksum, FileStatus.VERIFIED)])))
+
+    tooltip = model.data(model.index(0, COL_DESTINATION), Qt.ToolTipRole)
+    assert tooltip.count(str(DEST_ROOT / "A.braw")) == 2
+
+
+def test_a_destination_error_reaches_the_tooltip(qapp):
+    """Why a copy failed is the first thing asked, and the row has no room
+    for it."""
+    model = FileModel()
+    entry = _entry("A.braw", "28f7e67d9b39ea9b", [(None, FileStatus.FAILED)])
+    entry.destinations[0].error = "The device is not ready"
+    model.set_job(_job(entry))
+
+    tooltip = model.data(model.index(0, COL_MARK), Qt.ToolTipRole)
+    assert "The device is not ready" in tooltip
+
+
+def test_a_file_with_no_destinations_is_not_called_verified(qapp):
+    """A skipped file has none, and an empty destination list must not fall
+    through to the colour that means proved."""
+    model = FileModel()
+    model.set_job(_job(_entry("A.braw", "28f7e67d9b39ea9b", [])))
+
+    assert _display(model, 0, COL_DESTINATION) == "—"
+    assert _colour(model, 0, COL_DESTINATION) is None
+    assert _display(model, 0, COL_MARK) == MARKS[FileStatus.SKIPPED]
 
 
 def test_a_failed_file_is_marked_and_coloured_as_failed(qapp):
