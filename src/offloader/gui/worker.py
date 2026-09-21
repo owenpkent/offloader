@@ -62,6 +62,10 @@ class QueueItem:
     current_file: str = ""
     bytes_done: int = 0
     bytes_total: int = 0
+    #: When the current stall began, or None. Derived from the stage rather
+    #: than carried in the progress signal, which has no field for it and would
+    #: have to grow one on every consumer to say the same thing.
+    stalled_since: float | None = None
     started_at: float | None = None
     finished_at: float | None = None
     job: Job | None = None
@@ -107,6 +111,13 @@ class QueueItem:
         if span < 0.5 or now - self._samples[-1][0] > RATE_WINDOW_SEC:
             return 0.0
         return max(0, self.bytes_done - oldest_bytes) / span
+
+    @property
+    def stalled_for(self) -> float:
+        """Seconds since the last byte arrived, or 0 when data is moving."""
+        if self.stalled_since is None:
+            return 0.0
+        return max(0.0, time.monotonic() - self.stalled_since)
 
     @property
     def eta_seconds(self) -> float | None:
@@ -343,6 +354,13 @@ class QueueController(QObject):
         if item is None:
             return
         item.fraction = fraction
+        # Timed from the first stalled event, so the duration shown is the
+        # stall's own rather than the age of the last one seen.
+        if stage == "stalled":
+            if item.stalled_since is None:
+                item.stalled_since = time.monotonic()
+        else:
+            item.stalled_since = None
         item.stage = stage
         item.current_file = filename
         item.bytes_done = done

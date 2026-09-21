@@ -105,6 +105,7 @@ offloader verify D:\video\080426\A001
 | `--paranoid` | read each source file twice and compare (offload only) |
 | `--retries N` | attempts per file on a transient read failure (default 3, 1 disables) |
 | `--retry-wait SECONDS` | pause before the first retry, backing off after (default 2) |
+| `--stall-after SECONDS` | report a source that stops delivering bytes without failing, as a hung network mount does (default 15, 0 disables) |
 | `--no-probe` | skip ffprobe metadata and thumbnails |
 | `--quiet` | suppress progress |
 
@@ -245,7 +246,9 @@ bound, and running two at once against the same bus makes both slower and the
 progress readout meaningless. Each row shows live throughput and ETA, and the
 transport controls pause, resume, cancel, reprioritise, and open the reports
 folder. Pause takes effect within one 8 MiB chunk; cancel deletes the partial
-destination file rather than leaving something that looks complete.
+destination file rather than leaving something that looks complete. A source
+that stops delivering bytes reads as `Stalled on …` with the time since the
+last one, rather than a throughput figure that has quietly stopped being true.
 
 Two guards run before anything is queued:
 

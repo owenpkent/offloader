@@ -201,6 +201,16 @@ known.
   safety one, and should not be used on a tree whose integrity is in question.
 - **Concurrent instances.** One app instance serialises its queue. Two instances
   pointed at the same destination are not coordinated.
+- **A read that stalls cannot be aborted, only reported.** Retrying needs an
+  error to react to, and a hung network handle raises nothing — it simply stops
+  returning bytes. The job now says so: reads are taken in 1 MiB sub-reads, and
+  a gap longer than `--stall-after` (15 s by default) is reported as a stall
+  rather than left looking like a slow link, with the file named in the job's
+  warnings afterwards. A cancel is honoured during it too. What still cannot
+  happen is aborting the read itself, so *recovery* waits on the operating
+  system to turn the hang into one of the codes above — on Windows, the SMB
+  client's `SessionTimeout`, 60 seconds by default. No data is at risk in the
+  meantime; the wait is real.
 
 ## Marginal media and dropped links
 
