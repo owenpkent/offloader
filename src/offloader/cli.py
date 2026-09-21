@@ -311,6 +311,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("info", help="show tool and environment status")
     sub.add_parser("gui", help="launch the desktop interface")
+
+    update = sub.add_parser(
+        "update", help="check for a newer release, and install it (Windows)")
+    update.add_argument("--install", action="store_true",
+                        help="download, verify and run the installer rather "
+                             "than only reporting what is available")
+    update.add_argument("--dir", type=Path, default=None, metavar="PATH",
+                        help="where to download the installer (default: a "
+                             "private temporary directory)")
     return parser
 
 
@@ -598,11 +607,72 @@ def cmd_gui(_args: argparse.Namespace) -> int:
     return gui_main([sys.argv[0]])
 
 
+def cmd_update(args: argparse.Namespace) -> int:
+    """Report or apply a newer release.
+
+    Exit status: 0 when up to date or an install was started, 1 when an update
+    exists but was not applied, 2 on a usage or verification failure. A caller
+    scripting this can therefore tell "nothing to do" from "something to do".
+    """
+    import tempfile
+
+    from . import update as update_mod
+
+    release = update_mod.check()
+    if release is None:
+        print(f"Offloader {__version__} is the newest release available.")
+        return 0
+
+    print(f"Offloader {release.version} is available "
+          f"(installed: {__version__}).")
+    if not args.install:
+        print("  offloader update --install    download, verify and install")
+        return 1
+
+    if sys.platform != "win32":
+        print("error: only the Windows release can be installed this way",
+              file=sys.stderr)
+        return 2
+
+    directory = args.dir
+    if directory is None:
+        directory = Path(tempfile.mkdtemp(prefix="offloader-update-"))
+    directory.mkdir(parents=True, exist_ok=True)
+
+    def report(done: int, total: int) -> None:
+        if total:
+            sys.stderr.write(f"\r  downloading {done * 100 // total:3d}%")
+        else:
+            sys.stderr.write(f"\r  downloading {format_size(done)}")
+        sys.stderr.flush()
+
+    try:
+        installer, digest = update_mod.download(release, directory,
+                                                progress=report)
+        sys.stderr.write("\r" + " " * 32 + "\r")
+        update_mod.verify(installer, release,
+                          expected_digest=digest, actual_digest=digest)
+        print(f"  verified {installer.name}")
+        print(f"  sha256   {digest}")
+        # Said before the prompt appears, because the installer refuses rather
+        # than closing anything: an operator who does not know that reads the
+        # refusal as a broken update.
+        print("\nThe installer will not replace a running Offloader. Close "
+              "the app and any\nCLI transfer first; an active job makes it "
+              "exit without changing anything.")
+        update_mod.apply(installer)
+    except update_mod.UpdateError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     handlers = {"offload": cmd_offload, "report": cmd_report,
                 "verify": cmd_verify, "info": cmd_info, "gui": cmd_gui,
-                "resolve": cmd_resolve, "control": cmd_control}
+                "resolve": cmd_resolve, "control": cmd_control,
+                "update": cmd_update}
     try:
         return handlers[args.command](args)
     except KeyboardInterrupt:
