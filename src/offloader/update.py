@@ -87,6 +87,16 @@ class UpdateError(RuntimeError):
     """An update was found but could not be trusted or applied."""
 
 
+class FeedError(UpdateError):
+    """The feed could not be read, so nothing is known about updates.
+
+    Distinct from "no newer release", and the distinction is the point: a
+    check that never got an answer must not be reported as a confirmation
+    that this is the newest release. That is a claim, and it would be made on
+    the strength of a failed DNS lookup.
+    """
+
+
 @dataclass(frozen=True)
 class Release:
     """A candidate release, as far as the feed describes it."""
@@ -178,15 +188,37 @@ def release_from_feed(payload: Any, *, installed: str = __version__) -> Release 
     return None
 
 
+def check_feed(installed: str = __version__, *, url: str = FEED_URL,
+               fetch: Callable[[str], Any] = _fetch_json) -> Release | None:
+    """Ask the feed for a newer release, raising if it could not be asked.
+
+    None here means the feed answered and has nothing newer. A feed that could
+    not be fetched, or that answered with something that is not a release
+    description, raises `FeedError` instead, so a caller with somewhere to put
+    the difference can tell "you are up to date" from "I could not find out".
+    """
+    try:
+        payload = fetch(url)
+    except UpdateError:
+        raise
+    except Exception as exc:
+        raise FeedError(f"could not reach the release feed: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise FeedError("the release feed did not describe a release")
+    return release_from_feed(payload, installed=installed)
+
+
 def check(installed: str = __version__, *, url: str = FEED_URL,
           fetch: Callable[[str], Any] = _fetch_json) -> Release | None:
     """Ask the feed for a newer release. Never raises.
 
-    Called on a timer and from a menu item, where the cost of an exception is
-    an interrupted app and the cost of returning None is one missed check.
+    Called where the cost of an exception is an interrupted caller and the
+    cost of returning None is one missed check. A caller that reports the
+    outcome to somebody wants `check_feed`: this one cannot tell a failure
+    from a confirmation, and neither can anyone reading its result.
     """
     try:
-        return release_from_feed(fetch(url), installed=installed)
+        return check_feed(installed, url=url, fetch=fetch)
     except Exception:
         return None
 

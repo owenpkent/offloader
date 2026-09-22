@@ -93,9 +93,52 @@ place where the installer's own transactional recovery manages it (see
 `installation.py`); the updater does not attempt a second recovery mechanism
 on top. Nothing is deleted by the updater itself.
 
-**There is no automatic check yet.** `offloader update` is explicit. An in-app
-check, a notification and a timer belong with the desktop interface and are
-not implemented here; see [release-plan.md](release-plan.md).
+## In the desktop app
+
+The app checks once, a couple of seconds after the window opens, and says
+nothing unless there is something to say: an unrequested check that reports
+"you are up to date" is noise. When a release is found, the header carries a
+line naming it. **Help, Check for updates now** runs the same check and does
+report either outcome, and **Options, Check for updates on launch** turns the
+automatic one off. The check runs on a pool thread, so a slow or unreachable
+network delays nothing and a failure appears in the status bar rather than in
+a dialog.
+
+Three outcomes, not two. `update.check()` never raises and returns `None` for
+a failed fetch, a TLS error and an unparseable feed alike, so a caller that
+reports its result to somebody cannot use it: "you are the newest release" is
+a claim, and it would be made on the strength of a failed DNS lookup. The app
+uses `check_feed()`, which returns `None` only when the feed answered and had
+nothing newer, and raises `FeedError` otherwise. A check that could not be
+made is reported as a failure.
+
+Whose result it is belongs to the check that is running, not to whoever asked
+last. A manual check started inside the first couple of seconds is still
+running when the launch timer fires; the timer's check is refused as a
+duplicate, and the announcement the manual request asked for survives it. The
+intent is only ever raised while work is in flight, so a manual request behind
+an automatic check is answered too.
+
+**Cancel cancels.** The download runs on a pool thread and cannot be
+interrupted, so cancellation is cooperative: the progress callback is the one
+place the loop hands control back often enough, and it raises there. The
+request is then terminal — the incomplete download is removed, nothing is
+verified, and `ready` is not emitted, so the app cannot go on to offer what
+the user just declined. Only the file named by the release is removed, because
+the download directory can be one the caller owns.
+
+Installing from the app follows the refusal above rather than working around
+it. If any job is running or paused, the update is declined with the reason;
+a paused job counts, because it is a partially written destination waiting to
+continue. Otherwise the installer is downloaded, verified, and the app asks
+once more before closing itself so the installer can proceed. The app closing
+is what makes the update possible, so it is announced rather than surprising,
+and the queue is checked a second time immediately before it happens: a job
+can be started while the bytes are arriving.
+
+`src/offloader/gui/updates.py` holds that sequence, with every step
+injectable, so `tests/test_gui_updates.py` drives all of it, including each
+refusal, without a network, a certificate or an installer.
 
 ## Reference
 
