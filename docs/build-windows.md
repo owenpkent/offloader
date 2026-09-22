@@ -51,7 +51,8 @@ bundle, so do not build over executables currently in use.
 
 The builder writes `.offloader-build.json` inside the bundle, an external
 `Offloader-{version}-inventory.json` with dependency versions and signature
-coverage, and `SHA256SUMS.txt` for the final installer, ZIP, and inventory.
+coverage, and `SHA256SUMS.txt` for the final installer, ZIP, inventory and
+the three bill-of-materials files.
 A failed build leaves `.offloader-build-incomplete`; it must not be promoted.
 Source changes during a build invalidate the candidate. These inventories are
 provenance and tamper checks, not a complete third-party license inventory or SBOM.
@@ -131,6 +132,71 @@ project license and distribution metadata. ffmpeg and ffprobe remain external.
 Missing media tools reduce metadata/thumbnails, not copy verification. A
 release-ready third-party license inventory and SBOM remain separate work.
 
+## Bill of materials and licences
+
+A build emits three files describing what ships, alongside the bundle:
+
+| File | What it is |
+| --- | --- |
+| `Offloader-{version}-sbom.cyclonedx.json` | CycloneDX 1.6 SBOM, for anything that consumes one automatically |
+| `Offloader-{version}-third-party-notices.txt` | The human-readable inventory, uploaded as a release asset |
+| `Offloader-{version}-requirements.txt` | The shipped set, pinned, so it can be reproduced |
+
+They can be regenerated on their own:
+
+```powershell
+python build\windows\sbom.py --out dist\windows
+```
+
+The set is the **runtime dependency closure of the installed package**, which
+is not the same as the build environment. The release inventory already
+records every distribution present, and on a developer machine that includes
+pytest and ruff: right for reproducing a build, wrong as a statement about
+what is distributed. So the closure is resolved from package metadata with the
+`gui` extra included and `dev` excluded, and a package that is required but
+not installed is an error rather than a silent omission.
+
+Each component records **where its licence claim came from**, because the
+three metadata fields do not carry equal weight: a PEP 639
+`License-Expression` is precise, a classifier's "BSD License" is approximate,
+and the free-text field is sometimes a paragraph. Prose is marked as loose
+rather than truncated into something that looks like an SPDX identifier, and
+only a real expression is emitted as CycloneDX `expression`.
+
+Components under a licence with redistribution conditions beyond attribution
+are flagged `[review]`, and the generator exits with them listed on stderr.
+That is a prompt, not a verdict. **Qt ships under
+`LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only` while Offloader is MIT**, so
+PySide6, PySide6_Essentials, PySide6_Addons and shiboken6 are all flagged: what
+that requires of a frozen bundle is a decision for a person, and the tool's job
+is to make it impossible to miss rather than to answer it.
+
+The SBOM's serial number is derived from its contents, so two builds of the
+same inputs produce the same document and two SBOMs can be diffed to see what
+actually moved.
+
+### What these three files do not cover
+
+The Python distribution dependencies, and only those. A frozen application also
+ships components that have no packaging metadata for the closure to walk: the
+CPython runtime DLL that bundle validation requires, and the PyInstaller
+bootloader compiled into each of the three executables. All three outputs say
+so in their own text — a scope line in the notices, a `offloader:scope`
+property in the SBOM, a comment in the requirements file — because an inventory
+read as complete while missing the interpreter it ships is worse than one that
+states its boundary.
+
+`sbom.uncovered_in_bundle()` reports which of those are actually present in a
+built bundle, measured against the tree rather than asserted from a list, so
+the gap shrinks as it is closed and cannot be closed by editing a constant.
+The complete third-party inventory remains a gate in
+[release-plan.md](release-plan.md).
+
+These files are generated **beside** the bundle. They are not embedded in the
+installer, so they accompany a release only by being uploaded with it, which
+is why they are in the asset list below rather than assumed to travel with the
+setup executable.
+
 ## Tagging a candidate
 
 Pushing a `v*` tag runs
@@ -158,13 +224,21 @@ prerelease pinned to the tagged commit, with notes and no assets.
 No assets, on purpose. Signing needs the hardware token, which exists only on
 the release workstation, and the [release plan](release-plan.md) requires every
 Windows download to be signed. So the workflow's own output is for inspection,
-and the signed installer is uploaded separately:
+and the signed installer is uploaded separately, with every asset
+`SHA256SUMS.txt` covers — `artifacts.release_assets()` is the one list the
+build, its verification and the generated release notes all read:
 
 ```powershell
 git checkout v0.1.0b1
 python build\windows\build.py --clean
 python build\windows\build.py --verify-only
-gh release upload v0.1.0b1 dist\windows\Offloader-Setup-0.1.0b1.exe dist\windows\SHA256SUMS.txt dist\windows\Offloader-0.1.0b1-inventory.json
+gh release upload v0.1.0b1 `
+  dist\windows\Offloader-Setup-0.1.0b1.exe `
+  dist\windows\SHA256SUMS.txt `
+  dist\windows\Offloader-0.1.0b1-inventory.json `
+  dist\windows\Offloader-0.1.0b1-sbom.cyclonedx.json `
+  dist\windows\Offloader-0.1.0b1-third-party-notices.txt `
+  dist\windows\Offloader-0.1.0b1-requirements.txt
 ```
 
 `workflow_dispatch` runs the same checks without touching releases, for

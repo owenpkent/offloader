@@ -74,6 +74,9 @@ jobs:
           for name in "Offloader-Setup-${version}.exe" \
                       "Offloader-${version}-windows-x64.zip" \
                       "Offloader-${version}-inventory.json" \
+                      "Offloader-${version}-sbom.cyclonedx.json" \
+                      "Offloader-${version}-third-party-notices.txt" \
+                      "Offloader-${version}-requirements.txt" \
                       "SHA256SUMS.txt"; do
             test -f "$name" || { echo "missing artifact: $name"; exit 1; }
           done
@@ -87,6 +90,9 @@ jobs:
             dist/windows/Offloader-*.exe
             dist/windows/Offloader-*.zip
             dist/windows/Offloader-*-inventory.json
+            dist/windows/Offloader-*-sbom.cyclonedx.json
+            dist/windows/Offloader-*-third-party-notices.txt
+            dist/windows/Offloader-*-requirements.txt
             dist/windows/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 30

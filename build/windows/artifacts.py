@@ -12,6 +12,34 @@ from pathlib import Path
 from typing import Any
 
 _VERSION_RE = re.compile(r'^__version__\s*=\s*["\']([^"\']+)["\']', re.MULTILINE)
+
+
+def sbom_names(version: str) -> list[str]:
+    """The bill-of-materials files a release carries, in upload order."""
+    return [
+        f"Offloader-{version}-sbom.cyclonedx.json",
+        f"Offloader-{version}-third-party-notices.txt",
+        f"Offloader-{version}-requirements.txt",
+    ]
+
+
+def release_assets(version: str) -> list[str]:
+    """Every file that has to be attached to a published release.
+
+    One list, because three places have to agree about it: the build
+    checksums these, its own verification refuses anything it did not expect,
+    and the generated release instructions upload them. They had drifted --
+    the bill-of-materials files entered `SHA256SUMS.txt` while the upload
+    command still named only the installer, the checksums and the inventory,
+    so following the instructions published checksums for assets that were not
+    there.
+    """
+    return [
+        f"Offloader-Setup-{version}.exe",
+        "SHA256SUMS.txt",
+        f"Offloader-{version}-inventory.json",
+        *sbom_names(version),
+    ]
 _SOURCE_SUFFIXES = {".py", ".spec", ".nsi", ".nsh", ".ico", ".bmp"}
 _RECORD_NAME = ".offloader-build.json"
 _MAX_RECORD_BYTES = 4 * 1024 * 1024
