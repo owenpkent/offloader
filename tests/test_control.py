@@ -2,12 +2,29 @@
 
 from __future__ import annotations
 
+import itertools
 import threading
 import time
 from pathlib import Path
 
+import pytest
+
 from offloader import engine
 from offloader.models import FileStatus, VerificationMode
+
+
+def _every_checkpoint_reads():
+    """A clock that has always elapsed, so `sync()` never skips a read.
+
+    `FileControl.poll` has a 50 ms floor, so a fixture of a few small files can
+    finish between two reads of the control file and never see an instruction
+    written midway. That is a race in the test, not behaviour worth asserting:
+    these tests are about what happens once the word is read. Driving the rate
+    limiter instead of racing it is what makes them mean the same thing on a
+    fast Linux runner as on a slow Windows one.
+    """
+    ticks = itertools.count(0.0, 3600.0)
+    return lambda: next(ticks)
 
 
 def _options(tmp_path: Path, **overrides) -> engine.OffloadOptions:
@@ -198,17 +215,31 @@ def test_file_control_pauses_and_resumes_a_running_offload(tmp_path: Path):
         (source / f"clip{index:02d}.mov").write_bytes(b"\0" * 400_000)
 
     path = tmp_path / "job.control"
-    control = engine.FileControl(path, poll=0.02)
+    control = engine.FileControl(path, poll=0.02, clock=_every_checkpoint_reads())
     control.claim()
+
+    # Written from the progress callback rather than from this thread after the
+    # worker starts: ten 400 KB files can be finished before the write lands,
+    # and what is under test is the pause, not that race.
+    seen: set[str] = set()
+    asked = threading.Event()
+
+    def progress(event: engine.ProgressEvent) -> None:
+        seen.add(event.file_name)
+        # Once only: several events fire per file, and rewriting `pause` after
+        # the resume below would put the job straight back to sleep.
+        if len(seen) == 3 and not asked.is_set():
+            asked.set()
+            path.write_text("pause\n", encoding="utf-8")
+
     result: dict[str, object] = {}
     worker = threading.Thread(
         target=lambda: result.update(job=engine.run(source, _options(tmp_path),
-                                                    control=control)),
+                                                    progress, control)),
         daemon=True,
     )
     worker.start()
 
-    path.write_text("pause\n", encoding="utf-8")
     deadline = time.monotonic() + 5
     while not control.paused and time.monotonic() < deadline:
         time.sleep(0.02)
@@ -246,7 +277,7 @@ def test_file_control_cancels_a_running_offload(tmp_path: Path):
         (source / f"clip{index:02d}.mov").write_bytes(b"\0" * 400_000)
 
     path = tmp_path / "job.control"
-    control = engine.FileControl(path, poll=0.0)
+    control = engine.FileControl(path, poll=0.0, clock=_every_checkpoint_reads())
     control.claim()
 
     # Written from the progress callback rather than after a sleep: a dozen
@@ -280,16 +311,24 @@ def test_cancel_reaches_a_job_that_is_already_paused(tmp_path: Path):
         (source / f"clip{index:02d}.mov").write_bytes(b"\0" * 400_000)
 
     path = tmp_path / "job.control"
-    control = engine.FileControl(path, poll=0.02)
+    control = engine.FileControl(path, poll=0.02, clock=_every_checkpoint_reads())
     control.claim()
+    seen: set[str] = set()
+    asked = threading.Event()
+
+    def progress(event: engine.ProgressEvent) -> None:
+        seen.add(event.file_name)
+        if len(seen) == 3 and not asked.is_set():
+            asked.set()
+            path.write_text("pause\n", encoding="utf-8")
+
     result: dict[str, object] = {}
     worker = threading.Thread(
         target=lambda: result.update(job=engine.run(source, _options(tmp_path),
-                                                    control=control)),
+                                                    progress, control)),
         daemon=True,
     )
     worker.start()
-    path.write_text("pause\n", encoding="utf-8")
     deadline = time.monotonic() + 5
     while not control.paused and time.monotonic() < deadline:
         time.sleep(0.02)
@@ -299,6 +338,46 @@ def test_cancel_reaches_a_job_that_is_already_paused(tmp_path: Path):
     worker.join(timeout=20)
     assert not worker.is_alive()
     assert result["job"].cancelled
+
+
+@pytest.mark.parametrize("word", ["run", "pause", "cancel"])
+def test_a_valid_word_with_anything_after_it_is_no_opinion(tmp_path: Path,
+                                                           word: str):
+    """REGRESSION. Only the first token was compared, so `cancel pending upload`
+    left behind by an editor or a sync read as a cancellation."""
+    path = tmp_path / "job.control"
+    control = engine.FileControl(path, poll=0.0)
+
+    path.write_text(f"{word} pending upload\n", encoding="utf-8")
+    assert control.read() is None
+
+
+def test_invalid_utf8_in_the_control_file_is_no_opinion(tmp_path: Path):
+    """REGRESSION. `UnicodeDecodeError` is not an `OSError`, so it escaped the
+    handler and aborted the checkpoint instead of being read as damage."""
+    path = tmp_path / "job.control"
+    control = engine.FileControl(path, poll=0.0)
+
+    path.write_bytes(b"\xff\xfe")
+    assert control.read() is None
+
+
+def test_a_damaged_control_file_leaves_a_paused_job_paused(tmp_path: Path):
+    path = tmp_path / "job.control"
+    control = engine.FileControl(path, poll=0.0)
+    path.write_text("pause\n", encoding="utf-8")
+    control.sync(force=True)
+    assert control.paused
+
+    path.write_bytes(b"\xff\xfe")
+    control.sync(force=True)
+    assert control.paused, "damaged content must not change the state"
+    assert not control.cancelled
+
+    path.write_text("cancel upload now\n", encoding="utf-8")
+    control.sync(force=True)
+    assert control.paused
+    assert not control.cancelled, "a trailing token must not cancel a job"
 
 
 def test_state_changes_are_announced_once(tmp_path: Path):

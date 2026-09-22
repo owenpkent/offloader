@@ -232,7 +232,8 @@ class FileControl(JobControl):
     STATES = (RUN, PAUSE, CANCEL)
 
     def __init__(self, path: Path, poll: float = 0.5,
-                 on_change: Callable[[str], None] | None = None) -> None:
+                 on_change: Callable[[str], None] | None = None,
+                 clock: Callable[[], float] = time.monotonic) -> None:
         super().__init__()
         self.path = Path(path)
         self.poll = max(0.05, poll)
@@ -240,6 +241,12 @@ class FileControl(JobControl):
         self._state = self.RUN
         self._checked = 0.0
         self._lock = threading.Lock()
+        # Injectable so a test can decide when the rate limiter has elapsed.
+        # `poll` has a 50 ms floor, deliberately: a caller asking for 0 on a
+        # network control path would otherwise stat it sixteen times a second.
+        # That floor also means a small fixture can finish between two reads,
+        # which is a race in the test rather than a behaviour worth having.
+        self._clock = clock
 
     @property
     def state(self) -> str:
@@ -264,14 +271,23 @@ class FileControl(JobControl):
             return self.RUN
         except OSError:
             return None
-        word = text.strip().lower().split()
-        if not word or word[0] not in self.STATES:
+        except UnicodeDecodeError:
+            # Not an OSError, so it escaped the handler above and aborted the
+            # checkpoint. A control file being written underneath us, or one an
+            # editor saved in another encoding, is damaged content: the
+            # documented answer to that is no opinion, not a stopped transfer.
             return None
-        return word[0]
+        # The whole value, not its first token: `cancel pending upload` is
+        # something an editor or a sync left behind, not an instruction to stop
+        # a running offload.
+        word = text.strip().lower()
+        if word not in self.STATES:
+            return None
+        return word
 
     def sync(self, force: bool = False) -> None:
         with self._lock:
-            now = time.monotonic()
+            now = self._clock()
             if not force and now - self._checked < self.poll:
                 return
             self._checked = now
