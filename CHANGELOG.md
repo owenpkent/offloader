@@ -29,6 +29,13 @@ project uses [semantic versioning][semver].
   truncated instruction. Starting a job writes `run` to the path first, so a
   stale `pause` from a previous job cannot silently stop the next one.
 
+  "One word" means the whole value, not its first token: `cancel pending
+  upload`, the kind of thing an editor or a sync client leaves behind, is
+  damaged content and not an instruction to stop. Contents that are not valid
+  UTF-8 are damage too — that raises a `UnicodeDecodeError` rather than an
+  `OSError`, so it used to abort the checkpoint instead of being read as no
+  opinion.
+
 - **Offloading from an edit timeline.** `offloader resolve --timeline cut.xml
   --search-root E:\Media` reports which of a cut's media is already on the
   drive and which is not; `offloader offload --timeline ...` copies the
