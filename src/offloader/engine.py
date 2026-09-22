@@ -13,6 +13,7 @@ import os
 import queue
 import shutil
 import threading
+import time
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -48,6 +49,26 @@ CHUNK_SIZE = 8 << 20  # 8 MiB — large enough to keep spinning disks streaming.
 #: Bounded, so memory stays at READ_AHEAD x CHUNK_SIZE however fast either
 #: side runs.
 READ_AHEAD = 3
+
+#: Bytes the reader asks for in one call. Smaller than `CHUNK_SIZE` purely so
+#: the stall watchdog hears from a slow link *between* chunks: an 8 MiB chunk
+#: over a degraded network mount can legitimately take half a minute, and a
+#: detector that cannot tell that from a hung handle is worse than none. At
+#: 1 MiB the liveness signal is independent of the chunk size the queue and the
+#: hashers work in, which stays tuned for throughput.
+SUBCHUNK_SIZE = 1 << 20  # 1 MiB
+
+#: How often the consumer wakes to ask whether anything has arrived. Also the
+#: resolution at which a cancel is noticed while a read is hung, which is the
+#: other thing this poll buys.
+STALL_POLL = 1.0
+
+#: How long teardown waits for the reader thread before leaving it behind. A
+#: read that has hung is not going to return on request, and an unbounded join
+#: here would hand the cancel back to whatever the operator was trying to
+#: escape. The thread is a daemon holding one source handle, which it closes
+#: itself on the way out, so abandoning it costs nothing.
+ABANDON_READER_AFTER = 1.0
 
 
 #: Extension worn by a copy that is still in flight. A destination file only
@@ -158,6 +179,11 @@ class ProgressEvent:
     bytes_total: int = 0
     job_bytes_done: int = 0
     job_bytes_total: int = 0
+    #: On a "stalled" event, how long the source has actually supplied nothing.
+    #: Carried because the first such event only fires once the threshold has
+    #: already passed: a consumer timing from its arrival starts at zero and
+    #: stays a whole threshold short of the outage for as long as it lasts.
+    stalled_for: float = 0.0
 
 
 ProgressCallback = Callable[[ProgressEvent], None]
@@ -192,6 +218,12 @@ class OffloadOptions:
     #: pass over the card, and is the only thing that catches a read which
     #: returned wrong bytes without the operating system noticing.
     paranoid: bool = False
+    #: Seconds without a single byte arriving before the job says so. A hung
+    #: network handle raises nothing — it stops returning bytes — so this is
+    #: the only way a stall is distinguishable from a slow link. Reporting
+    #: only: the read still cannot be aborted, so recovery waits on the
+    #: operating system to turn the hang into an error. 0 disables.
+    stall_after: float = 15.0
 
     def __post_init__(self) -> None:
         # The data profile is defined by the absence of media work, so enforce
@@ -269,7 +301,9 @@ class _CopyResult:
 def _copy_fanout(source: Path, targets: Sequence[Path], algorithm: str,
                  on_chunk: Callable[[int], None],
                  control: JobControl | None = None,
-                 retry: retry_mod.RetryPolicy = retry_mod.NO_RETRY) -> _CopyResult:
+                 retry: retry_mod.RetryPolicy = retry_mod.NO_RETRY,
+                 on_stall: Callable[[float], None] | None = None,
+                 stall_after: float = 0.0) -> _CopyResult:
     """Stream `source` into every target at once.
 
     `targets` are the *in-flight* paths — the caller renames them into place
@@ -284,6 +318,11 @@ def _copy_fanout(source: Path, targets: Sequence[Path], algorithm: str,
     the caller's whole-file retry: a write that fails part-way leaves the
     destination at a length nothing here knows, whereas a failed read has
     produced nothing at all.
+
+    `on_stall` is called with the seconds since the last byte arrived, once per
+    `STALL_POLL` for as long as nothing is arriving. It needs no thread of its
+    own: the consumer below already runs on a different thread from the read it
+    is waiting on, which is the only thing a watchdog requires.
     """
     source = Path(source)
     src_hasher = new_hasher(algorithm)
@@ -303,6 +342,10 @@ def _copy_fanout(source: Path, targets: Sequence[Path], algorithm: str,
     stop = threading.Event()
     failure: list[BaseException] = []
     recovered: list[tuple[int, int]] = []
+    #: When the reader last had bytes in its hand. A list because it is written
+    #: on the reader thread and read on the consumer's, and a bare float would
+    #: rebind rather than mutate.
+    last_byte = [time.monotonic()]
 
     def read_ahead() -> None:
         """Keep the queue fed so the next read overlaps the current write.
@@ -321,7 +364,19 @@ def _copy_fanout(source: Path, targets: Sequence[Path], algorithm: str,
             reader = longpath.open_binary(source, "rb")
 
             def read_one() -> bytes:
-                return reader.read(CHUNK_SIZE)
+                # Assembled from sub-reads so a link that is crawling rather
+                # than hung still marks itself alive on the way. A short read
+                # means end of file; a failure part-way discards the lot,
+                # because `recover` below seeks back to the start of the chunk
+                # and nothing partial has been hashed or delivered.
+                buffer = bytearray()
+                while len(buffer) < CHUNK_SIZE:
+                    part = reader.read(min(SUBCHUNK_SIZE, CHUNK_SIZE - len(buffer)))
+                    if not part:
+                        break
+                    buffer += part
+                    last_byte[0] = time.monotonic()
+                return bytes(buffer)
 
             def recover() -> None:
                 # Reopen rather than seek alone: a reader that dropped off the
@@ -382,7 +437,22 @@ def _copy_fanout(source: Path, targets: Sequence[Path], algorithm: str,
         started = True
 
         while True:
-            chunk = chunks.get()
+            try:
+                chunk = chunks.get(timeout=STALL_POLL)
+            except queue.Empty:
+                # Deliberately no check on whether the reader is still alive:
+                # it delivers its sentinel from a `finally`, and up to
+                # READ_AHEAD chunks can still be queued behind a thread that
+                # has already exited. Leaving on liveness would drop them.
+                if control is not None:
+                    # A hung read never reaches the reader's own checkpoint, so
+                    # without this a cancel waits on the operating system too.
+                    control.checkpoint()
+                if stall_after and on_stall is not None:
+                    idle = time.monotonic() - last_byte[0]
+                    if idle >= stall_after:
+                        on_stall(idle)
+                continue
             if chunk is None:
                 break
             src_hasher.update(chunk)
@@ -403,8 +473,12 @@ def _copy_fanout(source: Path, targets: Sequence[Path], algorithm: str,
     finally:
         stop.set()
         if started:
-            # Drain so a reader parked on a full queue can observe `stop`.
-            while thread.is_alive():
+            # Drain so a reader parked on a full queue can observe `stop`,
+            # which it does within one put timeout. Bounded well above that,
+            # because the other reason the thread may not be finishing is a
+            # read that has hung — see ABANDON_READER_AFTER.
+            deadline = time.monotonic() + ABANDON_READER_AFTER
+            while thread.is_alive() and time.monotonic() < deadline:
                 try:
                     chunks.get_nowait()
                 except queue.Empty:
@@ -616,6 +690,9 @@ def run(source_root: Path, options: OffloadOptions,
         partials = [t.with_name(t.name + PARTIAL_SUFFIX) for t in targets]
 
         bytes_at_start = counters.job_bytes_done
+        #: Longest gap between bytes on this file, if it ever stalled. A list
+        #: rather than a nonlocal because it belongs to this iteration.
+        stalls: list[float] = []
 
         try:
             # These close over the loop variables and are all invoked inside
@@ -644,11 +721,22 @@ def run(source_root: Path, options: OffloadOptions,
                     f"{_src.name}: read failed ({exc}); "
                     f"attempt {attempt} of {options.retry.attempts}")
 
+            def note_stall(idle: float, _idx=index, _src=source, _st=stat,
+                           _stalls=stalls) -> None:
+                _stalls.append(idle)
+                emit(ProgressEvent(_idx, len(files), _src.name, "stalled",
+                                   0, _st.st_size,
+                                   counters.job_bytes_done,
+                                   counters.job_bytes_total,
+                                   stalled_for=idle))
+
             def copy_once(_src=source, _partials=partials, _idx=index,
                           _st=stat) -> _CopyResult:
                 nonlocal reread_noted
                 result = _copy_fanout(_src, _partials, options.algorithm,
-                                      on_chunk, control, options.retry)
+                                      on_chunk, control, options.retry,
+                                      on_stall=note_stall,
+                                      stall_after=options.stall_after)
                 if not options.paranoid:
                     return result
                 emit(ProgressEvent(_idx, len(files), _src.name, "reread",
@@ -682,6 +770,13 @@ def run(source_root: Path, options: OffloadOptions,
                 job.warnings.append(
                     f"{source.name} copied on attempt {used} of "
                     f"{options.retry.attempts} — the source may be failing")
+            if stalls:
+                # The copy is as good as any other; the link it came over is
+                # not, and a job that took an hour for this reason should say
+                # which files it waited on rather than look merely slow.
+                job.warnings.append(
+                    f"{source.name} stalled for up to {max(stalls):.0f}s with "
+                    f"no bytes arriving — a link that dropped, not slow media")
             if result.recovered_reads:
                 # Recovered without restarting the file, which is why the copy
                 # succeeded at all — but the sectors that needed it are real.

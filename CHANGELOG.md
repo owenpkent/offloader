@@ -8,6 +8,26 @@ project uses [semantic versioning][semver].
 
 ## [Unreleased]
 
+### Added
+
+- **A stall is reported instead of looking like a slow link.** A hung network
+  handle raises nothing — it just stops returning bytes — so nothing could be
+  retried and the job sat at a stale throughput figure. Source reads are now
+  taken in 1 MiB sub-reads and timed: a gap past `--stall-after` (15 s by
+  default) reports a `stalled` stage, the queue shows "no data for 34s" in
+  place of a rate that has stopped being true, and the file is named in the
+  job's warnings afterwards. Timing *bytes* rather than chunks is what makes it
+  trustworthy — an 8 MiB chunk over a degraded link legitimately takes half a
+  minute, and a chunk-granularity timer would call a working copy stalled.
+
+  The duration shown counts from the last byte, not from the warning. The first
+  report only fires once the threshold has already passed, so timing it from
+  there displayed "no data for 0s" on a source that had been silent for fifteen
+  seconds, and stayed that far short for as long as the outage lasted. That
+  figure is what someone reads to decide whether to go and look at the cable,
+  so the engine carries the silence it has already measured and the queue
+  backdates its clock by it.
+
 ### Changed
 
 - **Full verification is the default.** The read-back is the only mode that
@@ -37,6 +57,14 @@ project uses [semantic versioning][semver].
   offloading from a NAS over a VPN link: the path pings clean either side of
   the drop, which is exactly why the retry is worth making. Recovery costs one
   re-read of the chunk in flight.
+
+- **A cancel is noticed while a read is hung.** The consumer blocked on the
+  chunk queue without a timeout and teardown then joined the reader thread
+  without a deadline, so cancelling a job whose source had stopped responding
+  waited for the operating system's timeout — the very thing the operator was
+  trying to escape. The queue is polled, the checkpoint is checked while
+  waiting, and a reader still blocked after a second is left behind: it is a
+  daemon holding one source handle, which it closes itself.
 
 - **A decoder ffmpeg lacks is probed once per job, not per clip.** Extracting
   thumbnails from BRAW with a stock ffmpeg fails identically for every clip;

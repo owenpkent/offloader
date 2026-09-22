@@ -43,7 +43,9 @@ class _Progress:
 
         pct = (event.job_bytes_done / event.job_bytes_total * 100
                if event.job_bytes_total else 100.0)
-        line = (f"  [{pct:5.1f}%] {event.stage:<6} "
+        # 7 wide: the longest stage name is "stalled", and a field that a stage
+        # overflows shifts every column after it.
+        line = (f"  [{pct:5.1f}%] {event.stage:<7} "
                 f"{event.file_index + 1}/{event.file_total}  {event.file_name}")
         line = line[:110]
         pad = max(0, self._width - len(line))
@@ -176,6 +178,12 @@ def _common_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--retry-wait", type=float, default=2.0, metavar="SECONDS",
                         help="pause before the first retry, backing off after "
                              "(default: %(default)s)")
+    parser.add_argument("--stall-after", type=float, default=15.0,
+                        metavar="SECONDS",
+                        help="report a source that has gone this long without "
+                             "delivering a byte, which a hung network mount "
+                             "does without raising any error "
+                             "(default: %(default)s, 0 disables)")
     parser.add_argument("--profile", choices=[p.value for p in Profile],
                         default=Profile.MEDIA.value,
                         help="'media' (default) offloads camera cards with "
@@ -261,6 +269,7 @@ def _options_from(args: argparse.Namespace, destinations: list[Path]) -> engine.
         retry=retry.RetryPolicy(attempts=max(1, args.retries),
                                 delay=max(0.0, args.retry_wait)),
         paranoid=getattr(args, "paranoid", False),
+        stall_after=max(0.0, getattr(args, "stall_after", 15.0)),
     )
 
 
