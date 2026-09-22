@@ -153,7 +153,15 @@ feed's tag against the version compiled into the installer.
 It then builds unsigned on `windows-latest`, checks the frozen executables
 carry the right version, confirms the artifacts the release contract names all
 exist, and uploads them as a workflow artifact. Finally it prepares a **draft**
-prerelease pinned to the tagged commit, with notes and no assets.
+pinned to the tagged commit, with notes and no assets.
+
+Whether that draft is marked as a prerelease comes from the version the gate
+just validated, not from an assumption. `v0.1.0b1` is a prerelease and `v1.0.0`
+is not, and a stable release created as a prerelease would sit outside GitHub's
+`/releases/latest` — the feed the updater reads — so every installed copy would
+go on declining the release meant for them. It is set explicitly on both the
+create and the refresh path, so a rerun corrects an existing draft's
+classification rather than inheriting whatever the first run chose.
 
 No assets, on purpose. Signing needs the hardware token, which exists only on
 the release workstation, and the [release plan](release-plan.md) requires every
@@ -168,11 +176,23 @@ gh release upload v0.1.0b1 dist\windows\Offloader-Setup-0.1.0b1.exe dist\windows
 ```
 
 `workflow_dispatch` runs the same checks without touching releases, for
-rehearsing a tag before it exists. Re-running a tag refreshes the draft's notes
-rather than recreating it, so a signed asset already uploaded is not discarded.
+rehearsing a tag before it exists. The proposed tag is a version to gate, not a
+ref to fetch: the run checks out whatever commit it was started from, so
+entering a `vX.Y.Z` that has no ref yet reaches `check_tag.py` instead of
+failing in checkout. Re-running a tag refreshes the draft's notes rather than
+recreating it, so a signed asset already uploaded is not discarded.
+
+Only a *pushed* tag may touch a release. A dispatch can be started against an
+existing tag, in which case `github.ref` is a tag ref too, so the drafting job
+requires the event as well as the ref. Without that, a rehearsal took the write
+token and edited the release — including passing `--draft` to one that had
+already been published.
 
 `tests/test_release_workflow.py` asserts the negative property this depends on:
-that no job in the workflow attaches what it built to a release.
+that no job in the workflow attaches what it built to a release. It also
+evaluates the drafting job's condition against all three cases — tag push,
+branch dispatch, tag dispatch — with only the first permitted to mutate
+anything.
 
 ## Check the artifact
 

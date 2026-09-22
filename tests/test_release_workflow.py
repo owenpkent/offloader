@@ -102,12 +102,79 @@ def test_the_draft_job_waits_for_the_candidate(workflow):
     assert workflow["jobs"]["draft"]["needs"] == "candidate"
 
 
-def test_a_rehearsal_run_does_not_touch_releases(workflow):
-    """`workflow_dispatch` exists to exercise the checks. Guarded by a ref
-    condition so a manual run cannot create a draft for a tag that does not
-    exist."""
+def _evaluate(condition: str, **context: str) -> bool:
+    """The slice of GitHub's expression syntax this workflow uses.
+
+    Written out rather than pattern-matched on the condition text, because the
+    defect here was a condition that read correctly and was true in a case
+    nobody had enumerated. Three events, one of them allowed.
+    """
+    def value(token: str) -> str:
+        token = token.strip()
+        if token.startswith("'") and token.endswith("'"):
+            return token[1:-1]
+        return context[token]
+
+    for clause in (part.strip() for part in condition.split("&&")):
+        if clause.startswith("startsWith(") and clause.endswith(")"):
+            left, right = clause[len("startsWith("):-1].split(",")
+            if not value(left).startswith(value(right)):
+                return False
+        elif "==" in clause:
+            left, right = clause.split("==")
+            if value(left) != value(right):
+                return False
+        else:
+            raise AssertionError(f"unsupported condition clause: {clause!r}")
+    return True
+
+
+@pytest.mark.parametrize("event,ref,allowed", [
+    ("push", "refs/tags/v0.1.0b1", True),
+    ("workflow_dispatch", "refs/heads/main", False),
+    ("workflow_dispatch", "refs/tags/v0.1.0b1", False),
+])
+def test_only_a_pushed_tag_may_mutate_a_release(workflow, event, ref, allowed):
+    """REGRESSION. The ref test alone let the third case through: a dispatch
+    can be started against an existing tag, and `github.ref` is a tag ref then
+    too. The rehearsal took the write token and edited the release, including
+    passing `--draft` to one that had been published."""
     condition = workflow["jobs"]["draft"]["if"]
-    assert "refs/tags/v" in condition
+    assert _evaluate(condition, **{"github.event_name": event,
+                                   "github.ref": ref}) is allowed
+
+
+def test_a_rehearsal_checks_out_the_commit_it_was_started_from(workflow):
+    """REGRESSION. The dispatch input was also used as the checkout ref, so
+    entering a proposed tag that has no ref yet failed in checkout before
+    `check_tag.py` could validate it -- which is the whole documented purpose
+    of the rehearsal."""
+    checkout = next(step for step in workflow["jobs"]["candidate"]["steps"]
+                    if str(step.get("uses", "")).startswith("actions/checkout"))
+    assert "inputs.tag" not in checkout["with"]["ref"]
+    assert "github.ref" in checkout["with"]["ref"]
+
+
+def test_the_proposed_tag_still_reaches_the_version_gate(workflow):
+    """The other half: not using it as a ref must not mean ignoring it."""
+    gate = next(step for step in workflow["jobs"]["candidate"]["steps"]
+                if "check_tag.py" in step.get("run", ""))
+    assert "inputs.tag" in gate["run"]
+
+
+def test_the_draft_classification_comes_from_the_gated_version(workflow):
+    """REGRESSION. `--prerelease` was passed unconditionally, so a stable tag
+    published a prerelease. GitHub excludes those from `/releases/latest`,
+    which is the feed the updater reads, so every installed copy would decline
+    the release meant for them."""
+    assert workflow["jobs"]["candidate"]["outputs"]["prerelease"]
+    step = next(step for _job, step in _steps(workflow)
+                if "gh release create" in step.get("run", ""))
+    assert "--prerelease=\"$PRERELEASE\"" in step["run"]
+    # Both paths, so a rerun after a version change corrects an existing
+    # draft rather than inheriting whatever the first run chose.
+    assert step["run"].count('--prerelease="$PRERELEASE"') == 2
+    assert step["env"]["PRERELEASE"] == "${{ needs.candidate.outputs.prerelease }}"
 
 
 # ------------------------------------------------------------------ the notes

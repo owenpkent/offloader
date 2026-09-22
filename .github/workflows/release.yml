@@ -36,12 +36,17 @@ jobs:
     runs-on: windows-latest
     outputs:
       version: ${{ steps.identity.outputs.version }}
+      prerelease: ${{ steps.identity.outputs.prerelease }}
     steps:
       - uses: actions/checkout@v4
         with:
-          # The version gate reads the working tree, so it has to be the
-          # tagged commit rather than a branch tip that has moved since.
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          # Whatever triggered the run: the tagged commit on a tag push, and
+          # the selected branch on a dispatch. Deliberately *not* the dispatch
+          # input -- the point of the rehearsal is to run the checks against a
+          # tag that does not exist yet, and using the proposed tag as a
+          # checkout ref failed here before check_tag.py could say anything
+          # about it. The input is a version to gate, not a ref to fetch.
+          ref: ${{ github.ref }}
           fetch-depth: 0
 
       - uses: actions/setup-python@v5
@@ -57,8 +62,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Writes `version` and `prerelease` to $GITHUB_OUTPUT itself, so the
+          # classification the draft is created with comes from the same gate
+          # that validated the tag rather than from a second reading of it.
           python scripts/check_tag.py "${{ github.event.inputs.tag || github.ref }}"
-          python -c "import sys; sys.path.insert(0, 'src'); from offloader._version import __version__; print('version=' + __version__)" >> "$GITHUB_OUTPUT"
 
       - name: Install NSIS
         run: choco install nsis --version=3.12.0 -y --no-progress
@@ -94,9 +101,11 @@ jobs:
   draft:
     name: Prepare the draft release
     needs: candidate
-    # Only on a real tag: a dispatch run is a rehearsal of the checks and
-    # should not touch releases.
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Only a pushed tag. The ref test alone was not enough: a dispatch can be
+    # started against an existing tag, and `github.ref` is then a tag ref too,
+    # so a rehearsal reached this job, took the write token and edited the
+    # release -- including passing --draft to one that had been published.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -114,18 +123,26 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
           VERSION: ${{ needs.candidate.outputs.version }}
+          PRERELEASE: ${{ needs.candidate.outputs.prerelease }}
         shell: bash
         run: |
           set -euo pipefail
           python scripts/release_notes.py --tag "$TAG" --commit "$GITHUB_SHA" \
             --out release-notes.md
+          # From the validated version, not assumed. check_tag.py accepts a
+          # stable tag, and publishing one classified as a prerelease leaves
+          # the installer outside GitHub's /releases/latest, which is the feed
+          # the updater reads. Set explicitly on both paths so a rerun after a
+          # version change corrects the classification rather than inheriting
+          # whatever the first run chose.
+          #
           # Refreshed rather than replaced: re-running a tag must not discard
           # a signed asset already uploaded against it.
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release edit "$TAG" --draft --title "Offloader $VERSION" \
-              --notes-file release-notes.md
+            gh release edit "$TAG" --draft --prerelease="$PRERELEASE" \
+              --title "Offloader $VERSION" --notes-file release-notes.md
           else
-            gh release create "$TAG" --draft --prerelease \
+            gh release create "$TAG" --draft --prerelease="$PRERELEASE" \
               --title "Offloader $VERSION" --notes-file release-notes.md \
               --target "$GITHUB_SHA"
           fi

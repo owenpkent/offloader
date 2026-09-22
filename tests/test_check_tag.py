@@ -56,6 +56,44 @@ def test_a_tag_that_is_not_a_release_version_fails(tag: str):
     assert _gate().main([tag]) == 2
 
 
+@pytest.mark.parametrize("version,prerelease", [
+    ("0.1.0", False),
+    ("1.0.0", False),
+    ("10.20.30", False),
+    ("0.1.0a1", True),
+    ("0.1.0b2", True),
+    ("0.1.0rc1", True),
+])
+def test_a_version_is_classified_for_the_draft(version: str, prerelease: bool):
+    """The draft's prerelease flag is derived from this. A stable release
+    created as a prerelease stays outside GitHub's `/releases/latest`, which is
+    the feed the updater reads, so every installed copy would go on declining
+    the release meant for them."""
+    assert _gate().is_prerelease(version) is prerelease
+
+
+def test_the_gate_hands_the_workflow_both_facts(tmp_path, monkeypatch):
+    """Written by the gate that validated the tag, rather than read a second
+    time by a step that could disagree with it."""
+    output = tmp_path / "github_output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    assert _gate().main([f"v{__version__}"]) == 0
+
+    written = dict(line.split("=", 1)
+                   for line in output.read_text(encoding="utf-8").splitlines())
+    assert written["version"] == __version__
+    assert written["prerelease"] in ("true", "false")
+    assert (written["prerelease"] == "true") is _gate().is_prerelease(__version__)
+
+
+def test_a_refused_tag_writes_no_outputs(tmp_path, monkeypatch):
+    """A gate that failed must not leave a later step a version to build with."""
+    output = tmp_path / "github_output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    assert _gate().main(["v99.0.0"]) == 1
+    assert not output.exists()
+
+
 def test_the_gate_uses_one_grammar_with_the_updater():
     """If these ever diverge, a tag could pass the gate and then be invisible
     to the updater, or vice versa."""
