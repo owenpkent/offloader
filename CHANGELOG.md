@@ -18,6 +18,15 @@ project uses [semantic versioning][semver].
   signature probe run on a pool thread, so an unreachable network delays
   nothing.
 
+  **Three outcomes, not two.** A check that could not be made is reported as a
+  failure rather than as "you are the newest release": the never-raising form
+  of the check returns nothing for a failed fetch, a TLS error and an
+  unparseable feed alike, and saying you are up to date on the strength of a
+  failed lookup is a claim. Whose result it is belongs to the check that is
+  running, so a manual check started during the first couple of seconds
+  survives the launch timer firing behind it instead of being answered
+  silently.
+
   Installing follows the installer's refusal rather than working around it: a
   running *or paused* job declines the update with the reason, since a paused
   job is a partially written destination waiting to continue. Otherwise the
@@ -27,6 +36,13 @@ project uses [semantic versioning][semver].
   possible, so it is announced rather than surprising. Progress is throttled
   to roughly one signal per 256 KB but always reports the final block, so the
   bar finishes instead of stopping just short.
+
+  **Cancel cancels.** The download is a blocking read loop on a pool thread and
+  cannot be interrupted, so cancellation is cooperative through the progress
+  callback — but it is terminal: the incomplete download is removed, nothing is
+  verified, and the app cannot go on to offer what the user just declined. Only
+  the file the release names is removed, since the download directory can be
+  one the caller owns.
 
 - **A tag-triggered release candidate workflow.** Pushing `v*` gates the tag
   against `src/offloader/_version.py` before spending a packaging run on it,
