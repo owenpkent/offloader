@@ -39,6 +39,20 @@ project uses [semantic versioning][semver].
   milliseconds stay, for the same reason as before: a frame count with no rate
   behind it is a guess.
 
+  **Drop frame is a renumbering, not a label.** At `30000/1001` an hour of
+  recording is 107,892 elapsed frames, and counting those at a whole 30 reads
+  `00:59:56:12` — about 3.6 seconds an hour behind the clock on the wall, which
+  is exactly the drift the 1000/1001 rates have and drop frame exists to hide.
+  It hides it by never using the labels `00` and `01` at the top of a minute
+  that is not a tenth one, per SMPTE ST 12-1 §5.2.2, so the same hour renders
+  `01:00:00:00`. That conversion is applied before formatting, against the rate
+  the file states rather than the rounded one: `29.97` and `30` both round to
+  30 and only one of them drops frames, and renumbering a true 30 would
+  introduce the error drop frame removes. A file claiming `DF` at a rate that
+  has none is labelled with the numbering actually used rather than having its
+  claim repeated. The start timecode is the number an assistant types into an
+  edit to line sound up with picture.
+
   A card is untrusted input, so the walk is bounded at every step, the payload
   is capped, RF64's `ds64` sizes are honoured so a trailing chunk past 4 GB is
   still reachable, Wave64 is declined rather than misread, and a doctype or
