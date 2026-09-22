@@ -16,6 +16,20 @@ project uses [semantic versioning][semver].
   uses an application lifetime lock and inventoried files for replacement,
   rollback, and uninstall; configuration/history are preserved. Real signing
   and clean-machine installation qualification remain pending.
+
+  **A rolled-back install can be retried.** Rollback removes the files it
+  promoted, and now also the directories it created to promote them into:
+  recorded as they are made, pruned deepest first, and only while still empty,
+  so a directory that was already there or that holds a file from somewhere
+  else is left alone. Without that, a failed first install left an empty
+  `_internal` behind, which the next attempt read as a nonempty unowned target
+  and refused — a transient failure recovery reported as fully resolved could
+  not be retried through the installer at all. The manifest write is what
+  commits an update and it is atomic, so both outcomes of a failed one, the new
+  inventory absent and the previous one still present, are recovered as "did
+  not commit" and roll back. Treating the second as a mismatch left an
+  installation no later install or uninstall could get past, since both recover
+  first.
 - One release version source for Python package metadata, the application,
   reports, and Windows executable metadata. CI also installs the built wheel
   outside the checkout to check its CLI and version consistency.
