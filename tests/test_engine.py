@@ -263,3 +263,118 @@ def test_sentinel_is_delivered_even_when_the_queue_is_full(tmp_path: Path,
     assert not worker.is_alive(), "copy deadlocked waiting for the sentinel"
     assert (tmp_path / "out.bin").stat().st_size == engine.CHUNK_SIZE * 3
     assert result["digest"][0] == hashers.hash_file(source, "xxh3-64")
+
+
+# --------------------------------------------------------------- proxy order
+
+
+@pytest.fixture()
+def proxy_card(tmp_path: Path) -> Path:
+    """A Blackmagic-shaped card: originals at the root, proxies in Proxy/."""
+    root = tmp_path / "A006"
+    (root / "Proxy").mkdir(parents=True)
+    for index in (1, 2, 3):
+        (root / f"C{index:03d}.braw").write_bytes(b"original" * 200 * index)
+        (root / "Proxy" / f"C{index:03d}.mp4").write_bytes(b"proxy" * index)
+    return root
+
+
+def _transferred(source: Path, tmp_path: Path, **overrides) -> list[str]:
+    """The order files actually moved in, from the progress stream."""
+    moved: list[str] = []
+
+    def progress(event: engine.ProgressEvent) -> None:
+        if not moved or moved[-1] != event.file_name:
+            moved.append(event.file_name)
+
+    engine.run(source, _options(tmp_path, **overrides), progress)
+    return moved
+
+
+def test_is_proxy_matches_directories_not_filenames(tmp_path: Path):
+    assert engine.is_proxy(tmp_path / "Proxy" / "C001.mp4", tmp_path)
+    assert engine.is_proxy(tmp_path / "a" / "proxies" / "C001.mp4", tmp_path)
+    # A clip that happens to be called "proxy" is still a clip.
+    assert not engine.is_proxy(tmp_path / "proxy", tmp_path)
+    assert not engine.is_proxy(tmp_path / "C001.braw", tmp_path)
+    # Outside the root there is no relative path to inspect.
+    assert not engine.is_proxy(Path("/elsewhere/Proxy/C001.mp4"), tmp_path)
+
+
+def test_order_for_transfer_hoists_proxies(proxy_card: Path):
+    files = engine.scan(proxy_card)
+    order = engine.order_for_transfer(files, proxy_card)
+
+    assert [p.name for p in order[:3]] == ["C001.mp4", "C002.mp4", "C003.mp4"]
+    assert [p.name for p in order[3:]] == ["C001.braw", "C002.braw", "C003.braw"]
+    assert sorted(order) == sorted(files), "reordering must not add or drop files"
+
+
+def test_order_for_transfer_is_stable_within_each_group(proxy_card: Path):
+    files = engine.scan(proxy_card)
+    order = engine.order_for_transfer(files, proxy_card)
+
+    for group in (True, False):
+        assert ([p for p in order if engine.is_proxy(p, proxy_card) is group]
+                == [p for p in files if engine.is_proxy(p, proxy_card) is group])
+
+
+def test_order_for_transfer_leaves_a_card_without_proxies_alone(source_tree: Path):
+    files = engine.scan(source_tree)
+    assert engine.order_for_transfer(files, source_tree) == files
+
+
+def test_order_for_transfer_off_is_scan_order(proxy_card: Path):
+    files = engine.scan(proxy_card)
+    assert engine.order_for_transfer(files, proxy_card, proxies_first=False) == files
+
+
+def test_offload_moves_proxies_first_by_default(proxy_card: Path, tmp_path: Path):
+    moved = _transferred(proxy_card, tmp_path)
+    assert moved == ["C001.mp4", "C002.mp4", "C003.mp4",
+                     "C001.braw", "C002.braw", "C003.braw"]
+
+
+def test_offload_honours_originals_first(proxy_card: Path, tmp_path: Path):
+    moved = _transferred(proxy_card, tmp_path, proxies_first=False)
+    assert moved == ["C001.braw", "C002.braw", "C003.braw",
+                     "C001.mp4", "C002.mp4", "C003.mp4"]
+
+
+def test_report_reads_in_tree_order_whichever_way_it_ran(proxy_card: Path,
+                                                         tmp_path: Path):
+    """Transfer order is an I/O decision; the paperwork must not notice it."""
+    first = engine.run(proxy_card, _options(tmp_path / "a"))
+    plain = engine.run(proxy_card, _options(tmp_path / "b", proxies_first=False))
+
+    rows = [f.source.relative_to(proxy_card).as_posix() for f in first.files]
+    assert rows == [f.source.relative_to(proxy_card).as_posix() for f in plain.files]
+    assert rows == ["C001.braw", "C002.braw", "C003.braw",
+                    "Proxy/C001.mp4", "Proxy/C002.mp4", "Proxy/C003.mp4"]
+    assert [f.checksum for f in first.files] == [f.checksum for f in plain.files]
+
+
+def test_both_orders_deliver_the_same_tree(proxy_card: Path, tmp_path: Path):
+    engine.run(proxy_card, _options(tmp_path / "a"))
+    engine.run(proxy_card, _options(tmp_path / "b", proxies_first=False))
+
+    def tree(root: Path) -> dict[str, bytes]:
+        return {p.relative_to(root).as_posix(): p.read_bytes()
+                for p in root.rglob("*") if p.is_file()}
+
+    assert tree(tmp_path / "a" / "dest") == tree(tmp_path / "b" / "dest")
+
+
+def test_cancelled_job_still_reports_in_tree_order(proxy_card: Path, tmp_path: Path):
+    """The sort back must not trip over a partially populated job."""
+    control = engine.JobControl()
+
+    def progress(event: engine.ProgressEvent) -> None:
+        if event.file_index >= 2:
+            control.cancel()
+
+    job = engine.run(proxy_card, _options(tmp_path), progress, control)
+
+    assert job.cancelled
+    rows = [f.source.relative_to(proxy_card).as_posix() for f in job.files]
+    assert rows == sorted(rows, key=lambda r: ("Proxy/" in r, r))

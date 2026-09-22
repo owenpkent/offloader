@@ -77,6 +77,19 @@ already does the stem-matching this needs.
   here and not above.
 - **Spanned clips** treated as one take rather than several files.
 
+### Sound
+
+- **The rest of the iXML document** — the `HISTORY`, `USER` and `LOCATION`
+  blocks, and `bext`'s `CodingHistory`. The chunk is already parsed; these are
+  fields nothing in the report shows yet.
+- **Sound Devices' structured `Description`** (`sSPEED=`, `sTAKE=` and friends)
+  split into fields rather than carried whole. It is a vendor convention, not
+  part of any specification, which is why it is here.
+- **Wave64 (`.w64`)**, declined today rather than misread: it uses GUID chunk
+  identifiers, so the RIFF walker would parse it as garbage.
+- **Pairing a sound roll to the picture it covers**, the way `companions.py`
+  pairs a proxy to its clip. Timecode is the obvious key.
+
 ### ASC MHL
 
 - **Nested histories** — an `ascmhl` folder further down the tree with its own

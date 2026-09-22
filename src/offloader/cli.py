@@ -122,12 +122,20 @@ def _summarize(job: Job, reports: list[Path]) -> None:
     failed = [f for f in job.files if f.status is FileStatus.FAILED]
     print()
     print(f"  {job.name}: {job.final_status}")
-    # The video count is meaningful only when media was probed; a generic
-    # data transfer never looks inside a file, so reporting "0 video" would
-    # be noise rather than information.
-    video = f"  ({job.video_files} video)" if job.profile.probes_media else ""
+    # The counts are meaningful only when media was probed; a generic data
+    # transfer never looks inside a file, so reporting "0 video" would be noise
+    # rather than information. A sound card reports its audio count instead of
+    # a zero, and a card carrying both reports both.
+    counts = ""
+    if job.profile.probes_media:
+        parts = []
+        if job.video_files or not job.audio_files:
+            parts.append(f"{job.video_files} video")
+        if job.audio_files:
+            parts.append(f"{job.audio_files} audio")
+        counts = f"  ({', '.join(parts)})"
     print(f"  {job.total_files} files, {format_size(job.total_bytes)}"
-          f" in {format_elapsed(job.elapsed_sec)}{video}")
+          f" in {format_elapsed(job.elapsed_sec)}{counts}")
     print(f"  Verification: {job.verification_label}")
     for destination in job.destination_roots:
         print(f"  -> {destination}")
@@ -208,6 +216,14 @@ def build_parser() -> argparse.ArgumentParser:
                          help="do not recreate the source folder structure")
     offload.add_argument("--skip-existing", action="store_true",
                          help="skip files already present with a matching size")
+    order = offload.add_mutually_exclusive_group()
+    order.add_argument("--proxies-first", dest="proxies_first",
+                       action="store_true", default=True,
+                       help="copy the camera's proxy folders before the "
+                            "originals so an edit can start early (default)")
+    order.add_argument("--originals-first", dest="proxies_first",
+                       action="store_false",
+                       help="copy in plain tree order instead")
     _common_options(offload)
 
     report = sub.add_parser(
@@ -247,6 +263,9 @@ def _options_from(args: argparse.Namespace, destinations: list[Path]) -> engine.
         excludes=tuple(engine.DEFAULT_EXCLUDES) + tuple(args.exclude),
         preserve_structure=not args.flat,
         skip_existing=getattr(args, "skip_existing", False),
+        # `report` copies nothing, so it never defines this flag and the
+        # default is inert there -- rescan() reads the tree in scan order.
+        proxies_first=getattr(args, "proxies_first", True),
         job_name=args.name,
         extra_probe=not args.no_probe,
         profile=profile,

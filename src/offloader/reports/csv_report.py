@@ -46,6 +46,10 @@ COLUMNS = [
     "Duration (sec)",
     "Frames",
     "Timecode",
+    "Audio Codec",
+    "Audio Channels",
+    "Sample Rate (Hz)",
+    "Bit Depth",
     "Camera",
     "Lens",
     "Reel",
@@ -53,8 +57,35 @@ COLUMNS = [
     "Take",
     "Good Take",
     "Colour Science",
+    "Recorder",
+    "Project",
+    "Track Names",
+    "Note",
     "Error",
 ]
+
+
+def _good_take(media) -> str:
+    """The circled take, from whichever department marked it."""
+    flag = media.camera.good_take
+    if flag is None:
+        flag = media.sound.circled
+    if flag is None:
+        return ""
+    return "yes" if flag else "no"
+
+
+def _audio_columns(media) -> list:
+    """Codec, channels, sample rate and bit depth of the first audio track."""
+    if not media.audio_tracks:
+        return ["", "", "", ""]
+    track = media.audio_tracks[0]
+    return [
+        track.codec or "",
+        track.channels or "",
+        track.sample_rate_hz or "",
+        track.bit_depth or "",
+    ]
 
 
 def write_csv(job: Job, path: Path, *, delimiter: str = ",", **_options) -> Path:
@@ -92,14 +123,22 @@ def write_csv(job: Job, path: Path, *, delimiter: str = ",", **_options) -> Path
                 f"{media.duration_sec:.3f}" if media.duration_sec else "",
                 media.frame_count or "",
                 media.timecode or "",
+                # The first track speaks for the file: a sound card's rows are
+                # one track each, and a clip's extra tracks share its format.
+                *_audio_columns(media),
                 media.camera.model or "",
                 media.camera.lens or "",
-                media.camera.reel or "",
-                media.camera.scene or "",
-                media.camera.take or "",
-                ("yes" if media.camera.good_take else
-                 "no" if media.camera.good_take is False else ""),
+                media.camera.reel or media.sound.tape or "",
+                media.camera.scene or media.sound.scene or "",
+                media.camera.take or media.sound.take or "",
+                _good_take(media),
                 media.camera.colour_science or "",
+                media.sound.recorder or "",
+                media.sound.project or "",
+                "; ".join(media.sound.track_names),
+                # iXML's note first; a recorder with no iXML often puts
+                # the same thing in the bext description.
+                media.sound.note or media.sound.description or "",
             ]
 
             if not entry.destinations:

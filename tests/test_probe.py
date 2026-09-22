@@ -6,6 +6,7 @@ rate mapping is tested without needing media on disk.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -193,3 +194,159 @@ def test_probe_survives_garbage_output(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(probe, "ffprobe_path", lambda: "ffprobe")
     monkeypatch.setattr(probe.subprocess, "run", lambda *a, **k: Result())
     assert probe.probe(tmp_path / "clip.mov").container is None
+
+
+# ------------------------------------------------------------------- audio
+
+
+def _wav(**tags) -> dict:
+    """A broadcast WAV as ffprobe reports it: one PCM stream, no video."""
+    return {
+        "format": {"format_name": "wav", "duration": "182.5", "tags": tags},
+        "streams": [{
+            "codec_type": "audio", "codec_name": "pcm_s24le",
+            "channels": 2, "channel_layout": "stereo",
+            "bit_rate": "2304000", "sample_rate": "48000",
+            "bits_per_raw_sample": "24", "bits_per_sample": 24,
+        }],
+    }
+
+
+def test_a_wav_is_audio_not_video():
+    info = probe._build(_wav())
+    assert info.container == "WAVE"
+    assert not info.is_video
+    assert info.is_audio
+    assert info.width is None and info.height is None
+
+
+def test_a_clip_with_dialogue_is_still_video():
+    """is_audio is "no picture", not "has sound" -- the counts must not overlap."""
+    info = probe._build(_payload())
+    assert info.audio_tracks and info.is_video
+    assert not info.is_audio
+
+
+def test_bit_depth_is_captured():
+    assert probe._build(_wav()).audio_tracks[0].bit_depth == 24
+
+
+def test_bit_depth_prefers_raw_sample_and_steps_past_a_zero():
+    data = _wav()
+    data["streams"][0]["bits_per_raw_sample"] = None
+    data["streams"][0]["bits_per_sample"] = 0      # what several codecs report
+    assert probe._build(data).audio_tracks[0].bit_depth is None
+
+    data["streams"][0]["bits_per_sample"] = 16
+    assert probe._build(data).audio_tracks[0].bit_depth == 16
+
+
+def test_bwf_time_reference_becomes_the_start_clock():
+    """1728000000 samples at 48 kHz is 36000 s, which is 10:00:00."""
+    info = probe._build(_wav(time_reference="1728000000"))
+    assert info.timecode == "10:00:00.000"
+
+
+def test_an_explicit_timecode_tag_wins_over_the_sample_count():
+    info = probe._build(_wav(timecode="09:00:00:00", time_reference="1728000000"))
+    assert info.timecode == "09:00:00:00"
+
+
+def test_a_wav_without_a_clock_reports_none():
+    """Better no timecode than a zero that reads as a real 00:00:00."""
+    assert probe._build(_wav()).timecode is None
+
+
+def test_time_reference_of_zero_is_a_real_midnight_start():
+    assert probe._build(_wav(time_reference="0")).timecode == "00:00:00.000"
+
+
+def test_a_broken_time_reference_does_not_raise():
+    assert probe._build(_wav(time_reference="not-a-number")).timecode is None
+
+
+def test_video_timecode_is_untouched_by_the_audio_path():
+    assert probe._build(_payload()).timecode == "12:54:38:12 NDF"
+
+
+# ------------------------------------------------- iXML, through a real file
+
+
+@pytest.fixture
+def stub_ffprobe(monkeypatch):
+    """Drive `probe.probe` end to end without ffmpeg on PATH.
+
+    The WAV on disk is real, because the iXML walk genuinely reads it, but the
+    stream report is the captured shape the rest of this module uses. Without
+    this the sound path is unreachable on a bare runner: `_probe` returns an
+    empty MediaInfo when `ffprobe_path()` is None, so `is_audio` is False and
+    the iXML read is never attempted.
+    """
+    payload = json.dumps(_wav(time_reference="1728000000"))
+
+    class Result:
+        stdout = payload
+
+    monkeypatch.setattr(probe, "ffprobe_path", lambda: "ffprobe")
+    monkeypatch.setattr(probe.subprocess, "run", lambda *a, **k: Result())
+
+
+def test_probe_upgrades_the_clock_to_frame_timecode(tmp_path, stub_ffprobe):
+    """Without iXML `probe` can only render milliseconds; with it, frames."""
+    import bwf
+
+    bare = bwf.write_wav(tmp_path / "bare.wav", bext=bwf.bext_chunk())
+    slated = bwf.write_wav(tmp_path / "slated.wav", ixml=bwf.ixml_document(),
+                           bext=bwf.bext_chunk())
+
+    assert probe.probe(bare).timecode == "10:00:00.000"
+    assert probe.probe(slated).timecode == "10:00:00:00 NDF"
+
+
+def test_probe_attaches_the_slate(tmp_path, stub_ffprobe):
+    import bwf
+
+    path = bwf.write_wav(tmp_path / "MIX_001.wav", ixml=bwf.ixml_document(),
+                         bext=bwf.bext_chunk())
+    info = probe.probe(path)
+    assert info.is_audio
+    assert info.sound.slate() == "Roll SR082226 · Scene 12A · Take 3"
+    assert info.sound.track_names == ["Boom", "Lav 1"]
+
+
+def test_a_video_file_is_never_asked_for_ixml(tmp_path, stub_ffprobe):
+    """The read is bounded, but a 28 GB clip should not be opened for it."""
+    import bwf
+
+    calls = []
+    original = probe.ixml.read_sound_info
+    probe.ixml.read_sound_info = lambda path: calls.append(path) or None
+    try:
+        probe.probe(bwf.write_wav(tmp_path / "a.wav", ixml=bwf.ixml_document()))
+        assert len(calls) == 1
+        calls.clear()
+        probe.probe(tmp_path / "nothing.braw")
+        assert calls == []
+    finally:
+        probe.ixml.read_sound_info = original
+
+
+def test_an_unreadable_ixml_does_not_fail_the_probe(tmp_path, monkeypatch,
+                                                    stub_ffprobe):
+    """Metadata is a convenience; no take is worth abandoning a card over."""
+    import bwf
+
+    path = bwf.write_wav(tmp_path / "MIX_001.wav", ixml=bwf.ixml_document())
+    reached = []
+
+    def boom(_path):
+        reached.append(_path)
+        raise OSError("card pulled")
+
+    monkeypatch.setattr(probe.ixml, "read_sound_info", boom)
+    info = probe.probe(path)
+    # The stub is what makes this bite: without ffprobe the probe returns an
+    # empty MediaInfo, `boom` is never called, and the test passes vacuously.
+    assert reached
+    assert info.container == "WAVE"
+

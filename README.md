@@ -11,8 +11,11 @@ re-verification downstream, and a self-contained HTML page.
 
 The flagship use is camera-card offload, with job reports that match the layout
 of [ShotPut Pro][spp]'s `JobReport.pdf` — a PDF contact sheet with per-clip
-metadata, ffprobe media details and Blackmagic RAW container checks. But that
-media layer is a profile, not the engine: `--profile data` (shorthand
+metadata, ffprobe media details and Blackmagic RAW container checks. The same
+profile covers the sound cart: a card of broadcast WAVs reports its slate,
+tracks and timecode rather than a picture report with the fields blank, see
+[Sound recorder cards](#sound-recorder-cards). But that media layer is a
+profile, not the engine: `--profile data` (shorthand
 `--generic`) offloads any large one-way transfer — datasets, disk images,
 render output, backups — with the same verified copy and manifests, and nothing
 depending on ffmpeg. See [Generic data transfers](#generic-data-transfers).
@@ -34,6 +37,16 @@ values exactly.
 ```sh
 pip install -e .            # engine + CLI
 pip install -e ".[gui]"     # and the desktop app
+```
+
+Or skip the install and run the checkout directly. `run.py` puts `src/` at the
+front of the import path, so it always runs the code next to it rather than
+whatever pip last installed:
+
+```sh
+python run.py                     # launch the desktop app
+python run.py info                # anything the CLI takes, forwarded untouched
+python run.py offload --source E:\ --dest D:\video\A001 --name A001
 ```
 
 Python 3.10+. `ffmpeg` and `ffprobe` on `PATH` enable metadata and thumbnails —
@@ -102,6 +115,8 @@ offloader verify D:\video\080426\A001
 | `--exclude GLOB` | extra filename pattern to skip; repeatable |
 | `--flat` | do not recreate the source folder structure; refused if two files would land on one path |
 | `--skip-existing` | skip files already present at matching size |
+| `--proxies-first` | copy the camera's proxy folders before the originals (default) |
+| `--originals-first` | copy in plain tree order instead |
 | `--retries N` | attempts per failing read on a transient error (default 3, 1 disables) |
 | `--retry-wait SECONDS` | pause before the first retry, backing off after (default 2) |
 | `--no-probe` | skip ffprobe metadata and thumbnails |
@@ -137,8 +152,9 @@ the destination, at the cost of reading everything twice.
 - **PDF** — the parity target. Header summary, one banded row per clip with a
   four-frame contact sheet and metadata, then a full source/destination listing
   with per-file verdicts.
-- **CSV** — one row per source/destination pair, with checksums, media and
-  camera metadata, and status. For spreadsheets and ingest scripts.
+- **CSV** — one row per source/destination pair, with checksums, media
+  metadata, the slate from whichever department wrote it (camera or sound), and
+  status. For spreadsheets and ingest scripts.
 - **MHL** — Media Hash List 1.1, paths relative to the file's own directory so
   it travels with the media. Written per destination.
 - **ASC MHL** — the format the ASC publishes and ARRI recommends. A numbered
@@ -149,6 +165,83 @@ the destination, at the cost of reading everything twice.
   [`docs/ascmhl.md`](docs/ascmhl.md).
 - **HTML** — self-contained; thumbnails inlined as data URIs, light and dark
   themes, no external requests.
+
+## Proxies first
+
+Camera proxies move before the originals by default. A 27-clip BRAW card is
+around 110 GB of original against 0.4 GB of H.264, so the proxies land in the
+first few seconds of a job that runs for the better part of an hour, and an
+edit can start cutting while the originals are still copying. The cost is well
+under a percent of the runtime.
+
+It also improves the contact sheet. Thumbnails for an original ffmpeg cannot
+decode are borrowed from the matching proxy, and the proxy is looked for at the
+destination before the source — so with the proxies already down, that read
+comes off the destination disk instead of competing with the copy for the card.
+
+**This is ordering only.** The same files are copied either way, and the report
+is sorted back into tree order before it is written, so the paperwork is
+identical whichever way the job ran — a contact sheet that opened with the
+proxy folder and buried the clips would be a worse report bought with a faster
+transfer.
+
+```sh
+offloader offload --source E:\ --dest D:\video\A001 --originals-first
+```
+
+`--originals-first` restores plain tree order, and both GUI modes have a
+checkbox. Presets saved before the option existed inherit the new default.
+A card with no proxy directory is unaffected.
+
+## Sound recorder cards
+
+The `media` profile covers production sound as well as picture. A card of
+broadcast WAVs from a field recorder offloads and verifies like any other, and
+the paperwork reads as a sound report rather than a picture report with the
+interesting fields blank:
+
+```sh
+offloader offload --source E:\ --dest D:\audio\082226\SOUND_A --name SOUND_A
+```
+
+```
+  SOUND_A: Verified
+  48 files, 2.1 GB in 0:01:12  (48 audio)
+```
+
+- **The file counts stay disjoint.** A clip with dialogue is a video file, not
+  both, so the two numbers still add up to something a reader can check. A card
+  with picture and sound reports `(54 video, 12 audio)`.
+- **The header cell adapts rather than grows.** The reference layout gives the
+  summary grid exactly four rows, so on a card with no picture the `Video
+  Files` cell becomes `Audio Files`. `Video Files: 0` is the one number on such
+  a page that tells the reader nothing.
+- **Format reads as sound.** `WAVE · 48 kHz · 24-bit · 2 ch` instead of a
+  resolution and frame rate. A clip's audio line is left exactly as the
+  reference renders it, so picture reports still match ShotPut digit for digit.
+- **The slate comes off the iXML.** Scene, take, sound roll, the mixer's note,
+  the circled-take flag and what each track was are read straight out of the
+  `iXML` chunk, which ffprobe does not surface at all. The report reads
+  `Roll SR082226 · Scene 12A · Take 3   CIRCLED` over
+  `Boom, Lav 1   LINEAR PCM   48 kHz   24-bit`, naming the channels rather than
+  describing their shape.
+- **Timecode is real frame timecode when the card says enough for one.** A
+  broadcast WAV stores its origin as a sample count since midnight, in `bext`
+  and again in iXML. Dividing it by the sample rate gives the clock; turning
+  the remainder into frames needs the rate in `SPEED/TIMECODE_RATE`, which only
+  iXML carries. With iXML the report shows `10:00:00:00 NDF`. Without it,
+  `10:00:00.000` -- milliseconds, because a frame count there would mean
+  picking a rate at random and printing a guess in the field the report exists
+  for. See [`docs/ixml.md`](docs/ixml.md).
+- **No thumbnails are attempted.** A file with no picture already renders with
+  the filmstrip glyph in place of the contact sheet.
+
+The CSV gains `Audio Codec`, `Audio Channels`, `Sample Rate (Hz)`, `Bit Depth`,
+`Recorder`, `Project`, `Track Names` and `Note` columns, blank for files that
+carry none of it. The existing `Reel`, `Scene`, `Take` and `Good Take` columns
+are filled from whichever department wrote the slate: a sound roll lands in
+`Reel`, and a circled take reads as a good take, so one column means one thing
+whichever cart the card came off.
 
 ## Generic data transfers
 
@@ -237,6 +330,10 @@ Two modes, switched from the header:
   how often a preset gets used.
 - **Simple mode** — source, destinations and options on one screen, for a
   one-off where building a preset would be more work than the job.
+
+Both carry a **Copy proxies before the originals** checkbox, on by default. It
+changes only what moves first, never what is copied or how the report reads —
+see [Proxies first](#proxies-first).
 
 Down the left is the **drive panel**: every mounted volume with a capacity bar
 (amber past 80 %, red past 95 %) and one-click *Source* / *Destination* buttons.
@@ -329,6 +426,7 @@ general-purpose tool reports a filename, a size, and a placeholder icon.
 | [`docs/performance.md`](docs/performance.md) | Why not robocopy, with benchmarks and the confounds that made the first run worthless |
 | [`docs/braw.md`](docs/braw.md) | Blackmagic RAW container parsing, proxy pairing, and the interrupted-recording check |
 | [`docs/ascmhl.md`](docs/ascmhl.md) | ASC MHL v2.0, and how it was validated against the reference implementation |
+| [`docs/ixml.md`](docs/ixml.md) | Broadcast WAV chunk walking, the iXML slate, and where sound timecode comes from |
 
 ## Library
 
