@@ -52,7 +52,7 @@ tests or builds were run for this documentation task.
 | --- | --- | --- |
 | Product | Engine, CLI, Qt desktop app, reports, BRAW/BWF support, optional timeline import | Exercise the frozen application against representative workflows |
 | Version | One source in `src/offloader/_version.py` used by package metadata and the Windows bundle | Confirm the frozen release identity across all published assets |
-| CI | Windows/macOS/Linux tests on Python 3.13, Linux Python 3.10, ffmpeg job, property-test soak, wheel/sdist build and metadata checks | Install built artifacts in fresh environments; build and smoke-test Windows desktop artifacts |
+| CI | Windows/macOS/Linux tests on Python 3.13, Linux Python 3.10, ffmpeg job, property-test soak, wheel/sdist build and metadata checks; a tag-triggered candidate workflow that gates the tag against the declared version, builds unsigned, and prepares a draft with no assets | Install built artifacts in fresh environments; attach signed assets from the release workstation |
 | Distribution | Frozen bundle, NSIS installer path, source and bundle inventories, and checksums | Hardware-key signing, clean-machine installation, release workflow, and publication documentation |
 | Dependencies | Minimum versions and optional extras | Recorded build environment and pinned release dependency sets |
 | Media tools | ffmpeg/ffprobe discovered externally; copying works without them | Explicit installer dependency policy and useful missing-tool messaging |
@@ -139,6 +139,14 @@ Suggested implementation files: `build/windows/offloader.spec`,
 `build/windows/sign.py`, `.github/workflows/release.yml`, and
 `docs/build-windows.md`. Follow Alpha-OSK's separation of build, sign, and
 publish, rather than assuming its scripts are drop-in compatible.
+
+`.github/workflows/release.yml` now implements the preparation half of this:
+it fails on a tag/version mismatch before building, builds unsigned, requires
+every artifact the contract names to exist, and prepares a draft pinned to the
+tagged commit with `contents: write` held only by the drafting job. It attaches
+nothing, because hosted CI cannot sign; signature verification and asset upload
+remain release-workstation steps. Alpha-OSK has no release automation to copy
+here, so this is new work rather than parity.
 
 The release workflow should prepare a draft with narrowly scoped permissions,
 pin the source commit and build environment, and fail on version mismatch,
