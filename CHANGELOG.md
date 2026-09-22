@@ -10,6 +10,42 @@ project uses [semantic versioning][semver].
 
 ### Added
 
+- **`offloader update` finds, verifies and applies a newer release.** GitHub
+  Releases is the feed, so there is no manifest server and no second place a
+  version is written down. Before anything runs: HTTPS with a host allowlist
+  re-checked after redirects, a size ceiling held against `Content-Length` and
+  again mid-stream, a SHA-256 taken while streaming and compared before
+  launch, and an Authenticode check that requires a valid status, this
+  project's certificate thumbprint, its publisher name, and an embedded
+  `FileVersion` matching the release. That last check is what stops a rollback:
+  re-serving an older, still validly signed installer under a newer asset name
+  would otherwise move every install back onto a build whose faults are fixed.
+  The install target is computed from the running executable rather than read
+  from the uninstall registry key, which anything running as the user can
+  write.
+
+  Prereleases are ordered rather than rejected, matching the grammar
+  `build/windows/versioning.py` already enforces, and a test asserts the two
+  orderings agree. The feed is the releases collection rather than
+  `/releases/latest`, which GitHub documents as excluding prereleases: on that
+  endpoint an installed `0.1.0b1` could never see `0.1.0b2`, and a repository
+  holding only the betas the candidate workflow publishes would answer with
+  nothing at all. The collection is ordered by creation date rather than by
+  version, so every entry is read and the greatest eligible one wins; drafts
+  are skipped, since their assets are not published.
+
+  **An install is offered what is newer on the channel it is already on.** A
+  build that is itself a prerelease is testing the prereleases and takes the
+  next one, and takes the stable release when it arrives, because `0.1.0b2` is
+  older than `0.1.0`. An install on a stable release is offered only stable
+  releases: `0.1.0b1` finding `0.1.0b2` must not also mean `1.0.0` finding
+  `1.0.1b1`.
+
+  The updater never closes a running copy: the installer's
+  refusal while a transfer is in flight is the guarantee, so the command says
+  so before the elevation prompt appears. See
+  [`docs/updates.md`](docs/updates.md); the in-app check is still deferred.
+
 - Windows desktop/CLI bundles and an NSIS installer, with pinned dependencies,
   embedded version metadata, signing by default, explicit unsigned CI builds,
   source/file inventories, checksums, and headless artifact checks. Installation

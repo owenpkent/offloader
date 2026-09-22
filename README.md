@@ -97,6 +97,7 @@ offloader verify D:\video\080426\A001
 | `report` | regenerate paperwork for an existing tree, copying nothing |
 | `info` | show tool and environment status |
 | `gui` | launch the desktop app (also `offloader-gui`) |
+| `update` | check for a newer release, and install it (Windows) |
 
 ### `offload` and `report`
 
