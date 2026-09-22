@@ -99,7 +99,18 @@ def is_companion(path: Path) -> bool:
 
 
 def in_proxy_directory(path: Path) -> bool:
-    return Path(path).parent.name in PROXY_DIRECTORIES
+    """Whether this file is a proxy: a proxy container in a proxy directory.
+
+    The folder name alone is not enough. A card that files its originals under
+    a directory called `Proxy` would otherwise have every one of them treated
+    as a companion and reported as belonging to some other clip — the same
+    guess `group` deliberately refuses to make about an ambiguous stem.
+    `find_proxy` only ever looks for these suffixes, so requiring them here
+    keeps the two halves of the rule agreeing.
+    """
+    path = Path(path)
+    return (path.parent.name in PROXY_DIRECTORIES
+            and path.suffix.lower() in PROXY_SUFFIXES)
 
 
 def group(paths: Iterable[Path]) -> dict[Path, Path]:

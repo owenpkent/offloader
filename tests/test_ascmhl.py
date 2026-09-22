@@ -520,6 +520,38 @@ def test_a_relocated_report_directory_is_recorded_too(tmp_path: Path):
     assert report.passed, report.summary()
 
 
+def test_a_report_directory_nested_two_levels_down_verifies_clean(tmp_path: Path):
+    """REGRESSION. The recorded pattern is a relative path, so `delivery/reports`
+    matched neither the whole path nor any single component of the files beneath
+    it, and the verifier hashed its own paperwork into the root."""
+    destination = _cli_offload(
+        tmp_path, "ascmhl,csv,pdf",
+        ["--report-dir", str(tmp_path / "dest" / "delivery" / "reports")])
+    text = verify.find_manifests(destination)[0].read_text(encoding="utf-8")
+    assert "<pattern>delivery/reports</pattern>" in text
+
+    report = verify.verify_manifest(verify.find_manifests(destination)[0])
+    assert report.passed, report.summary()
+    assert all(v.ok for v in report.directories), \
+        [v.describe() for v in report.directories]
+
+
+def test_excluding_a_report_directory_does_not_excuse_media_beside_it(
+    tmp_path: Path
+):
+    """The ancestor match is scoped to what the manifest recorded. A file that
+    arrives anywhere else still moves the hash of the directory holding it."""
+    destination = _cli_offload(
+        tmp_path, "ascmhl,csv",
+        ["--report-dir", str(tmp_path / "dest" / "delivery" / "reports")])
+    (destination / "Clips" / "A001_C002.mov").write_bytes(b"not in the manifest\n")
+
+    report = verify.verify_manifest(verify.find_manifests(destination)[0])
+    assert not report.passed, report.summary()
+    assert any(not v.ok for v in report.directories), \
+        [v.describe() for v in report.directories]
+
+
 def test_reports_sent_outside_the_copy_need_no_pattern(tmp_path: Path):
     destination = _cli_offload(tmp_path, "ascmhl,csv",
                                ["--report-dir", str(tmp_path / "elsewhere")])

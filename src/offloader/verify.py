@@ -459,10 +459,18 @@ def _ignore_patterns(root: ET.Element) -> list[str]:
 
 
 def _ignored(relative: str, patterns: list[str]) -> bool:
-    """A pattern matches the whole relative path or any one component of it."""
+    """A pattern matches the path, any one component, or any ancestor of it.
+
+    The ancestor case is what carries an excluded directory down to its
+    contents. `--report-dir` two levels below the destination is recorded as
+    `delivery/reports`, which matches neither the whole path nor any single
+    component of `delivery/reports/JobReport.pdf`; without it the verifier
+    folds the report it just wrote into the recomputed directory hashes.
+    """
     parts = relative.split("/")
+    ancestors = ["/".join(parts[:end]) for end in range(1, len(parts) + 1)]
     for pattern in patterns:
-        if fnmatch.fnmatch(relative, pattern):
+        if any(fnmatch.fnmatch(path, pattern) for path in ancestors):
             return True
         if any(fnmatch.fnmatch(part, pattern) for part in parts):
             return True
