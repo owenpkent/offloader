@@ -14,7 +14,7 @@ project uses [semantic versioning][semver].
   against `src/offloader/_version.py` before spending a packaging run on it,
   builds the unsigned bundle and installer on `windows-latest`, confirms every
   artifact the release contract names exists, uploads them for inspection, and
-  prepares a draft prerelease pinned to the tagged commit. It attaches no
+  prepares a draft pinned to the tagged commit. It attaches no
   assets: signing needs the hardware token that only the release workstation
   has, and the release plan requires every Windows download to be signed, so
   the signed installer is uploaded separately. `contents: write` is held only
@@ -23,6 +23,19 @@ project uses [semantic versioning][semver].
   one version grammar with the updater and the installer's Windows fields, so
   a tag that cannot be published is refused rather than producing an asset
   nothing can compare.
+
+  Whether the draft is marked a prerelease comes from the version the gate
+  validated, and is set on both the create and the refresh path, so a rerun
+  corrects an existing draft rather than inheriting the first run's choice. A
+  stable release created as a prerelease would sit outside GitHub's
+  `/releases/latest`, which is the feed the updater reads.
+
+  `workflow_dispatch` rehearses the checks against a tag that does not exist
+  yet: the proposed tag is a version to gate, not a ref to fetch, so the run
+  checks out whatever commit it was started from. Only a *pushed* tag may touch
+  a release — a dispatch can be started against an existing tag, and the ref
+  test alone let a rehearsal take the write token and edit the release,
+  including passing `--draft` to one already published.
 
 - **`offloader update` finds, verifies and applies a newer release.** GitHub
   Releases is the feed, so there is no manifest server and no second place a
