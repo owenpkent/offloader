@@ -179,6 +179,11 @@ class ProgressEvent:
     bytes_total: int = 0
     job_bytes_done: int = 0
     job_bytes_total: int = 0
+    #: On a "stalled" event, how long the source has actually supplied nothing.
+    #: Carried because the first such event only fires once the threshold has
+    #: already passed: a consumer timing from its arrival starts at zero and
+    #: stays a whole threshold short of the outage for as long as it lasts.
+    stalled_for: float = 0.0
 
 
 ProgressCallback = Callable[[ProgressEvent], None]
@@ -722,7 +727,8 @@ def run(source_root: Path, options: OffloadOptions,
                 emit(ProgressEvent(_idx, len(files), _src.name, "stalled",
                                    0, _st.st_size,
                                    counters.job_bytes_done,
-                                   counters.job_bytes_total))
+                                   counters.job_bytes_total,
+                                   stalled_for=idle))
 
             def copy_once(_src=source, _partials=partials, _idx=index,
                           _st=stat) -> _CopyResult:

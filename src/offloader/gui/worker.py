@@ -141,7 +141,7 @@ class QueueItem:
 class _Runner(QThread):
     """Runs a single queue item off the UI thread."""
 
-    progressed = Signal(int, float, str, str, int, int)
+    progressed = Signal(int, float, str, str, int, int, float)
     completed = Signal(int, object, object, object)   # id, Job|None, reports, error
 
     def __init__(self, item: QueueItem, parent: QObject | None = None) -> None:
@@ -161,7 +161,7 @@ class _Runner(QThread):
                     if event.job_bytes_total else 0.0)
         self.progressed.emit(
             self._item.identifier, fraction, event.stage, event.file_name,
-            event.job_bytes_done, event.job_bytes_total,
+            event.job_bytes_done, event.job_bytes_total, event.stalled_for,
         )
 
     def run(self) -> None:  # noqa: D102 - QThread entry point
@@ -349,16 +349,21 @@ class QueueController(QObject):
 
     # ---------------------------------------------------------------- slots
     def _on_progress(self, identifier: int, fraction: float, stage: str,
-                     filename: str, done: int, total: int) -> None:
+                     filename: str, done: int, total: int,
+                     stalled_for: float = 0.0) -> None:
         item = self.find(identifier)
         if item is None:
             return
         item.fraction = fraction
-        # Timed from the first stalled event, so the duration shown is the
-        # stall's own rather than the age of the last one seen.
+        # Backdated by the silence the engine had already measured, not timed
+        # from the event's arrival. The first stalled event only fires once
+        # `stall_after` has passed, so starting the clock here showed "no data
+        # for 0s" on a source that had supplied nothing for fifteen seconds,
+        # and stayed a whole threshold short for as long as the outage lasted.
+        # That number is what someone uses to decide whether to pull the cable.
         if stage == "stalled":
             if item.stalled_since is None:
-                item.stalled_since = time.monotonic()
+                item.stalled_since = time.monotonic() - max(0.0, stalled_for)
         else:
             item.stalled_since = None
         item.stage = stage
