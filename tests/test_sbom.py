@@ -281,3 +281,87 @@ def test_the_lockfile_is_not_the_build_environment(sbom, components):
     body = sbom.lockfile(components)
     assert "pytest" not in body
     assert "not the build environment" in body
+
+
+# --------------------------------------------------- what it does not cover
+
+
+def test_every_output_states_its_own_boundary(sbom, components, tmp_path):
+    """REGRESSION. These three files describe the Python dependency graph, and
+    a frozen application ships components that have no packaging metadata to
+    walk. Read as a complete inventory while missing the interpreter it ships,
+    that is worse than one that says where it stops."""
+    written = sbom.write_all(tmp_path, {"version": "0.4.0"}, components)
+    document = json.loads(written[0].read_text(encoding="utf-8"))
+    properties = {p["name"]: p["value"]
+                  for p in document["metadata"]["properties"]}
+
+    assert "not a complete third-party inventory" in properties["offloader:scope"]
+    notices = written[1].read_text(encoding="utf-8")
+    assert "Not covered here:" in notices
+    assert "CPython runtime" in notices
+    assert "PyInstaller bootloader" in notices
+    assert "no packaging metadata" not in written[2].read_text(encoding="utf-8").lower() \
+        or "PyInstaller bootloader" in written[2].read_text(encoding="utf-8")
+
+
+def test_the_sbom_names_each_uncovered_component(sbom, components):
+    document = sbom.cyclonedx(components, {"version": "0.4.0"}, version="0.4.0")
+    uncovered = [p["value"] for p in document["metadata"]["properties"]
+                 if p["name"] == "offloader:uncovered"]
+    assert len(uncovered) == len(sbom.UNCOVERED)
+    assert any("python3" in value for value in uncovered)
+
+
+def test_the_gap_is_measured_against_the_bundle(sbom, tmp_path):
+    """Against the built tree rather than asserted from the list, so it shrinks
+    as it is closed and cannot be closed by editing a constant."""
+    bundle = tmp_path / "Offloader"
+    (bundle / "_internal").mkdir(parents=True)
+    assert sbom.uncovered_in_bundle(bundle) == []
+
+    (bundle / "_internal" / "python313.dll").write_bytes(b"MZ")
+    (bundle / "Offloader.exe").write_bytes(b"MZ")
+    found = sbom.uncovered_in_bundle(bundle)
+
+    names = {name for name, _pattern, _why in found}
+    assert names == {"CPython runtime", "PyInstaller bootloader"}
+    assert len(found) == 2, "only the executables actually present"
+
+
+def test_the_release_plan_still_carries_the_inventory_gate(sbom):
+    """The claim these files support is narrower than the gate they were read
+    as discharging, so the gate stays until the frozen runtime is covered."""
+    plan = (REPO / "docs" / "release-plan.md").read_text(encoding="utf-8")
+    assert "complete third-party inventory" in plan
+    assert "remain pending" in plan
+
+
+# ----------------------------------------------------- publishing them
+
+
+def test_the_release_instructions_upload_every_checksummed_asset(sbom):
+    """REGRESSION. The three files entered `SHA256SUMS.txt` while the generated
+    upload command still named only the installer, the checksums and the
+    inventory, so following the instructions published checksums for assets
+    that were not there."""
+    artifacts = _load("_artifacts", REPO / "build" / "windows" / "artifacts.py")
+    notes = _load("_notes", REPO / "scripts" / "release_notes.py")
+    from offloader._version import __version__
+
+    body = notes.notes(f"v{__version__}", "abc1234")
+    for name in artifacts.sbom_names(__version__):
+        assert name in body, f"{name} is checksummed but never uploaded"
+
+
+def test_the_asset_list_and_the_checksums_name_the_same_files(sbom, tmp_path):
+    """One list, because the build, its verification and the instructions all
+    read it."""
+    artifacts = _load("_artifacts", REPO / "build" / "windows" / "artifacts.py")
+    build = _load("_build", REPO / "build" / "windows" / "build.py")
+
+    assets = set(artifacts.release_assets("0.4.0"))
+    assert build.sbom_names("0.4.0") <= assets
+    assert "SHA256SUMS.txt" in assets
+    assert "Offloader-Setup-0.4.0.exe" in assets
+    assert "Offloader-0.4.0-inventory.json" in assets
