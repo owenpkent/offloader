@@ -12,7 +12,22 @@ project uses [semantic versioning][semver].
 
 - **A bill of materials, third-party notices and a pinned lockfile.** Every
   build emits a CycloneDX 1.6 SBOM, a human-readable notices inventory and a
-  pinned requirements file, checksummed with the other release outputs.
+  pinned requirements file, checksummed with the other release outputs and
+  named in the upload instructions that publish them. One list of release
+  assets is read by the build that checksums them, by the verification that
+  refuses anything it did not expect, and by the generated release notes, so
+  the instructions cannot name fewer files than the checksums cover. These are
+  written beside the bundle, not embedded in the installer, so they accompany
+  a release by being uploaded with it.
+
+  **They cover the Python distribution dependencies, and say so.** A frozen
+  application also ships the CPython runtime DLL and the PyInstaller bootloader
+  compiled into each executable, neither of which has packaging metadata for
+  the closure to walk. Each output states that boundary in its own text and
+  names what is outside it, because an inventory read as complete while missing
+  the interpreter it ships is worse than one that says where it stops. The
+  complete third-party inventory remains a release gate, and the gap is
+  measured against a built bundle rather than asserted from a list.
 
   The set is the runtime dependency closure of the installed package, not the
   build environment: the release inventory already records every distribution
