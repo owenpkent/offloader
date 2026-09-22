@@ -91,6 +91,8 @@ offloader verify D:\video\080426\A001
 | Command | What it does |
 | --- | --- |
 | `offload` | copy and verify a source to one or more destinations |
+| `resolve` | report which of an edit timeline's media is already here, copying nothing |
+| `control` | pause, resume or cancel a running offload from another terminal |
 | `verify` | re-check an offloaded tree against its manifests |
 | `report` | regenerate paperwork for an existing tree, copying nothing |
 | `info` | show tool and environment status |
@@ -101,6 +103,7 @@ offloader verify D:\video\080426\A001
 | Flag | Meaning |
 | --- | --- |
 | `--source PATH` | card or folder to offload |
+| `--timeline PATH` | offload an edit timeline's media instead of a folder; see [From an edit timeline](#from-an-edit-timeline) |
 | `--dest PATH` | destination root; repeat for multiple copies |
 | `--hash ALGO` | `xxh3-64` (default), `xxh3-128`, `xxh64`, `xxh64be`, `md5`, `sha1`, `sha256`, `c4`, `none` |
 | `--verify MODE` | `source-only` (default), `full`, `none` |
@@ -115,6 +118,7 @@ offloader verify D:\video\080426\A001
 | `--exclude GLOB` | extra filename pattern to skip; repeatable |
 | `--flat` | do not recreate the source folder structure; refused if two files would land on one path |
 | `--skip-existing` | skip files already present at matching size |
+| `--control-file PATH` | make the job pausable from another terminal; see [Pausing a running job](#pausing-a-running-job) |
 | `--proxies-first` | copy the camera's proxy folders before the originals (default) |
 | `--originals-first` | copy in plain tree order instead |
 | `--retries N` | attempts per failing read on a transient error (default 3, 1 disables) |
@@ -123,7 +127,96 @@ offloader verify D:\video\080426\A001
 | `--quiet` | suppress progress |
 
 Exit status is `0` on success, `1` if any file failed verification, `2` on a
-usage or I/O error, `3` if a destination was refused as unsafe.
+usage or I/O error, `3` if a destination was refused as unsafe, `4` if a
+timeline could not be read for want of an adapter.
+
+### Pausing a running job
+
+A long offload gets started detached, over ssh, or by a scheduler, and the
+person who wants it paused is rarely sitting at that terminal. Start it with a
+control file and it can be driven from anywhere:
+
+```sh
+offloader offload --source E:\ --dest D:\A001 --control-file D:\A001\job.control
+
+# from any other terminal
+offloader control D:\A001\job.control --pause
+offloader control D:\A001\job.control --resume
+offloader control D:\A001\job.control --cancel
+offloader control D:\A001\job.control            # what state is it in?
+```
+
+The job reads the file **once per 8 MiB chunk**, so a pause takes effect inside
+a second even in the middle of a 14 GB clip. Paused, it holds its place with
+the file still in flight; resumed, it carries on from that chunk rather than
+restarting the file. A cancel keeps every finished file and discards the one in
+flight, which never had its real name.
+
+The file holds one word: `run`, `pause` or `cancel`. Deleting it releases the
+job. **Anything else is "no opinion" and leaves the job exactly as it is** —
+empty, garbled, half-written, or momentarily unreadable because another process
+has it open. That asymmetry is deliberate: inferring `cancel` from a damaged
+control file would let a stray byte stop an offload that is nine hours in, and
+a small text file is precisely what a sync client rewrites in two steps.
+`offloader control` writes through a staging file and renames it into place, so
+a job polling between chunks can never read a half-written instruction.
+
+Starting a job also *claims* the path by writing `run` to it. A control file
+left saying `pause` by a previous job would otherwise stop the next one before
+it copied a byte, with nothing on screen to explain why.
+
+Why a file rather than a signal or a keypress: Windows has almost no signal
+support beyond SIGINT, a detached job has no console to press a key in, and a
+file needs no port and no daemon, survives the terminal going away, and can be
+read to see what a job is doing. The desktop app drives the same `JobControl`
+through its transport buttons.
+
+### From an edit timeline
+
+A card offload knows its source. This is the other job: a cut comes back from
+an editor, and the question is *which files does this timeline need, and are
+they all here?*
+
+```sh
+pip install "offloader[timeline]"
+
+offloader resolve --timeline "01 Chairs Row V6.xml" --search-root E:\ChairsDoc
+offloader offload --timeline "01 Chairs Row V6.xml" --search-root E:\ChairsDoc \
+                  --dest E:\ChairsDoc\RowV6_Media
+```
+
+`resolve` copies nothing and prints the answer. `offload` copies only the files
+that are not already under a `--search-root`, with the same verified copy,
+checksums and reports as a card.
+
+| Flag | Meaning |
+| --- | --- |
+| `--timeline PATH` | the cut to read: `.xml` (FCP 7), `.fcpxml`, `.edl`, `.aaf`, `.otio` |
+| `--search-root PATH` | where the media already lives; repeatable, and required |
+| `--adapter NAME` | override the OpenTimelineIO adapter chosen from the suffix |
+| `--no-proxy-substitution` | do not let a proxy on disk stand in for a camera original |
+| `--layout mirror\|flat` | keep each file's path below its volume root (default), or put everything in one folder |
+| `--csv PATH` | (`resolve`) write the full per-reference table |
+
+Every reference gets one status: `present`, `substituted`, `gap`, `ambiguous`,
+`missing` or `generated`. Only `gap` is copied. `resolve` exits non-zero if
+anything is `ambiguous` or `missing`.
+
+The part worth knowing before you trust it: **it refuses to choose between two
+files that share a name.** On the conform it was built against, 20 basenames
+had more than one copy under the search root. Seven were byte-identical and
+harmless. Thirteen were different files -- eleven of them "MISSING MEDIA"
+stand-in slates from an earlier pass, sitting beside the real archival footage
+that arrived later. Relinking by filename picks one at random, and when it
+picks a slate the clip **reports as online**. So the tool reports every
+candidate, offers the closest-path match as an explicitly labelled guess, and
+copies nothing.
+
+OpenTimelineIO is trusted with media references and nothing else. It recovered
+all 334 of that file's references exactly, including the clipitems that name
+their file by id and carry no path; on the same file it reported 29.97 fps and
+12 audio tracks for a sequence declaring 24 fps and 23 tracks. Full account and
+the adapter table in [`docs/timeline.md`](docs/timeline.md).
 
 ### `verify`
 
@@ -427,6 +520,7 @@ general-purpose tool reports a filename, a size, and a placeholder icon.
 | [`docs/braw.md`](docs/braw.md) | Blackmagic RAW container parsing, proxy pairing, and the interrupted-recording check |
 | [`docs/ascmhl.md`](docs/ascmhl.md) | ASC MHL v2.0, and how it was validated against the reference implementation |
 | [`docs/ixml.md`](docs/ixml.md) | Broadcast WAV chunk walking, the iXML slate, and where sound timecode comes from |
+| [`docs/timeline.md`](docs/timeline.md) | Resolving an edit timeline to its media, what OpenTimelineIO is and is not trusted with, and why ambiguity refuses |
 
 ## Library
 
