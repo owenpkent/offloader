@@ -8,6 +8,7 @@ progress readout meaningless.
 from __future__ import annotations
 
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -18,6 +19,11 @@ from .. import engine, history, naming
 from ..models import Job
 from ..presets import Preset
 from ..reports import WRITERS
+from ..volumes import volume_label
+
+#: Trailing window over which throughput is measured. Long enough to smooth
+#: per-chunk jitter, short enough that a stall shows up within seconds.
+RATE_WINDOW_SEC = 5.0
 
 REPORT_FILENAMES = {
     "pdf": "JobReport.pdf",
@@ -62,6 +68,8 @@ class QueueItem:
     reports: list[Path] = field(default_factory=list)
     error: str | None = None
     control: engine.JobControl = field(default_factory=engine.JobControl)
+    #: (monotonic time, job bytes done) samples inside the trailing window.
+    _samples: deque = field(default_factory=deque, repr=False)
 
     @property
     def elapsed(self) -> float:
@@ -69,10 +77,36 @@ class QueueItem:
             return 0.0
         return (self.finished_at or time.monotonic()) - self.started_at
 
+    def record_progress(self, bytes_done: int) -> None:
+        """Feed the throughput window. Called on every progress event."""
+        now = time.monotonic()
+        if self._samples and bytes_done < self._samples[-1][1]:
+            # The counter went backwards — a new stage started counting from
+            # zero. A delta across that boundary would be negative garbage.
+            self._samples.clear()
+        self._samples.append((now, bytes_done))
+        while self._samples and now - self._samples[0][0] > RATE_WINDOW_SEC:
+            self._samples.popleft()
+
     @property
     def rate_bytes_per_sec(self) -> float:
-        elapsed = self.elapsed
-        return self.bytes_done / elapsed if elapsed > 0.5 else 0.0
+        """Throughput over the trailing window, not the life of the job.
+
+        A lifetime average (`bytes_done / elapsed`) folds the pre-copy scan and
+        every between-file probe stall into the number forever: a slow first
+        minute reads as a slow job for the rest of the offload, and the ETA
+        derived from it is wrong in the same direction. The window forgets.
+        Measured against `now` rather than the newest sample, so a stall shows
+        as a rate falling toward zero instead of freezing at its last value.
+        """
+        if not self._samples:
+            return 0.0
+        now = time.monotonic()
+        oldest_time, oldest_bytes = self._samples[0]
+        span = now - oldest_time
+        if span < 0.5 or now - self._samples[-1][0] > RATE_WINDOW_SEC:
+            return 0.0
+        return max(0, self.bytes_done - oldest_bytes) / span
 
     @property
     def eta_seconds(self) -> float | None:
@@ -190,7 +224,8 @@ class QueueController(QObject):
     def enqueue(self, source: Path, preset: Preset, name: str | None = None) -> QueueItem:
         source = Path(source)
         resolved = name or naming.build(
-            preset.naming_template, source, taken=self._taken_names()
+            preset.naming_template, source,
+            volume_label=volume_label(source), taken=self._taken_names()
         )
         item = QueueItem(
             identifier=self._next_id,
@@ -312,6 +347,7 @@ class QueueController(QObject):
         item.current_file = filename
         item.bytes_done = done
         item.bytes_total = total
+        item.record_progress(done)
         self.itemChanged.emit(identifier)
 
     def _on_completed(self, identifier: int, job: Job | None,

@@ -47,6 +47,24 @@ _TRANSIENT_WINERROR = {
     1167,  # ERROR_DEVICE_NOT_CONNECTED
 }
 
+class UnstableRead(OSError):
+    """Two reads of the same bytes disagreed.
+
+    The operating system reported no error at all — this is only visible to a
+    caller that read twice and compared. It is still the marginal-media signal,
+    and deserves the same second attempt, so it is transient by construction.
+    """
+
+
+class Exhausted(OSError):
+    """A failure that has already been retried as far as it is going to be.
+
+    Retrying it again at a coarser level would only repeat the same attempts
+    against the same fault, at the cost of re-reading everything that already
+    succeeded. Raised by a fine-grained retry loop to close the one above it.
+    """
+
+
 #: Never retried: retrying cannot help and the delay hides the real fault.
 _PERMANENT_ERRNO = {
     errno.ENOENT,     # the file is gone
@@ -84,6 +102,12 @@ def is_transient(exc: BaseException) -> bool:
     """Whether this failure has a plausible chance of not recurring."""
     if not isinstance(exc, OSError):
         return False
+    # Both are decided by what raised them, not by an errno, and `Exhausted` is
+    # checked first because it may well be wrapping something transient.
+    if isinstance(exc, Exhausted):
+        return False
+    if isinstance(exc, UnstableRead):
+        return True
     winerror = getattr(exc, "winerror", None)
     if winerror is not None:
         return winerror in _TRANSIENT_WINERROR

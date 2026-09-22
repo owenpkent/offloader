@@ -265,3 +265,15 @@ def test_mhl_preserves_ordinary_unicode(sample_job: Job, tmp_path: Path):
     )
     root = ET.parse(write_mhl(sample_job, tmp_path / "j.mhl")).getroot()
     assert any("café_日本" in (n.findtext("file") or "") for n in root.findall("hash"))
+
+
+def test_pdf_document_title_carries_route_and_date(sample_job: Job, tmp_path: Path):
+    """A stack of reports is told apart by this title in a file manager or a
+    browser tab; "Offload Job Report" identified nothing."""
+    path = write_pdf(sample_job, tmp_path / "JobReport.pdf")
+    with fitz.open(path) as document:
+        title = document.metadata["title"]
+    assert sample_job.name in title
+    assert str(sample_job.source_root) in title
+    assert str(sample_job.destination_roots[0]) in title
+    assert f"{sample_job.started:%Y-%m-%d}" in title
