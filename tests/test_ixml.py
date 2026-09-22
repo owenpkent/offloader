@@ -70,7 +70,33 @@ def test_drop_frame_is_carried_through(tmp_path: Path):
     path = _wav(tmp_path, ixml=bwf.ixml_document(rate="30000/1001", flag="DF"))
     info = ixml.read_sound_info(path)
     assert info is not None and info.drop_frame
-    assert (ixml.timecode_of(info) or "").endswith("DF")
+    assert (ixml.timecode_of(info) or "").endswith(" DF")
+
+
+#: Samples since midnight at 48 kHz for one minute, ten minutes and one hour,
+#: with the drop-frame and non-drop labels each should carry at 30000/1001.
+NTSC_VECTORS = [
+    (2_880_000, "00:00:59:28", "00:00:59:28"),
+    (28_800_000, "00:10:00:00", "00:09:59:12"),
+    (172_800_000, "01:00:00:00", "00:59:56:12"),
+]
+
+
+@pytest.mark.parametrize("samples,dropped,plain", NTSC_VECTORS)
+def test_the_start_timecode_of_an_ntsc_recording(tmp_path: Path, samples: int,
+                                                 dropped: str, plain: str):
+    """REGRESSION. A sound report's start timecode is the number an assistant
+    types into an edit to line the sound up with the picture. One hour of
+    recording read 00:59:56:12 DF, which is the non-drop label wearing the
+    drop-frame tag, and about 3.6 seconds an hour wrong."""
+    for flag, expected in (("DF", dropped), ("NDF", plain)):
+        path = bwf.write_wav(
+            tmp_path / f"MIX_{samples}_{flag}.wav",
+            ixml=bwf.ixml_document(rate="30000/1001", flag=flag,
+                                   sample_rate=48000,
+                                   samples_since_midnight=samples))
+        info = ixml.read_sound_info(path)
+        assert ixml.timecode_of(info) == f"{expected} {flag}"
 
 
 def test_no_timecode_without_a_rate(tmp_path: Path):

@@ -34,6 +34,24 @@ worse than an unfamiliar-looking exact number.
 When iXML *is* present the rate comes with it, and the same origin renders as
 `10:00:00:00 NDF`, with `SPEED/TIMECODE_FLAG` deciding NDF or DF.
 
+### Drop frame is a renumbering, not a tag
+
+`DF` is not a label added to the same arithmetic. At `30000/1001` an hour of
+recording is 107,892 elapsed frames, and counting those at a whole 30 gives
+`00:59:56:12` — about 3.6 seconds an hour behind the clock on the wall, which
+is the drift the 1000/1001 rates have and drop frame exists to hide. Drop frame
+hides it by never using the labels `00` and `01` at the top of a minute that is
+not a tenth one, per SMPTE ST 12-1 §5.2.2. No picture is lost; the same hour
+labels `01:00:00:00`.
+
+That number is what an assistant types into an edit to line sound up with
+picture, so the conversion is applied before formatting, and the tag reports
+the numbering that was actually used. It is applied against the rate the file
+states rather than the rounded one: `29.97` and `30` both round to 30, and
+renumbering a true 30 would introduce exactly the error drop frame removes. A
+file claiming `DF` at `30/1` is malformed, and the plain count is the truthful
+reading of it.
+
 The sample count is split across two fields because it does not fit in one: at
 48 kHz a day is a little over 4.1 billion samples, past a 32-bit field. When
 both chunks carry a count, iXML's wins — it is the one the recorder wrote
