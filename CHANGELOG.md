@@ -20,6 +20,14 @@ project uses [semantic versioning][semver].
   trustworthy — an 8 MiB chunk over a degraded link legitimately takes half a
   minute, and a chunk-granularity timer would call a working copy stalled.
 
+  The duration shown counts from the last byte, not from the warning. The first
+  report only fires once the threshold has already passed, so timing it from
+  there displayed "no data for 0s" on a source that had been silent for fifteen
+  seconds, and stayed that far short for as long as the outage lasted. That
+  figure is what someone reads to decide whether to go and look at the cable,
+  so the engine carries the silence it has already measured and the queue
+  backdates its clock by it.
+
 ### Changed
 
 - **Full verification is the default.** The read-back is the only mode that
