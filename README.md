@@ -245,6 +245,15 @@ project's certificate thumbprint, its publisher name, and an embedded
 `FileVersion` matching the release. That last check is what stops an older
 but still validly signed installer being re-served under a newer asset name.
 
+One limit, stated because this page is meant to describe the checkout rather
+than the plan: the feed is GitHub's `/releases/latest`, which is documented as
+excluding prereleases. The first packaged release is planned as `0.1.0b1`, so
+an installed beta cannot discover the next one through it, and a repository
+holding only betas answers with nothing at all. The version grammar already
+orders prereleases; it is the endpoint that does not carry them. Reading the
+releases collection instead is the correction pending on
+[#13](https://github.com/owenpkent/offloader/pull/13).
+
 **It never closes a running Offloader.** The installer refuses maintenance
 while a transfer is in flight, which is the guarantee rather than a
 limitation, so updating means finishing or cancelling the job first. The

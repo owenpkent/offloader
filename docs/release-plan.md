@@ -112,10 +112,12 @@ credentials, update endpoints, or installation paths.
 - **Timeline support:** include and test OpenTimelineIO and the currently
   declared adapter in the desktop bundle if timeline import is advertised for
   that bundle. Otherwise mark that capability source-only for the beta.
-- **Updates:** `offloader update` and the desktop app both find and verify a
-  release and run the signed installer. Refuse replacement while the app or
-  CLI has an active job; never force-kill a copy to install an update. See
-  [updates.md](updates.md).
+- **Updates:** `offloader update` and the desktop app both check for a
+  release, verify it, and run the signed installer. Refuse replacement while
+  the app or CLI has an active job; never force-kill a copy to install an
+  update. See [updates.md](updates.md). Discovery is not yet a gate that can
+  be signed off: the feed is `/releases/latest`, which excludes prereleases,
+  so a beta cannot find its successor until that is corrected.
 - **Scope freeze:** defer new media features, cloud services, notifications
   and a marketing website. Fix integrity and packaging blockers discovered
   during qualification.

@@ -44,6 +44,17 @@ build that Windows then considers older than the one it replaced.
 If either version is unreadable the answer is "not newer". String comparison
 is what makes `1.0.10` look older than `1.0.9`.
 
+**The feed above does not yet carry the prereleases this grammar orders.**
+GitHub documents `/releases/latest` as returning the newest published full
+release and excluding prereleases, so an installed `0.1.0b1` cannot discover
+`0.1.0b2` or `0.1.0rc1` through it, and a repository holding only the betas
+the candidate workflow publishes with `--prerelease` answers with nothing at
+all. The ordering here is right and the endpoint is wrong; reading the
+releases collection instead is the correction pending on
+[#13](https://github.com/owenpkent/offloader/pull/13). Until that lands, take
+the ordering as describing what the updater would do with a release it can
+see, not as evidence that it can see one.
+
 ## What is checked before anything runs
 
 | Check | What it stops |
