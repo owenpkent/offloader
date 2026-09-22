@@ -230,6 +230,40 @@ manifest lists and exits non-zero if anything is off, so a format script can gat
 on it. `--allow-cache` skips the page-cache eviction — faster, and may verify
 memory rather than the device.
 
+### `update`
+
+```sh
+offloader update              # is there a newer release?
+offloader update --install    # download it, verify it, run the installer
+```
+
+GitHub Releases is the feed, so there is no manifest server and no second
+place a version number is recorded. Before anything runs, the download has to
+be served from an allowlisted host *after* redirects, hash to what was
+computed while streaming, and carry a valid Authenticode signature with this
+project's certificate thumbprint, its publisher name, and an embedded
+`FileVersion` matching the release. That last check is what stops an older
+but still validly signed installer being re-served under a newer asset name.
+
+One limit, stated because this page is meant to describe the checkout rather
+than the plan: the feed is GitHub's `/releases/latest`, which is documented as
+excluding prereleases. The first packaged release is planned as `0.1.0b1`, so
+an installed beta cannot discover the next one through it, and a repository
+holding only betas answers with nothing at all. The version grammar already
+orders prereleases; it is the endpoint that does not carry them. Reading the
+releases collection instead is the correction pending on
+[#13](https://github.com/owenpkent/offloader/pull/13).
+
+**It never closes a running Offloader.** The installer refuses maintenance
+while a transfer is in flight, which is the guarantee rather than a
+limitation, so updating means finishing or cancelling the job first. The
+command says so before the elevation prompt appears.
+
+The desktop app does the same thing from **Help, Check for updates now**, and
+checks once on launch unless that is turned off in Options. Full detail,
+including what is deliberately not copied from the reference implementation,
+is in [`docs/updates.md`](docs/updates.md).
+
 ### Verification modes
 
 | Mode | What it does | Catches |
@@ -516,7 +550,8 @@ general-purpose tool reports a filename, a size, and a placeholder icon.
 | --- | --- |
 | [`ROADMAP.md`](ROADMAP.md) | What is next, why, and what this will not become |
 | [`docs/release-plan.md`](docs/release-plan.md) | Windows beta release sequence, packaging, signing, acceptance gates, and recovery |
-| [`docs/build-windows.md`](docs/build-windows.md) | Build, sign, and check Windows desktop bundles and installers |
+| [`docs/build-windows.md`](docs/build-windows.md) | Build, sign, and check Windows desktop bundles and installers; the bill of materials, and tagging a candidate |
+| [`docs/updates.md`](docs/updates.md) | What an update checks before it runs anything, and why it never closes a running transfer |
 | [`docs/data-safety.md`](docs/data-safety.md) | Threat model: what is guaranteed, what is not, and the bugs behind each guarantee |
 | [`docs/report-layout.md`](docs/report-layout.md) | Every coordinate of the PDF, measured off the reference report |
 | [`docs/performance.md`](docs/performance.md) | Why not robocopy, with benchmarks and the confounds that made the first run worthless |

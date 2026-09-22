@@ -127,8 +127,13 @@ already does the stem-matching this needs.
   it settles almost every case for a stat, then the checksum. What is missing
   is only the wiring into the engine's own skip, where the file being skipped
   is at the destination rather than under another search root.
-- **Windows installer and code signing**, so it can be handed to someone who
-  does not have Python.
+- **A signed, qualified Windows release.** The packaging is implemented:
+  frozen bundle, NSIS installer, transactional maintenance, signing hooks, a
+  bill of materials, an update client, and a tag-triggered candidate workflow.
+  What is left is not code. Signing needs the hardware token, the acceptance
+  matrix needs a clean machine, and Qt's LGPL/GPL terms against Offloader's
+  MIT licence need a redistribution decision, which the notices file flags on
+  every build. See [`docs/release-plan.md`](docs/release-plan.md).
 - **Per-job report templates and custom branding.**
 
 ## Not planned
