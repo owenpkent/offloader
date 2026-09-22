@@ -104,6 +104,29 @@ automatic one off. The check runs on a pool thread, so a slow or unreachable
 network delays nothing and a failure appears in the status bar rather than in
 a dialog.
 
+Three outcomes, not two. `update.check()` never raises and returns `None` for
+a failed fetch, a TLS error and an unparseable feed alike, so a caller that
+reports its result to somebody cannot use it: "you are the newest release" is
+a claim, and it would be made on the strength of a failed DNS lookup. The app
+uses `check_feed()`, which returns `None` only when the feed answered and had
+nothing newer, and raises `FeedError` otherwise. A check that could not be
+made is reported as a failure.
+
+Whose result it is belongs to the check that is running, not to whoever asked
+last. A manual check started inside the first couple of seconds is still
+running when the launch timer fires; the timer's check is refused as a
+duplicate, and the announcement the manual request asked for survives it. The
+intent is only ever raised while work is in flight, so a manual request behind
+an automatic check is answered too.
+
+**Cancel cancels.** The download runs on a pool thread and cannot be
+interrupted, so cancellation is cooperative: the progress callback is the one
+place the loop hands control back often enough, and it raises there. The
+request is then terminal — the incomplete download is removed, nothing is
+verified, and `ready` is not emitted, so the app cannot go on to offer what
+the user just declined. Only the file named by the release is removed, because
+the download directory can be one the caller owns.
+
 Installing from the app follows the refusal above rather than working around
 it. If any job is running or paused, the update is declined with the reason;
 a paused job counts, because it is a partially written destination waiting to

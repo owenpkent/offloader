@@ -75,7 +75,6 @@ class MainWindow(QMainWindow):
 
         self.queue = QueuePanel(self.controller)
 
-        self._announce_update = False
         self._update_progress: QProgressDialog | None = None
         self._update_banner = label("", "muted")
         self._update_banner.setStyleSheet(f"color: {theme.ACCENT};")
@@ -86,6 +85,7 @@ class MainWindow(QMainWindow):
         self.updates.progress.connect(self._on_update_progress)
         self.updates.ready.connect(self._on_update_ready)
         self.updates.failed.connect(self._on_update_failed)
+        self.updates.cancelled.connect(self._on_update_cancelled)
 
         # ----------------------------------------------------------- chrome
         self._preset_button = button("Presets")
@@ -215,19 +215,26 @@ class MainWindow(QMainWindow):
     def _check_for_updates(self, *, announce: bool) -> None:
         """`announce` reports "you are up to date"; the automatic check does
         not, because an unasked-for check should only ever speak up when there
-        is something to say."""
-        self._announce_update = announce
-        if not self.updates.check_now():
-            if announce:
-                self.statusBar().showMessage(
-                    "An update check is already running.", 5000)
+        is something to say.
+
+        The intent belongs to the controller, with the check it started. This
+        used to be stamped here before `check_now` reported whether a check
+        actually began, so a manual check requested inside the first 2.5
+        seconds was downgraded by the launch timer firing behind it: the
+        duplicate was refused, the manual intent was already overwritten, and
+        the result the user asked for was handled silently.
+        """
+        if not self.updates.check_now(announce=announce) and announce:
+            self.statusBar().showMessage(
+                "An update check is already running; its result will be "
+                "shown when it finishes.", 5000)
 
     def _on_update_available(self, release) -> None:
         self._update_banner.setText(
             f"Offloader {release.version} is available. "
             f"Help → Check for updates now to install it.")
         self._update_banner.setVisible(True)
-        if not self._announce_update:
+        if not self.updates.announce:
             return
         refused = refusal(
             [item.state for item in self.controller.items])
@@ -251,6 +258,10 @@ class MainWindow(QMainWindow):
         self._update_progress.setWindowTitle("Update")
         self._update_progress.setWindowModality(Qt.WindowModal)
         self._update_progress.setAutoClose(False)
+        # The button offers to stop the download, so it has to stop it. Hiding
+        # the dialog while the bytes kept arriving, and then offering to
+        # install what the user had just declined, is worse than no button.
+        self._update_progress.canceled.connect(self.updates.cancel)
         self._update_progress.show()
         self.updates.prepare()
 
@@ -264,9 +275,7 @@ class MainWindow(QMainWindow):
             self._update_progress.setMaximum(0)
 
     def _on_update_ready(self, release, digest: str) -> None:
-        if self._update_progress is not None:
-            self._update_progress.close()
-            self._update_progress = None
+        self._close_update_progress()
         # Checked again here, not only before the download: a job can be
         # started while the bytes are arriving, and this is the last moment
         # before the installer is asked to replace a running application.
@@ -294,16 +303,31 @@ class MainWindow(QMainWindow):
         self.close()
 
     def _on_update_failed(self, message: str) -> None:
-        if self._update_progress is not None:
-            self._update_progress.close()
-            self._update_progress = None
-        if self._announce_update:
+        self._close_update_progress()
+        if self.updates.announce:
             QMessageBox.warning(self, "Update", message)
         else:
             self.statusBar().showMessage(f"Update check: {message}", 8000)
 
+    def _on_update_cancelled(self) -> None:
+        self._close_update_progress()
+        self.statusBar().showMessage("Update download cancelled.", 5000)
+
+    def _close_update_progress(self) -> None:
+        if self._update_progress is None:
+            return
+        # Disconnected first: closing a QProgressDialog emits `canceled`, and
+        # a cancel raised while tearing down the dialog for a result that has
+        # already arrived would be reported as the user asking for one.
+        try:
+            self._update_progress.canceled.disconnect(self.updates.cancel)
+        except (RuntimeError, TypeError):
+            pass
+        self._update_progress.close()
+        self._update_progress = None
+
     def _on_update_absent(self) -> None:
-        if self._announce_update:
+        if self.updates.announce:
             QMessageBox.information(
                 self, "Up to date",
                 f"Offloader {__version__} is the newest release available.")

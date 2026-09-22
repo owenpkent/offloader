@@ -22,7 +22,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from offloader.gui.updates import PROGRESS_STEP, UpdateController, refusal  # noqa: E402
 from offloader.gui.worker import JobState  # noqa: E402
-from offloader.update import Release, UpdateError  # noqa: E402
+from offloader.update import FeedError, Release, UpdateError  # noqa: E402
 
 RELEASE = Release(version="0.9.0", asset_name="Offloader-Setup-0.9.0.exe",
                   download_url="https://github.com/owenpkent/offloader/x.exe",
@@ -139,6 +139,245 @@ def test_a_check_that_raises_does_not_escape_the_thread(qapp):
     controller = UpdateController(check=explode)
     controller.check_now()
     assert _pump(qapp, lambda: not controller.busy)
+
+
+# ---------------------------------------------- failure is not up to date
+
+
+@pytest.mark.parametrize("failure", [
+    OSError("no network"),
+    FeedError("could not reach the release feed"),
+    UpdateError("the release feed did not describe a release"),
+])
+def test_a_check_that_could_not_be_made_reports_failure(qapp, failure):
+    """REGRESSION. The controller read `None` as "you are the newest release",
+    and `update.check` returns `None` for a failed fetch, a TLS error and an
+    unparseable feed alike. So a manual check told the user this was the newest
+    release on the strength of a failed DNS lookup, and an automatic failure
+    never reached the documented failure path at all."""
+    def explode(_installed):
+        raise failure
+
+    failures: list[str] = []
+    up_to_date: list[int] = []
+    controller = UpdateController(check=explode)
+    controller.failed.connect(failures.append)
+    controller.upToDate.connect(lambda: up_to_date.append(1))
+
+    controller.check_now()
+    assert _pump(qapp, lambda: bool(failures))
+    assert up_to_date == [], "a failed check claimed the app was up to date"
+    assert controller.release is None
+
+
+def test_a_genuine_up_to_date_answer_is_still_up_to_date(qapp):
+    """The other half. Distinguishing failure must not turn every quiet check
+    into a warning."""
+    failures: list[str] = []
+    up_to_date: list[int] = []
+    controller = UpdateController(check=lambda _i: None)
+    controller.failed.connect(failures.append)
+    controller.upToDate.connect(lambda: up_to_date.append(1))
+
+    controller.check_now()
+    assert _pump(qapp, lambda: bool(up_to_date))
+    assert failures == []
+
+
+@pytest.mark.parametrize("payload,outcome", [
+    ({"tag_name": "v0.9.0", "assets": [
+        {"name": "Offloader-Setup-0.9.0.exe",
+         "browser_download_url": "https://github.com/a/b/x.exe"}]}, "found"),
+    ({"tag_name": "v0.1.0", "assets": []}, "up to date"),
+    ("<html>a proxy login page</html>", "failed"),
+    (None, "failed"),
+])
+def test_the_feed_check_separates_its_three_outcomes(payload, outcome):
+    """At the source, where the distinction is made. `check_feed` raises for a
+    feed it could not read and returns None only when the feed answered and had
+    nothing newer."""
+    from offloader import update
+
+    def fetch(_url):
+        return payload
+
+    if outcome == "failed":
+        with pytest.raises(FeedError):
+            update.check_feed("0.5.0", fetch=fetch)
+        return
+    result = update.check_feed("0.5.0", fetch=fetch)
+    assert (result is not None) is (outcome == "found")
+
+
+def test_a_fetch_that_raises_becomes_a_feed_error():
+    from offloader import update
+
+    def fetch(_url):
+        raise OSError("name or service not known")
+
+    with pytest.raises(FeedError, match="could not reach"):
+        update.check_feed("0.5.0", fetch=fetch)
+    # The never-raising form is unchanged, for callers with nowhere to put it.
+    assert update.check("0.5.0", fetch=fetch) is None
+
+
+# ------------------------------------------------------------- cancelling
+
+
+def test_cancel_stops_a_download_in_flight(qapp, tmp_path):
+    """REGRESSION. The dialog's Cancel was never connected to anything. It hid
+    the dialog, the download and verification carried on, and the app then
+    offered to install what the user had just declined."""
+    import threading
+    import time
+
+    blocked = threading.Event()
+    verified: list[int] = []
+
+    def download(release, directory, progress=None):
+        path = Path(directory) / release.asset_name
+        path.write_bytes(b"MZ partial")
+        progress(1, 100)
+        blocked.set()
+        # Keeps calling back until the cancel is noticed, the way a real
+        # download does: the callback is the only place it hands control over
+        # often enough to be stopped.
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            progress(2, 100)
+            time.sleep(0.01)
+        raise AssertionError("the download was never cancelled")
+
+    controller = UpdateController(check=lambda _i: RELEASE, download=download,
+                                  verify=lambda *_a, **_k: verified.append(1))
+    outcomes: list[str] = []
+    controller.cancelled.connect(lambda: outcomes.append("cancelled"))
+    controller.ready.connect(lambda *_a: outcomes.append("ready"))
+    controller.failed.connect(lambda *_a: outcomes.append("failed"))
+
+    controller.check_now()
+    assert _pump(qapp, lambda: controller.release is not None)
+    assert controller.prepare(tmp_path)
+    assert _pump(qapp, lambda: blocked.is_set())
+
+    assert controller.cancel() is True
+    assert _pump(qapp, lambda: bool(outcomes))
+
+    assert outcomes == ["cancelled"], "a cancelled download still reported in"
+    assert verified == [], "verification continued after the cancel"
+    assert controller.installer is None
+    assert not (tmp_path / RELEASE.asset_name).exists(), \
+        "the incomplete download was left behind"
+
+
+def test_cancel_after_the_bytes_have_arrived_still_suppresses_ready(qapp, tmp_path):
+    """A download small enough to finish between two callbacks would otherwise
+    sail past the cancel and offer itself for installation."""
+    def download(release, directory, progress=None):
+        path = Path(directory) / release.asset_name
+        path.write_bytes(b"MZ")
+        controller.cancel()
+        return path, "d" * 64
+
+    outcomes: list[str] = []
+    controller = UpdateController(check=lambda _i: RELEASE, download=download,
+                                  verify=lambda *_a, **_k: {})
+    controller.cancelled.connect(lambda: outcomes.append("cancelled"))
+    controller.ready.connect(lambda *_a: outcomes.append("ready"))
+
+    controller.check_now()
+    assert _pump(qapp, lambda: controller.release is not None)
+    controller.prepare(tmp_path)
+    assert _pump(qapp, lambda: bool(outcomes))
+
+    assert outcomes == ["cancelled"]
+    assert controller.installer is None
+    assert not (tmp_path / RELEASE.asset_name).exists()
+
+
+def test_cancelling_removes_only_the_download(qapp, tmp_path):
+    """The directory can be one the caller owns."""
+    keep = tmp_path / "somebody-elses.txt"
+    keep.write_text("keep me", encoding="utf-8")
+
+    def download(release, directory, progress=None):
+        (Path(directory) / release.asset_name).write_bytes(b"MZ")
+        controller.cancel()
+        return Path(directory) / release.asset_name, "d" * 64
+
+    controller = UpdateController(check=lambda _i: RELEASE, download=download,
+                                  verify=lambda *_a, **_k: {})
+    done: list[int] = []
+    controller.cancelled.connect(lambda: done.append(1))
+    controller.check_now()
+    assert _pump(qapp, lambda: controller.release is not None)
+    controller.prepare(tmp_path)
+    assert _pump(qapp, lambda: bool(done))
+
+    assert keep.read_text(encoding="utf-8") == "keep me"
+
+
+def test_cancelling_nothing_says_so(qapp):
+    assert UpdateController().cancel() is False
+
+
+# ------------------------------------------------- whose result it is
+
+
+def test_a_refused_duplicate_check_keeps_an_announcement(qapp):
+    """REGRESSION. A manual check requested during the first 2.5 seconds was
+    still running when the launch timer fired. The timer's silent intent
+    overwrote it, the controller then refused the duplicate, and the manual
+    result was handled as an automatic one -- so the dialog the user asked for
+    never appeared."""
+    import threading
+
+    release = threading.Event()
+
+    def slow(_installed):
+        release.wait(5)
+        return None
+
+    controller = UpdateController(check=slow)
+    try:
+        assert controller.check_now(announce=True)
+        assert _pump(qapp, lambda: controller.busy)
+
+        assert controller.check_now(announce=False) is False
+        assert controller.announce is True, "the manual request was downgraded"
+    finally:
+        release.set()
+        assert _pump(qapp, lambda: not controller.busy)
+
+
+def test_a_manual_request_behind_an_automatic_one_is_still_announced(qapp):
+    """The other direction: the automatic check is already running when the
+    user asks. They asked, so they get an answer."""
+    import threading
+
+    release = threading.Event()
+    controller = UpdateController(check=lambda _i: release.wait(5) or None)
+    try:
+        assert controller.check_now(announce=False)
+        assert _pump(qapp, lambda: controller.busy)
+        assert controller.check_now(announce=True) is False
+        assert controller.announce is True
+    finally:
+        release.set()
+        assert _pump(qapp, lambda: not controller.busy)
+
+
+def test_a_check_that_starts_sets_its_own_intent(qapp):
+    """Raised while work is in flight, but not sticky: the next automatic
+    check is silent again."""
+    controller = UpdateController(check=lambda _i: None)
+    controller.check_now(announce=True)
+    assert _pump(qapp, lambda: not controller.busy)
+    assert controller.announce is True
+
+    controller.check_now(announce=False)
+    assert _pump(qapp, lambda: not controller.busy)
+    assert controller.announce is False
 
 
 # -------------------------------------------------------------- preparing
