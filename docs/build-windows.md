@@ -102,6 +102,19 @@ records interrupted work for recovery. Only inventoried application files
 are removed. Per-user configuration/history and unrelated files are retained.
 An incomplete-installation marker blocks application startup until recovery.
 
+Rollback also takes back the directories promotion created, which it records
+as it makes them, and only while they are still empty. A directory that was
+already there was never the installer's to remove, and neither is one holding
+something that arrived from elsewhere. Without this a rolled-back first
+install left an empty `_internal` behind, which the next attempt read as a
+nonempty unowned target and refused: a transient failure that recovery
+reported as fully resolved could not be retried through the installer.
+
+The manifest write is what commits an update, and it is atomic, so either the
+new inventory landed or the previous one is still in place. Both are recovered
+as "did not commit": the second one rolls back to the old installation rather
+than being treated as a mismatch that no later operation can get past.
+
 Interactive Finish offers to launch Offloader using the non-elevated desktop
 shell user's token and environment. If that identity cannot be obtained, it
 asks the user to launch from Start Menu. There is no elevated fallback or
