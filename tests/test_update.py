@@ -216,6 +216,86 @@ def test_a_malformed_feed_is_not_an_update(payload):
     assert update.release_from_feed(payload, installed="0.1.0") is None
 
 
+# ------------------------------------------------------- the whole collection
+
+
+def _collection() -> list[dict]:
+    """What the releases endpoint actually returns: newest created first, betas
+    and release candidates among them, and a draft nobody else can see yet."""
+    return [
+        dict(_feed("v0.2.0b1"), draft=True, prerelease=True),
+        dict(_feed("v0.1.0b2"), prerelease=True),
+        dict(_feed("v0.1.0rc1"), prerelease=True),
+        dict(_feed("v0.1.0b1"), prerelease=True),
+        dict(_feed("v0.0.9"), prerelease=False),
+    ]
+
+
+def test_a_beta_finds_the_next_prerelease_in_the_collection():
+    """REGRESSION. `/releases/latest` excludes prereleases, so a shipped
+    `0.1.0b1` could not see `0.1.0b2` or `0.1.0rc1` through it, and a
+    repository holding only betas answered with nothing at all."""
+    release = update.release_from_feed(_collection(), installed="0.1.0b1")
+    assert release is not None and release.version == "0.1.0rc1"
+
+
+def test_the_greatest_version_wins_not_the_one_listed_first():
+    """The feed is ordered by creation date, so a patched `0.1.0b2` published
+    after `0.1.0rc1` sits above it in the list without being above it."""
+    release = update.release_from_feed(_collection(), installed="0.1.0a1")
+    assert release is not None and release.version == "0.1.0rc1"
+
+
+def test_a_draft_release_is_not_offered():
+    """Drafts are visible to anyone who can write to the repository, and their
+    assets are not published."""
+    feed = [dict(_feed("v0.3.0"), draft=True)]
+    assert update.release_from_feed(feed, installed="0.1.0") is None
+
+
+def test_a_stable_install_is_not_offered_a_prerelease():
+    """A build that is itself a prerelease is testing them. One that is not did
+    not volunteer for the next beta."""
+    feed = [dict(_feed("v0.2.0b1"), prerelease=True),
+            dict(_feed("v0.1.0"), prerelease=False)]
+    assert update.release_from_feed(feed, installed="0.1.0") is None
+
+    feed.append(dict(_feed("v0.2.0"), prerelease=False))
+    release = update.release_from_feed(feed, installed="0.1.0")
+    assert release is not None and release.version == "0.2.0"
+
+
+def test_a_prerelease_install_still_takes_the_stable_release():
+    feed = [dict(_feed("v0.1.0b2"), prerelease=True),
+            dict(_feed("v0.1.0"), prerelease=False)]
+    release = update.release_from_feed(feed, installed="0.1.0b1")
+    assert release is not None and release.version == "0.1.0"
+
+
+def test_a_collection_with_nothing_newer_is_not_an_update():
+    assert update.release_from_feed(_collection(), installed="0.2.0") is None
+
+
+def test_an_unusable_entry_does_not_hide_the_rest_of_the_collection():
+    """One release with a renamed asset or an unreadable tag is skipped, not a
+    reason to decline every other release in the feed."""
+    feed = [
+        {"tag_name": "latest", "assets": []},
+        dict(_feed("v0.2.0"), assets=[{"name": "Offloader-Setup-0.1.0.exe",
+                                       "browser_download_url": "https://x/y"}]),
+        dict(_feed("v0.1.5")),
+    ]
+    release = update.release_from_feed(feed, installed="0.1.0")
+    assert release is not None and release.version == "0.1.5"
+
+
+def test_the_feed_url_is_the_collection_not_the_latest_endpoint():
+    """`/releases/latest` is documented as excluding prereleases, which is the
+    only kind of release this project has so far."""
+    assert not update.FEED_URL.endswith("/releases/latest")
+    assert "/releases" in update.FEED_URL
+
+
 def test_check_never_raises():
     """It runs on a timer inside a desktop app. An exception here would take
     the app down over a failed DNS lookup."""
