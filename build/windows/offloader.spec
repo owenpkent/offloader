@@ -136,6 +136,29 @@ maintenance_exe = EXE(
     version=version_resource(VERSION, "offloader-maintenance.exe", "Offloader maintenance"),
 )
 
+# The portable desktop app is one self-extracting file outside the bundle. It
+# takes no installation lock; see portable_entry.py.
+portable_analysis = Analysis(
+    [str(REPO / "build/windows/portable_entry.py")],
+    **{**COMMON, "pathex": [str(SRC), str(REPO / "build/windows")]},
+)
+PORTABLE_NAME = f"Offloader-{VERSION}-portable"
+portable_exe = EXE(
+    PYZ(portable_analysis.pure),
+    portable_analysis.scripts,
+    portable_analysis.binaries,
+    portable_analysis.datas,
+    name=PORTABLE_NAME,
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=False,
+    console=False,
+    version=version_resource(
+        VERSION, f"{PORTABLE_NAME}.exe", "Offloader portable desktop application",
+    ),
+)
+
 COLLECT(
     gui_exe,
     cli_exe,

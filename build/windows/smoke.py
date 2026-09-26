@@ -65,11 +65,14 @@ def file_version(path: Path) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("bundle", nargs="?", type=Path, default=DEFAULT_BUNDLE)
+    parser.add_argument("--portable", type=Path, help="single-file desktop executable to check")
     args = parser.parse_args()
     cli = args.bundle.resolve() / "offloader-cli.exe"
     gui = args.bundle.resolve() / "Offloader.exe"
     if not cli.is_file() or not gui.is_file():
         parser.error(f"bundle executables not found under {args.bundle}")
+    if args.portable is not None and not args.portable.is_file():
+        parser.error(f"portable executable not found: {args.portable}")
 
     with tempfile.TemporaryDirectory(prefix="offloader-smoke-") as temporary:
         root = Path(temporary)
@@ -101,6 +104,28 @@ def main() -> int:
             if gui_log.exists():
                 print(gui_log.read_text(encoding="utf-8"))
             raise
+
+        if args.portable is not None:
+            # Run a copy from a folder of its own, as a user would from a
+            # download or USB stick. It must start without installation files
+            # and must not leave anything beside itself.
+            portable_dir = root / "Portable Offloader"
+            portable_dir.mkdir()
+            portable = portable_dir / args.portable.name
+            shutil.copyfile(args.portable, portable)
+            if file_version(portable) != expected_version:
+                raise RuntimeError(f"wrong FileVersion metadata on {portable.name}")
+            portable_env = gui_env.copy()
+            portable_env["PATH"] = str(system_root / "System32")
+            try:
+                run([str(portable)], portable_env, root)
+            except RuntimeError:
+                if gui_log.exists():
+                    print(gui_log.read_text(encoding="utf-8"))
+                raise
+            left_behind = sorted(p.name for p in portable_dir.iterdir() if p != portable)
+            if left_behind:
+                raise RuntimeError(f"portable executable wrote beside itself: {left_behind}")
 
         source = root / "source"
         source.mkdir()
