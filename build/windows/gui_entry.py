@@ -34,16 +34,19 @@ def _main() -> int:
     return gui_main(sys.argv)
 
 
-def main() -> int:
+def main(*, lock: bool = True) -> int:
+    if not lock:
+        return _main()
+
     from offloader.installation_lock import frozen_installation_lock
 
     with frozen_installation_lock():
         return _main()
 
 
-if __name__ == "__main__":
+def run(*, lock: bool = True) -> None:
     try:
-        raise SystemExit(main())
+        raise SystemExit(main(lock=lock))
     except Exception:
         if os.environ.get("OFFLOADER_GUI_SMOKE") != "1":
             raise
@@ -53,3 +56,7 @@ if __name__ == "__main__":
             traceback.format_exc(), encoding="utf-8",
         )
         raise SystemExit(1) from None
+
+
+if __name__ == "__main__":
+    run()

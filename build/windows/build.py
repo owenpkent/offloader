@@ -26,12 +26,16 @@ def run(command: list[str]) -> None:
     subprocess.run(command, cwd=REPO, check=True)
 
 
-def check_versions(bundle: Path, version: str) -> None:
+def portable_path(version: str) -> Path:
+    return DIST / f"Offloader-{version}-portable.exe"
+
+
+def check_versions(bundle: Path, version: str, portable: Path) -> None:
     from smoke import file_version
 
-    for name in sorted(OWN_EXECUTABLES):
-        if file_version(bundle / name) != version:
-            raise RuntimeError(f"Wrong embedded version on {name}")
+    for path in [*(bundle / name for name in sorted(OWN_EXECUTABLES)), portable]:
+        if file_version(path) != version:
+            raise RuntimeError(f"Wrong embedded version on {path.name}")
 
 
 def check_signatures(bundle: Path, *, signing: bool, version: str) -> list[dict]:
@@ -57,7 +61,7 @@ def check_signatures(bundle: Path, *, signing: bool, version: str) -> list[dict]
     return records
 
 
-def save_outputs(bundle: Path, setup: Path | None, identity: dict,
+def save_outputs(bundle: Path, setup: Path | None, portable: Path, identity: dict,
                  signatures: list[dict], signed: bool) -> None:
     from artifacts import bundle_inventory
 
@@ -77,7 +81,7 @@ def save_outputs(bundle: Path, setup: Path | None, identity: dict,
         for path in sorted(bundle.rglob("*")):
             if path.is_file():
                 output.write(path, f"Offloader/{path.relative_to(bundle).as_posix()}")
-    outputs = [archive, inventory]
+    outputs = [archive, portable, inventory]
     if setup is not None:
         outputs.append(setup)
     lines = []
@@ -90,7 +94,7 @@ def save_outputs(bundle: Path, setup: Path | None, identity: dict,
     (DIST / "SHA256SUMS.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def validate_outputs(bundle: Path, setup: Path | None, identity: dict) -> None:
+def validate_outputs(bundle: Path, setup: Path | None, portable: Path, identity: dict) -> None:
     """Require checksummed release outputs from the same completed build."""
     from artifacts import bundle_inventory
 
@@ -101,7 +105,7 @@ def validate_outputs(bundle: Path, setup: Path | None, identity: dict) -> None:
         raise RuntimeError("Output inventory is unsigned or belongs to different sources")
     if record.get("files") != bundle_inventory(bundle):
         raise RuntimeError("Output inventory no longer matches the bundle")
-    expected = {inventory.name, f"Offloader-{version}-windows-x64.zip"}
+    expected = {inventory.name, f"Offloader-{version}-windows-x64.zip", portable.name}
     if setup is not None:
         expected.add(setup.name)
     checksums = {}
@@ -146,13 +150,15 @@ def main(argv: list[str] | None = None) -> int:
         identity = artifacts.source_identity(REPO)
         version = identity["version"]
         setup = None if args.no_installer else DIST / f"Offloader-Setup-{version}.exe"
+        portable = portable_path(version)
         if args.verify_only:
             if incomplete.exists():
                 raise RuntimeError("The last build did not finish successfully")
-            artifacts.validate_build_record(bundle, identity)
-            validate_outputs(bundle, setup, identity)
-            check_versions(bundle, version)
+            artifacts.validate_build_record(bundle, identity, portable)
+            validate_outputs(bundle, setup, portable, identity)
+            check_versions(bundle, version, portable)
             check_signatures(bundle, signing=False, version=version)
+            sign.verify_file(portable, expected_version=version)
             if setup is not None:
                 sign.verify_file(setup, expected_version=version)
             print("Artifact signatures, source identity, file hashes, and versions verified.")
@@ -170,7 +176,7 @@ def main(argv: list[str] | None = None) -> int:
         if setup is not None:
             installer.find_makensis()
         if args.skip_build:
-            artifacts.validate_build_record(bundle, identity)
+            artifacts.validate_build_record(bundle, identity, portable)
         DIST.mkdir(parents=True, exist_ok=True)
         incomplete.write_text("Build has not completed verification.\n", encoding="utf-8")
         if not args.skip_build:
@@ -181,14 +187,20 @@ def main(argv: list[str] | None = None) -> int:
             run([*command, str(SPEC)])
             (bundle / ".offloader-install.lock").touch()
             shutil.copyfile(REPO / "LICENSE", bundle / "LICENSE")
-            artifacts.write_build_record(bundle, identity)
-        check_versions(bundle, version)
+            artifacts.write_build_record(bundle, identity, portable)
+        check_versions(bundle, version, portable)
         signatures = []
         if not args.no_sign:
             signatures = check_signatures(bundle, signing=True, version=version)
+            # Only the outer executable is signed here. The native modules it
+            # unpacks at launch keep the signatures they were frozen with.
+            if sign.inspect_file(portable)["signature_status"] == "NotSigned":
+                sign.sign_file(portable)
+            signatures.append({**sign.verify_file(portable, expected_version=version),
+                               "path": portable.name})
         # The record describes the actual bytes that enter the installer,
         # including any new Authenticode signatures.
-        artifacts.write_build_record(bundle, identity)
+        artifacts.write_build_record(bundle, identity, portable)
         if setup is not None:
             uninstaller_record = DIST / ".offloader-uninstaller-signature.json"
             if not args.no_sign:
@@ -206,11 +218,11 @@ def main(argv: list[str] | None = None) -> int:
                 sign.sign_file(setup)
                 signatures.append({**sign.verify_file(setup, expected_version=version),
                                    "path": setup.name})
-        run([sys.executable, str(HERE / "smoke.py"), str(bundle)])
+        run([sys.executable, str(HERE / "smoke.py"), str(bundle), "--portable", str(portable)])
         if artifacts.source_identity(REPO) != identity:
             raise RuntimeError("Sources changed while building; rebuild the candidate")
-        artifacts.validate_build_record(bundle, identity)
-        save_outputs(bundle, setup, identity, signatures, signed=not args.no_sign)
+        artifacts.validate_build_record(bundle, identity, portable)
+        save_outputs(bundle, setup, portable, identity, signatures, signed=not args.no_sign)
         incomplete.unlink()
         print(f"{'Unsigned development' if args.no_sign else 'Signed'} artifacts: {DIST}")
         return 0

@@ -10,6 +10,12 @@ project uses [semantic versioning][semver].
 
 ### Added
 
+- **A single-file portable desktop app, `Offloader-{version}-portable.exe`.**
+  It runs from any folder without installing and leaves nothing beside itself.
+  It takes no installation lock because no installer manages it. The build
+  signs and smoke-tests it, records its digest in the build record so
+  `--skip-build` cannot reuse a swapped file, and lists it in `SHA256SUMS.txt`.
+  It has no CLI or in-place update; the ZIP and installer still provide those.
 - **`offloader update` finds, verifies and applies a newer release.** GitHub
   Releases is the feed, so there is no manifest server and no second place a
   version is written down. Before anything runs: HTTPS with a host allowlist

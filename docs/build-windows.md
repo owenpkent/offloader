@@ -1,10 +1,23 @@
 # Windows builds
 
-The Windows builder produces a directory bundle, a portable ZIP, and an NSIS
+The Windows builder produces a directory bundle, a portable ZIP, a single-file
+portable desktop app named `Offloader-{version}-portable.exe`, and an NSIS
 installer named `Offloader-Setup-{version}.exe`. `Offloader.exe` (desktop) and
 `offloader-cli.exe` (console) need the adjacent `_internal` directory and
 `.offloader-install.lock`. Copy the entire bundle. The standalone
 `offloader-maintenance.exe` manages installation and removal.
+
+## Portable executable
+
+`Offloader-{version}-portable.exe` is the desktop app in one file that runs
+from any folder without installation. Each launch unpacks it to a temporary
+directory, so it starts more slowly than the installed app. It writes nothing
+beside itself; configuration, presets, and history use the same per-user
+directory as the installed app. It has no CLI and no in-place updater: use the
+ZIP for the CLI, and download a newer file to update. It takes no installation
+lock, so the installer does not know it is running, which does not matter
+because the installer never changes it. Signing covers the outer executable;
+the native modules it unpacks keep the signatures they were built with.
 
 Signing defaults on. Use `--no-sign` for development and hosted CI. Unsigned
 artifacts are not release downloads. The signing and installer code is
@@ -45,13 +58,15 @@ bundle, so do not build over executables currently in use.
 | --- | --- |
 | Default | Require clean sources, sign the bundle, assemble/sign the installer, verify, smoke-test, and write inventories/checksums |
 | `--no-sign` | Explicit unsigned development output; never accesses the signing key |
-| `--no-installer` | Build only the portable bundle; signing still defaults on |
+| `--no-installer` | Build only the portable bundle, ZIP, and single-file executable; signing still defaults on |
 | `--skip-build` | Reuse only a bundle with matching source commit, source digest, version, file set, and hashes |
 | `--verify-only` | Check signed artifacts, source identity, versions, and final checksums without rebuilding or accessing the key |
 
-The builder writes `.offloader-build.json` inside the bundle, an external
+The builder writes `.offloader-build.json` inside the bundle, also recording
+the portable executable's digest, an external
 `Offloader-{version}-inventory.json` with dependency versions and signature
-coverage, and `SHA256SUMS.txt` for the final installer, ZIP, and inventory.
+coverage, and `SHA256SUMS.txt` for the final installer, ZIP, portable
+executable, and inventory.
 A failed build leaves `.offloader-build-incomplete`; it must not be promoted.
 Source changes during a build invalidate the candidate. These inventories are
 provenance and tamper checks, not a complete third-party license inventory or SBOM.
@@ -170,6 +185,9 @@ PATH. It then copies disposable data to two destinations, requests all five
 report formats, re-verifies the copies, and checks that a flipped byte fails
 verification. Re-verification uses `--allow-cache` so this check exercises
 packaging and checksum behavior without claiming physical-drive qualification.
+Given `--portable PATH`, as the builder does, it also starts a copy of the
+single-file executable from an empty folder with a minimal PATH and fails if
+the executable leaves any file beside itself.
 
 The smoke runner also uses the frozen standalone maintenance helper to install,
 reinstall, and uninstall in a temporary directory. It checks the installed CLI,
