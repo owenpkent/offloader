@@ -320,17 +320,30 @@ def _copy_fanout(source: Path, targets: Sequence[Path], algorithm: str,
         try:
             reader = longpath.open_binary(source, "rb")
 
+            stale = False
+
             def read_one() -> bytes:
+                # Recovery happens here rather than in `before_retry` because
+                # `retry.call` invokes that outside the clause that catches
+                # OSError: a reopen that failed would escape the loop with
+                # attempts still unspent, and get wrapped in `Exhausted`, which
+                # closes the whole-file retry too. Inside the operation, a
+                # reader that is slow to come back costs one attempt of the
+                # chunk's own budget, which is what the budget is for.
+                nonlocal reader, stale
+                if stale:
+                    # Reopen rather than seek alone: a reader that dropped off
+                    # the bus needs its handle re-established, which restarting
+                    # the whole file used to get for free.
+                    _close_quietly(reader)
+                    reader = longpath.open_binary(source, "rb")
+                    reader.seek(offset)
+                    stale = False
                 return reader.read(CHUNK_SIZE)
 
             def recover() -> None:
-                # Reopen rather than seek alone: a reader that dropped off the
-                # bus needs its handle re-established, which restarting the
-                # whole file used to get for free.
-                nonlocal reader
-                _close_quietly(reader)
-                reader = longpath.open_binary(source, "rb")
-                reader.seek(offset)
+                nonlocal stale
+                stale = True
 
             while not stop.is_set():
                 if control is not None:
