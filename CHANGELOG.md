@@ -17,6 +17,9 @@ project uses [semantic versioning][semver].
   no other account, and removed again by `--uninstall`. Windows 11 lists
   registry verbs under "Show more options", which the command says rather than
   leaving the operator hunting a menu that looks like it failed to install.
+  The command passes `"%V\."`, not `"%V"`: a drive root expands to `E:\`, and
+  Windows argument parsing reads `\"` as an escaped quote, so the app would have
+  received `E:"` and opened without selecting the card.
 - **An icon, drawn rather than shipped.** The filmstrip from the PDF header,
   rendered to a multi-size `.ico` (16 to 256, simplifying as it shrinks) with
   `zlib` and `struct` — no Pillow, no new dependency and no binary artwork in

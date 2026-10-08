@@ -28,6 +28,18 @@ def _app_icon():
     return icon
 
 
+def clean_path_arg(arg: str) -> str:
+    """Undo the `\\.` the Explorer entry appends to the clicked path.
+
+    The entry passes `"%V\\."` so a drive root's trailing backslash cannot
+    escape the closing quote. `E:\\.` already means `E:\\` to Windows, but
+    the suffix is dropped explicitly so the result does not depend on that.
+    """
+    if arg.endswith(("\\.", "/.")) and len(arg) > 2:
+        return arg[:-1]
+    return arg
+
+
 def main(argv: list[str] | None = None) -> int:
     try:
         from PySide6.QtWidgets import QApplication
@@ -47,7 +59,7 @@ def main(argv: list[str] | None = None) -> int:
     # Explorer context-menu entry passes. Anything Qt wants is left for it.
     source: Path | None = None
     if len(args) > 1 and not args[-1].startswith("-"):
-        candidate = Path(args[-1])
+        candidate = Path(clean_path_arg(args[-1]))
         if candidate.exists():
             source = candidate
             args = args[:-1]
