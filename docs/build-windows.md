@@ -188,11 +188,20 @@ requires the event as well as the ref. Without that, a rehearsal took the write
 token and edited the release — including passing `--draft` to one that had
 already been published.
 
+The event test does not cover a rerun of the original tag push, which is still
+a push of that tag. So the drafting step reads the release's `isDraft` before
+editing it. A draft is refreshed as above; a release that has since been
+published is left untouched, and the step stops with an error saying so,
+instead of passing `--draft` to the live release and replacing its notes with
+candidate instructions.
+
 `tests/test_release_workflow.py` asserts the negative property this depends on:
 that no job in the workflow attaches what it built to a release. It also
 evaluates the drafting job's condition against all three cases — tag push,
 branch dispatch, tag dispatch — with only the first permitted to mutate
 anything.
+It also runs the drafting step's script under bash with `gh` stubbed, and
+asserts that a rerun against a published release issues no `gh release edit`.
 
 ## Check the artifact
 

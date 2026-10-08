@@ -138,9 +138,27 @@ jobs:
           #
           # Refreshed rather than replaced: re-running a tag must not discard
           # a signed asset already uploaded against it.
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release edit "$TAG" --draft --prerelease="$PRERELEASE" \
-              --title "Offloader $VERSION" --notes-file release-notes.md
+          #
+          # Only a draft is refreshed. The event guard stops a dispatch, but a
+          # rerun of the original tag push is still a push of that tag, and
+          # once the draft has been published an unconditional edit would pass
+          # --draft to the live release and swap its notes for candidate
+          # instructions. A published release is left exactly as it is.
+          if is_draft=$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null); then
+            case "$is_draft" in
+              true)
+                gh release edit "$TAG" --draft --prerelease="$PRERELEASE" \
+                  --title "Offloader $VERSION" --notes-file release-notes.md
+                ;;
+              false)
+                echo "::error::$TAG is already published. Refusing to turn it back into a draft or replace its notes; it has been left untouched."
+                exit 1
+                ;;
+              *)
+                echo "::error::Could not tell whether the release for $TAG is a draft (isDraft='$is_draft'); leaving it untouched."
+                exit 1
+                ;;
+            esac
           else
             gh release create "$TAG" --draft --prerelease="$PRERELEASE" \
               --title "Offloader $VERSION" --notes-file release-notes.md \

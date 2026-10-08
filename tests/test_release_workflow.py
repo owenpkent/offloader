@@ -11,6 +11,10 @@ the build itself would notice.
 from __future__ import annotations
 
 import importlib.util
+import os
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -175,6 +179,97 @@ def test_the_draft_classification_comes_from_the_gated_version(workflow):
     # draft rather than inheriting whatever the first run chose.
     assert step["run"].count('--prerelease="$PRERELEASE"') == 2
     assert step["env"]["PRERELEASE"] == "${{ needs.candidate.outputs.prerelease }}"
+
+
+# ----------------------------------------------- the drafting step, executed
+#
+# The checks above read the YAML. These run the drafting step's own script
+# under bash with `gh` and `python` replaced by stubs that record how they were
+# called, because the defect below was in the order of shell commands, not in
+# any text a pattern could match.
+
+_GH_STUB = """#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "$GH_LOG"
+if [ "$1 $2" = "release view" ]; then
+  case "$STUB_RELEASE" in
+    none) echo "release not found" >&2; exit 1 ;;
+    draft) echo true ;;
+    published) echo false ;;
+  esac
+fi
+exit 0
+"""
+
+_PYTHON_STUB = """#!/usr/bin/env bash
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--out" ]; then echo notes > "$2"; fi
+  shift
+done
+"""
+
+
+def _drafting_script(workflow: dict) -> str:
+    return next(step["run"] for step in workflow["jobs"]["draft"]["steps"]
+                if "gh release create" in step.get("run", ""))
+
+
+def _run_drafting_step(script: str, tmp_path: Path, release: str):
+    stubs = tmp_path / "bin"
+    stubs.mkdir()
+    for name, body in (("gh", _GH_STUB), ("python", _PYTHON_STUB)):
+        stub = stubs / name
+        stub.write_text(body, encoding="utf-8")
+        stub.chmod(0o755)
+    log = tmp_path / "gh.log"
+    log.touch()
+    env = {**os.environ,
+           "PATH": f"{stubs}{os.pathsep}{os.environ.get('PATH', '')}",
+           "GH_LOG": str(log), "STUB_RELEASE": release,
+           "TAG": "v0.1.0b1", "VERSION": "0.1.0b1", "PRERELEASE": "true",
+           "GITHUB_SHA": "abc1234"}
+    result = subprocess.run(["bash", "-c", script], cwd=tmp_path, env=env,
+                            capture_output=True, text=True, timeout=30)
+    return result, log.read_text(encoding="utf-8").splitlines()
+
+
+_needs_bash = pytest.mark.skipif(
+    sys.platform == "win32" or shutil.which("bash") is None,
+    reason="runs the step under bash with POSIX executable stubs")
+
+
+@_needs_bash
+def test_a_rerun_leaves_a_published_release_untouched(workflow, tmp_path):
+    """REGRESSION. The event guard stops a dispatch, but a rerun of the
+    original tag push is still a push of that tag. Once its draft had been
+    published, the existence check succeeded and the step ran `gh release
+    edit --draft`, withdrawing the live release and replacing its notes with
+    candidate instructions."""
+    result, calls = _run_drafting_step(_drafting_script(workflow), tmp_path,
+                                       "published")
+    assert result.returncode != 0
+    assert "already published" in result.stdout
+    assert not [c for c in calls if c.startswith(("release edit",
+                                                   "release create"))], calls
+
+
+@_needs_bash
+def test_a_rerun_refreshes_an_existing_draft(workflow, tmp_path):
+    result, calls = _run_drafting_step(_drafting_script(workflow), tmp_path,
+                                       "draft")
+    assert result.returncode == 0, result.stderr
+    edits = [c for c in calls if c.startswith("release edit")]
+    assert len(edits) == 1 and "--draft" in edits[0]
+    assert not [c for c in calls if c.startswith("release create")]
+
+
+@_needs_bash
+def test_a_first_run_creates_the_draft(workflow, tmp_path):
+    result, calls = _run_drafting_step(_drafting_script(workflow), tmp_path,
+                                       "none")
+    assert result.returncode == 0, result.stderr
+    creates = [c for c in calls if c.startswith("release create")]
+    assert len(creates) == 1 and "--draft" in creates[0]
+    assert not [c for c in calls if c.startswith("release edit")]
 
 
 # ------------------------------------------------------------------ the notes

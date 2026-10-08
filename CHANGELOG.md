@@ -35,7 +35,11 @@ project uses [semantic versioning][semver].
   checks out whatever commit it was started from. Only a *pushed* tag may touch
   a release — a dispatch can be started against an existing tag, and the ref
   test alone let a rehearsal take the write token and edit the release,
-  including passing `--draft` to one already published.
+  including passing `--draft` to one already published. A rerun of the
+  original tag push is still a push, so the drafting step also asks whether
+  the release is a draft before editing it: a draft is refreshed, and a
+  release that has been published is left untouched and the step fails with
+  a diagnostic, rather than being withdrawn and given candidate notes.
 
 - **`offloader update` finds, verifies and applies a newer release.** GitHub
   Releases is the feed, so there is no manifest server and no second place a
