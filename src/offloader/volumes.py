@@ -280,7 +280,9 @@ def _linux_volumes() -> list[Volume]:
         major_minor, mount_point = left[2], _unescape_mountinfo(left[4])
         fstype = right[0]
 
-        if fstype in _LINUX_PSEUDO_FS:
+        # The system root is always a candidate, even on overlayfs (containers,
+        # live systems): it is filtered only by the usage check below.
+        if fstype in _LINUX_PSEUDO_FS and mount_point != "/":
             continue
         removable_path = _under(mount_point, _LINUX_MEDIA_PREFIXES)
         if mount_point != "/" and not removable_path and _under(

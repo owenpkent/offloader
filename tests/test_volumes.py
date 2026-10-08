@@ -131,7 +131,7 @@ def linux_mounts(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(volumes, "_usage", lambda root: (1000, 400))
     monkeypatch.setattr(
         volumes, "_linux_device_is_removable", lambda major_minor: major_minor == "8:65")
-    return {str(v.root): v for v in volumes._linux_volumes()}
+    return {v.root.as_posix(): v for v in volumes._linux_volumes()}
 
 
 def test_linux_finds_cards_below_the_users_media_directory(linux_mounts):
@@ -163,3 +163,28 @@ def test_linux_classifies_drive_types(linux_mounts):
 
 def test_unescape_mountinfo():
     assert volumes._unescape_mountinfo(r"/a\040b\134c") == "/a b\\c"
+
+
+def _mount_table(tmp_path, monkeypatch, text):
+    table = tmp_path / "mountinfo"
+    table.write_text(text)
+    monkeypatch.setattr(volumes, "_MOUNTINFO", str(table))
+    monkeypatch.setattr(volumes, "_usage", lambda root: (1000, 400))
+    monkeypatch.setattr(volumes, "_linux_device_is_removable", lambda major_minor: False)
+    return {v.root.as_posix(): v for v in volumes._linux_volumes()}
+
+
+def test_linux_keeps_an_overlay_root_as_the_system_volume(tmp_path, monkeypatch):
+    found = _mount_table(tmp_path, monkeypatch,
+                         "1 0 0:50 / / rw - overlay overlay rw,lowerdir=/a\n")
+    assert set(found) == {"/"}
+    assert (found["/"].filesystem, found["/"].drive_type) == ("overlay", "fixed")
+
+
+def test_linux_still_skips_overlay_mounts_elsewhere(tmp_path, monkeypatch):
+    found = _mount_table(
+        tmp_path, monkeypatch,
+        "1 0 0:50 / / rw - overlay overlay rw\n"
+        "2 1 0:51 / /var/lib/docker/overlay2/x/merged rw - overlay overlay rw\n"
+        "3 1 0:52 / /mnt/ctr rw - overlay overlay rw\n")
+    assert set(found) == {"/"}
