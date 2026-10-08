@@ -503,14 +503,17 @@ def test_a_bad_sector_is_recovered_without_re_reading_the_file(
     assert log.count(0) == 1, f"the file was restarted: {log}"
 
 
+@pytest.mark.parametrize("reopen_winerror", [1117, 59, 64])
 def test_a_reopen_that_fails_spends_an_attempt_not_the_offload(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, reopen_winerror: int
 ):
     """REGRESSION. Recovery used to run in `before_retry`, which `retry.call`
     invokes outside the clause that catches OSError. A reopen that failed
     therefore escaped with attempts still unspent, and the handler wrapped it in
     `Exhausted`, closing the whole-file retry as well. A reader that takes a
-    moment to come back costs one attempt of the chunk's budget."""
+    moment to come back costs one attempt of the chunk's budget. The 59 and 64
+    cases are a network share whose session is still down when the reopen is
+    tried: classified transient, so retried inside the chunk's budget."""
     monkeypatch.setattr(engine, "CHUNK_SIZE", 4096)
     card, payload = _chunked_card(tmp_path, 3)
     log: list[int] = []
@@ -529,7 +532,7 @@ def test_a_reopen_that_fails_spends_an_attempt_not_the_offload(
             # this is. The handle does not come back on the first try.
             if failures["n"] and not reopens["n"]:
                 reopens["n"] += 1
-                raise _os_error(errno.EIO, winerror=1117)
+                raise _os_error(errno.EIO, winerror=reopen_winerror)
             return _BadSector(real_open(path, mode, *args, **kwargs),
                               log, failures, 4096, 1)
         return real_open(path, mode, *args, **kwargs)
