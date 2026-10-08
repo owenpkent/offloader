@@ -45,7 +45,16 @@ from ._version import __version__
 #: Where releases are published. Pinned deliberately: this URL is compiled into
 #: every shipped build, so moving it orphans every install that already exists.
 #: Treat a rename or transfer of the repository as a breaking change.
-FEED_URL = "https://api.github.com/repos/owenpkent/offloader/releases/latest"
+#:
+#: The collection rather than `/releases/latest`. GitHub documents that endpoint
+#: as returning the newest published *full* release and excluding prereleases,
+#: so an installed `0.1.0b1` could never see `0.1.0b2` through it, and a
+#: repository holding only betas — which is what the candidate workflow's
+#: `--prerelease` produces — would answer with nothing at all. Ordering
+#: prereleases is the whole point of the grammar below, so the feed has to be
+#: one that carries them.
+FEED_URL = ("https://api.github.com/repos/owenpkent/offloader/releases"
+            "?per_page=30")
 
 #: The published installer's name. Part of the release contract — the asset has
 #: to be identifiable without trusting anything else in the release.
@@ -144,13 +153,54 @@ def _fetch_json(url: str, *, timeout: int = 30) -> Any:
 
 
 def release_from_feed(payload: Any, *, installed: str = __version__) -> Release | None:
-    """The newer release the feed describes, or None.
+    """The best newer release the feed describes, or None.
+
+    Takes the releases collection, or a single release object for a caller that
+    already has one. The greatest eligible version wins rather than whichever
+    the feed happens to list first: GitHub orders by creation date, and a
+    patched `0.1.0b2` published after `0.1.0rc1` would otherwise be offered as
+    the upgrade from it.
+    """
+    if isinstance(payload, list):
+        candidates = [_release_entry(item, installed=installed) for item in payload]
+        ranked = [(parse_version(found.version), found)
+                  for found in candidates if found is not None]
+        if not ranked:
+            return None
+        return max(ranked, key=lambda pair: pair[0])[1]
+    return _release_entry(payload, installed=installed)
+
+
+def _eligible(version: str, installed: str) -> bool:
+    """Whether an installation on `installed` should be offered `version`.
+
+    Newer, and not a step off the channel this install is already on. A build
+    that is itself a prerelease is testing the prereleases, so it takes the
+    next one; a stable install is not volunteered for a beta it did not ask
+    for. Neither side being readable means no, as everywhere else here.
+    """
+    if not is_newer(version, installed):
+        return False
+    running, offered = parse_version(installed), parse_version(version)
+    if running is None or offered is None:
+        return False
+    stable = _STAGE_ORDER[None]
+    return running[3] != stable or offered[3] == stable
+
+
+def _release_entry(payload: Any, *, installed: str) -> Release | None:
+    """One release from the feed, if it is one this install should be offered.
 
     Reads only what it needs, and requires the asset to be named for the
     version the tag claims: an extra or renamed file in a release cannot then
     be mistaken for the installer.
     """
     if not isinstance(payload, dict):
+        return None
+    if payload.get("draft"):
+        # A draft is visible to anyone who can write to the repository and its
+        # assets are not published. Offering one would hand an installer to the
+        # maintainer's own machine before the release exists for anybody else.
         return None
     tag = payload.get("tag_name")
     if not isinstance(tag, str):
@@ -159,7 +209,7 @@ def release_from_feed(payload: Any, *, installed: str = __version__) -> Release 
     if tag_match is None:
         return None
     version = tag_match.group(1)
-    if parse_version(version) is None or not is_newer(version, installed):
+    if parse_version(version) is None or not _eligible(version, installed):
         return None
 
     expected = ASSET_TEMPLATE.format(version=version)
