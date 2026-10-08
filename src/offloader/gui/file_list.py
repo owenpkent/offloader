@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..models import FileStatus, Job
+from ..models import FileStatus, Job, VerificationMode
 from ..util import format_size
 from . import theme
 from .widgets import label, row
@@ -35,7 +35,8 @@ COL_SOURCE = 3
 COL_DESTINATION = 4
 
 #: One glyph per verdict. Doubled for a verified copy, because that is two
-#: separate facts — it was written, and it was read back and matched.
+#: separate facts — it was written, and it was read back and matched. Only a
+#: FULL job earns it: see `mark_for`.
 MARKS = {
     FileStatus.VERIFIED: "✓✓",
     FileStatus.COPIED: "✓",
@@ -43,6 +44,22 @@ MARKS = {
     FileStatus.SKIPPED: "–",
     FileStatus.CANCELLED: "⊘",
 }
+
+
+def read_back(job: Job | None) -> bool:
+    """Whether this job's VERIFIED status means the destination was re-read.
+
+    `SOURCE_ONLY` also produces VERIFIED, but compares the source stream with
+    the bytes handed to the writer; the destination is never read back.
+    """
+    return job is not None and job.verification is VerificationMode.FULL
+
+
+def mark_for(status: FileStatus, job: Job | None) -> str:
+    """The glyph for a file: the double check only for a read-back job."""
+    if status is FileStatus.VERIFIED and not read_back(job):
+        return MARKS[FileStatus.COPIED]
+    return MARKS.get(status, "?")
 
 
 def abbreviate(checksum: str | None) -> str:
@@ -113,7 +130,7 @@ class FileModel(QAbstractTableModel):
 
         if role == Qt.DisplayRole:
             return (
-                MARKS.get(entry.status, "?"),
+                mark_for(entry.status, self._job),
                 str(entry.relative),
                 format_size(entry.size),
                 abbreviate(entry.checksum),
@@ -128,12 +145,19 @@ class FileModel(QAbstractTableModel):
                 # the two sides agree, and every destination agrees too.
                 if not agree:
                     return QColor(theme.status_color("failed"))
-                if matched:
+                if matched and (entry.status is not FileStatus.VERIFIED
+                                or read_back(self._job)):
                     return QColor(theme.status_color("verified"))
             return None
 
         if role == Qt.ToolTipRole:
             lines = [str(entry.source)]
+            if entry.status is FileStatus.VERIFIED:
+                lines.append(
+                    "verified: written and read back from the destination"
+                    if read_back(self._job) else
+                    "verified in transit (source only): the bytes written "
+                    "matched the source, but the destination was not read back")
             if entry.checksum:
                 lines.append(f"source:      {entry.checksum}")
             for destination_entry in entry.destinations:
@@ -233,7 +257,9 @@ class FileListPanel(QWidget):
         # Counted rather than inferred from the job's verdict: "Verified: 5 of
         # 6" is the number that decides whether a card can be erased.
         if verified:
-            parts.append(f"verified {verified} of {len(job.files)}")
+            how = ("" if read_back(job)
+                   else " in transit (source only, not read back)")
+            parts.append(f"verified{how} {verified} of {len(job.files)}")
         if failed:
             parts.append(f"{failed} failed")
         return "  ·  ".join(parts)

@@ -28,6 +28,7 @@ from offloader.gui.file_list import (  # noqa: E402
     FileListPanel,
     FileModel,
     abbreviate,
+    mark_for,
 )
 from offloader.models import (  # noqa: E402
     Destination,
@@ -270,3 +271,59 @@ def test_the_waiting_message_still_updates_while_empty(qapp):
     panel.show_job(None, "Queued — the file list appears once the job finishes.")
     panel.show_job(None, "Running — the file list appears once the job finishes.")
     assert "Running" in panel._empty.text()
+
+
+# ------------------------------------------- verification mode qualifies it
+
+
+def _engine_job(tmp_path: Path, mode: VerificationMode) -> Job:
+    """A job from the real engine, so VERIFIED is whatever the engine says."""
+    from offloader import engine
+
+    card = tmp_path / "card"
+    card.mkdir()
+    (card / "A.bin").write_bytes(b"x" * 2048)
+    return engine.run(card, engine.OffloadOptions(
+        destinations=[tmp_path / "dest"], algorithm="xxh3-64",
+        verification=mode, thumbnail_count=0, extra_probe=False))
+
+
+def test_an_engine_source_only_job_is_not_shown_as_read_back(qapp, tmp_path):
+    job = _engine_job(tmp_path, VerificationMode.SOURCE_ONLY)
+    assert job.verification is VerificationMode.SOURCE_ONLY
+    assert job.files[0].status is FileStatus.VERIFIED
+
+    model = FileModel()
+    model.set_job(job)
+    assert _display(model, 0, COL_MARK) == MARKS[FileStatus.COPIED]
+    assert _display(model, 0, COL_MARK) != "✓✓"
+    assert mark_for(FileStatus.VERIFIED, job) == "✓"
+    # The destination hash is the streamed one, so it is not green proof.
+    assert _colour(model, 0, COL_DESTINATION) is None
+    tip = model.data(model.index(0, 1), Qt.ToolTipRole)
+    assert "not read back" in tip
+
+    panel = FileListPanel()
+    panel.show_job(job)
+    summary = panel._summary.text()
+    assert "source only" in summary and "not read back" in summary
+    assert "1 of 1" in summary
+
+
+def test_an_engine_full_job_is_shown_as_read_back(qapp, tmp_path):
+    job = _engine_job(tmp_path, VerificationMode.FULL)
+    assert job.files[0].status is FileStatus.VERIFIED
+
+    model = FileModel()
+    model.set_job(job)
+    assert _display(model, 0, COL_MARK) == "✓✓"
+    assert _colour(model, 0, COL_DESTINATION).name() == \
+        theme.status_color("verified")
+    assert "read back from the destination" in \
+        model.data(model.index(0, 1), Qt.ToolTipRole)
+
+    panel = FileListPanel()
+    panel.show_job(job)
+    summary = panel._summary.text()
+    assert "verified 1 of 1" in summary
+    assert "source only" not in summary

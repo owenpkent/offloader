@@ -32,7 +32,10 @@ project uses [semantic versioning][semver].
   selected job's files now sit next to the queue: size, both hashes head:tail
   (`3F2A:05D1`, because a prefix cannot distinguish a match from a near-miss),
   the full values and every destination path in the tooltip, and a doubled
-  check mark for a copy that was written *and* read back. Destinations that
+  check mark for a copy that was written *and* read back. That mark depends on
+  the job's verification mode: a source-only job, whose "verified" never reads
+  the destination, shows a single check and a summary that says so.
+  Destinations that
   disagree with one another read `mismatch` rather than showing the first and
   hiding the rest.
 - **A stall is reported instead of looking like a slow link.** A hung network

@@ -274,7 +274,10 @@ last one, rather than a throughput figure that has quietly stopped being true.
 
 Beside it, the **file list** for the selected job: every file with its size,
 the source checksum and the destination's next to each other, and a doubled
-check mark for a copy that was both written and read back. Hashes are shown
+check mark for a copy that was both written and read back (full verification).
+A source-only job gets a single check and its summary says "verified in transit
+(source only, not read back)": the bytes written matched the source, but the
+destination was never re-read. Hashes are shown
 head:tail (`3F2A:05D1`) because a prefix alone cannot tell a matching pair from
 a near-miss; the full values are in the tooltip, along with every destination
 path. Destinations that disagree with each other read `mismatch` — both copies
