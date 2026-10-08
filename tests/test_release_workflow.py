@@ -168,9 +168,11 @@ def test_the_proposed_tag_still_reaches_the_version_gate(workflow):
 
 def test_the_draft_classification_comes_from_the_gated_version(workflow):
     """REGRESSION. `--prerelease` was passed unconditionally, so a stable tag
-    published a prerelease. GitHub excludes those from `/releases/latest`,
-    which is the feed the updater reads, so every installed copy would decline
-    the release meant for them."""
+    published a prerelease. The updater is not misled by that (it reads the
+    releases collection, skips drafts, and takes the channel from the tag's
+    version), but GitHub is: a prerelease never becomes the "Latest" release,
+    so `/releases/latest` and the releases page went on pointing manual
+    downloads at the release before it."""
     assert workflow["jobs"]["candidate"]["outputs"]["prerelease"]
     step = next(step for _job, step in _steps(workflow)
                 if "gh release create" in step.get("run", ""))

@@ -48,10 +48,11 @@ def version_from_tag(tag: str) -> str:
 def is_prerelease(version: str) -> bool:
     """Whether a version names a prerelease rather than a shipping release.
 
-    The draft's classification is derived from this rather than assumed. A
-    stable release created as a prerelease stays outside GitHub's
-    `/releases/latest`, which is the feed the updater reads, so every installed
-    copy would keep declining the release that was meant for them.
+    The draft's classification is derived from this rather than assumed. The
+    updater does not read the flag (it reads the releases collection, skips
+    drafts, and takes the channel from the tag's version), but GitHub does: a
+    stable release created as a prerelease never becomes the "Latest" release,
+    so `/releases/latest` keeps pointing manual downloads at the one before.
     """
     return _STABLE_RE.match(version.strip()) is None
 

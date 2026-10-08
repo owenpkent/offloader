@@ -65,10 +65,10 @@ def test_a_tag_that_is_not_a_release_version_fails(tag: str):
     ("0.1.0rc1", True),
 ])
 def test_a_version_is_classified_for_the_draft(version: str, prerelease: bool):
-    """The draft's prerelease flag is derived from this. A stable release
-    created as a prerelease stays outside GitHub's `/releases/latest`, which is
-    the feed the updater reads, so every installed copy would go on declining
-    the release meant for them."""
+    """The draft's prerelease flag is derived from this. The updater takes its
+    channel from the tag's version instead, but GitHub goes by the flag: a
+    stable release created as a prerelease never becomes the "Latest" release,
+    so `/releases/latest` keeps pointing manual downloads at the one before."""
     assert _gate().is_prerelease(version) is prerelease
 
 

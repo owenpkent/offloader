@@ -26,9 +26,12 @@ project uses [semantic versioning][semver].
 
   Whether the draft is marked a prerelease comes from the version the gate
   validated, and is set on both the create and the refresh path, so a rerun
-  corrects an existing draft rather than inheriting the first run's choice. A
-  stable release created as a prerelease would sit outside GitHub's
-  `/releases/latest`, which is the feed the updater reads.
+  corrects an existing draft rather than inheriting the first run's choice.
+  The updater does not read the flag (it reads the releases collection, skips
+  drafts, and takes the channel from the tag's version), but GitHub does: a
+  stable release created as a prerelease never becomes the "Latest" release,
+  so `/releases/latest` and the releases page keep pointing anyone who
+  downloads by hand at the one before it.
 
   `workflow_dispatch` rehearses the checks against a tag that does not exist
   yet: the proposed tag is a version to gate, not a ref to fetch, so the run
