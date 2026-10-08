@@ -88,6 +88,12 @@ paperwork. Each fix has the reproduction that found it.
   junction, so the usual check would not have helped. It terminated only
   because Windows refuses paths past MAX_PATH, having by then returned the same
   file dozens of times. Directories are now visited at most once each.
+- **That cycle guard could hide a real directory behind a symlink to it.** It
+  recorded every directory's resolved path, including directory symlinks that
+  `os.walk` never enters. With `a -> z` listed before `z`, the guard marked `z`
+  as seen, dropped the real `z`, and the walk skipped `a` as a link, so `z`'s
+  files were never copied and the job still reported VERIFIED. Only directories
+  the walk actually enters are recorded now; junctions keep the guard.
 - **A corrupt history blocked offloading**, which is precisely what it exists
   not to do. `History()` mapped `from_dict` over the file with no guard, and
   `from_dict` did bare `int()`/`list()` conversions, so a hand-edited or

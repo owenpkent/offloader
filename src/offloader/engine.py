@@ -257,12 +257,22 @@ def scan(root: Path, excludes: Iterable[str] = DEFAULT_EXCLUDES) -> list[Path]:
     left to chance without this: today it only stops because Windows refuses
     paths past MAX_PATH, and it stops having already returned the same file
     dozens of times.
+
+    Only directories the walk will actually enter are recorded. `os.walk`
+    does not follow a directory symlink, so recording one would mark its
+    target as seen without anything having scanned it: an alias `a -> z`
+    listed before `z` would then hide `z` itself, and neither path's files
+    would be found. A junction is not a symlink to `os.walk`, which does enter
+    it, so a junction still goes through the guard.
     """
     patterns = tuple(excludes)
     found: list[Path] = []
     visited: set[str] = set()
 
     def already_seen(directory: Path) -> bool:
+        if os.path.islink(directory):
+            # Not followed by os.walk, so not a visit. See the docstring.
+            return False
         try:
             real = os.path.normcase(os.path.realpath(directory))
         except OSError:                  # pragma: no cover - unreadable entry
@@ -272,7 +282,8 @@ def scan(root: Path, excludes: Iterable[str] = DEFAULT_EXCLUDES) -> list[Path]:
         visited.add(real)
         return False
 
-    already_seen(Path(root))
+    # The root is always entered, even when it is itself a symlink.
+    visited.add(os.path.normcase(os.path.realpath(root)))
     for dirpath, dirnames, filenames in os.walk(root):
         here = Path(dirpath)
         dirnames[:] = sorted(

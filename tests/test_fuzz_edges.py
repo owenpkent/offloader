@@ -28,6 +28,7 @@ from __future__ import annotations
 import datetime as _dt
 import errno
 import json
+import os
 import struct
 import subprocess
 import sys
@@ -390,6 +391,71 @@ def test_scan_does_not_follow_a_directory_junction_into_a_cycle(tmp_path):
     assert not worker.is_alive(), "scan() did not terminate on a junction cycle"
     assert found == [1], (
         f"one real file was scanned {found[0]} times through the junction")
+
+
+class _ListedInOrder:
+    """`os.scandir` with the entries handed back in a fixed order, so a test
+    can pin the one listing order a filesystem might or might not produce."""
+
+    def __init__(self, entries: list[os.DirEntry], first: str):
+        self._entries = iter(sorted(entries, key=lambda e: (e.name != first, e.name)))
+
+    def __iter__(self):
+        return self
+
+    def __next__(self) -> os.DirEntry:
+        return next(self._entries)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        return None
+
+    def close(self) -> None:
+        return None
+
+
+def test_a_directory_symlink_listed_first_does_not_hide_its_target(tmp_path, monkeypatch):
+    """`os.walk` does not follow a directory symlink, but the cycle guard used
+    to record the symlink's *target* as visited anyway. With `a -> z` listed
+    before `z`, the guard then dropped the real `z` as already seen and the
+    walk skipped `a` as a link, so `z/clip.bin` was scanned by neither path.
+    The job came back VERIFIED with no warning and the clip was never copied.
+    """
+    source, dest = tmp_path / "card", tmp_path / "dst"
+    (source / "z").mkdir(parents=True)
+    (source / "z" / "clip.bin").write_bytes(b"z" * 64)
+    (source / "keep.txt").write_bytes(b"k" * 8)
+    try:
+        (source / "a").symlink_to(source / "z", target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"could not create a directory symlink: {exc}")
+
+    real_scandir = os.scandir
+
+    def alias_first(path=".", *args):
+        with real_scandir(path, *args) as listing:
+            return _ListedInOrder(list(listing), first="a")
+
+    monkeypatch.setattr(os, "scandir", alias_first)
+    with os.scandir(source) as listing:
+        assert [e.name for e in listing][0] == "a", "listing order was not pinned"
+
+    job = _offload(source, dest)
+
+    copied = sorted(p.relative_to(dest).as_posix() for p in dest.rglob("*")
+                    if p.is_file() and p.suffix in {".bin", ".txt"})
+    assert copied == ["keep.txt", "z/clip.bin"], f"copied only {copied}"
+    assert (dest / "z" / "clip.bin").read_bytes() == b"z" * 64
+    assert sorted(e.source.relative_to(source).as_posix() for e in job.files) == \
+        ["keep.txt", "z/clip.bin"]
+    assert [d.status for e in job.files for d in e.destinations] == \
+        [FileStatus.VERIFIED, FileStatus.VERIFIED]
+
+    report = write_csv(job, tmp_path / "JobReport.csv").read_text(encoding="utf-8")
+    assert "clip.bin" in report, "the copied clip is missing from the report"
+    assert "keep.txt" in report
 
 
 # ----------------------------------------------------------- report totality
