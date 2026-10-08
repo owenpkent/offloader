@@ -89,7 +89,12 @@ def entries(icon: str | Path, command: str | None = None) -> list[Entry]:
     run = command if command is not None else launcher()
     # %V is the clicked item. Unlike %1 it is also correct for a drive root,
     # which is the case this entry exists for.
-    invoke = f'{run} "%V"'
+    # The trailing `\.` is deliberate. Explorer expands %V to `E:\` for a drive
+    # root, and `"E:\"` is parsed by the Windows runtime as `E:"`: a backslash
+    # before a closing quote escapes it. `"E:\."` has no backslash next to the
+    # quote and names the same directory; the receiving side strips it again
+    # (`gui.app.clean_path_arg`).
+    invoke = f'{run} "%V\\."'
     return [
         Entry(DRIVE_KEY, "Offload this card…", invoke, str(icon)),
         Entry(DIRECTORY_KEY, "Offload this folder…", invoke, str(icon)),

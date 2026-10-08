@@ -192,7 +192,102 @@ def test_the_command_passes_the_clicked_path():
     """%V rather than %1: a drive root is the case the entry exists for, and
     %1 does not carry it."""
     entry = shellmenu.entries("i.ico", command='"app.exe"')[0]
-    assert entry.command == '"app.exe" "%V"'
+    assert entry.command == '"app.exe" "%V\\."'
+
+
+def _msvcrt_argv(cmdline: str) -> list[str]:
+    """Split a command line by the documented Windows C runtime rules.
+
+    2n backslashes + quote -> n backslashes, quote toggles quoting;
+    2n+1 backslashes + quote -> n backslashes and a literal quote;
+    backslashes not followed by a quote are literal; whitespace outside quotes
+    separates arguments. (The program name, argv[0], follows simpler rules, but
+    these templates quote it with no backslash before the closing quote.)
+    """
+    argv: list[str] = []
+    cur: list[str] = []
+    started = False
+    in_quotes = False
+    i, n = 0, len(cmdline)
+    while i < n:
+        c = cmdline[i]
+        if c == "\\":
+            j = i
+            while j < n and cmdline[j] == "\\":
+                j += 1
+            count = j - i
+            if j < n and cmdline[j] == '"':
+                cur.append("\\" * (count // 2))
+                if count % 2:
+                    cur.append('"')
+                    i = j + 1
+                else:
+                    in_quotes = not in_quotes
+                    i = j + 1
+            else:
+                cur.append("\\" * count)
+                i = j
+            started = True
+        elif c == '"':
+            in_quotes = not in_quotes
+            started = True
+            i += 1
+        elif c in " \t" and not in_quotes:
+            if started:
+                argv.append("".join(cur))
+                cur, started = [], False
+            i += 1
+        else:
+            cur.append(c)
+            started = True
+            i += 1
+    if started:
+        argv.append("".join(cur))
+    return argv
+
+
+def test_the_parser_helper_follows_the_documented_rules():
+    assert _msvcrt_argv(r'a "E:\"') == ["a", 'E:"']
+    assert _msvcrt_argv(r'a "E:\\"') == ["a", "E:\\"]
+    assert _msvcrt_argv(r'a "b\"c"') == ["a", 'b"c']
+    assert _msvcrt_argv(r'a "x y\z"') == ["a", "x y\\z"]
+
+
+@pytest.mark.parametrize("clicked", [
+    "E:\\",
+    "D:\\Card Dumps\\A001 Day 1",
+    "\\\\nas\\share\\Rushes",
+    "\\\\nas\\share\\",
+], ids=["drive-root", "folder-with-spaces", "unc-directory", "unc-share-root"])
+def test_explorer_expansion_survives_windows_argument_parsing(clicked):
+    """Substitute %V as Explorer does and parse the result as the Windows
+    runtime would: the program must receive the clicked directory, not a
+    path with its closing quote eaten by a trailing backslash."""
+    from offloader.gui.app import clean_path_arg
+
+    for entry in shellmenu.entries("i.ico", command='"C:\\Apps\\app.exe"'):
+        expanded = entry.command.replace("%V", clicked)
+        argv = _msvcrt_argv(expanded)
+        assert len(argv) == 2
+        assert argv[0] == "C:\\Apps\\app.exe"
+        assert '"' not in argv[1]
+        assert clean_path_arg(argv[1]).rstrip("\\") == clicked.rstrip("\\")
+
+
+def test_the_old_template_would_have_mangled_a_drive_root():
+    """Documents the bug: `"%V"` with a trailing-backslash expansion."""
+    assert _msvcrt_argv('"app.exe" "E:\\"') == ["app.exe", 'E:"']
+
+
+def test_the_receiver_strips_the_directory_suffix():
+    from offloader.gui.app import clean_path_arg
+
+    assert clean_path_arg("E:\\.") == "E:\\"
+    assert clean_path_arg("D:\\A B\\.") == "D:\\A B\\"
+    assert clean_path_arg("\\\\nas\\share\\dir\\.") == "\\\\nas\\share\\dir\\"
+    assert clean_path_arg("/media/card/.") == "/media/card/"
+    assert clean_path_arg("/media/card") == "/media/card"
+    assert clean_path_arg(".") == "."
 
 
 def test_the_launcher_is_quoted_for_a_path_with_spaces():
@@ -352,7 +447,7 @@ def test_installing_twice_replaces_rather_than_duplicates(monkeypatch):
             assert winreg.QueryValueEx(key, "Icon")[0] == "two.ico"
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
                             shellmenu.DRIVE_KEY + "\\command") as key:
-            assert winreg.QueryValue(key, None) == '"second.exe" "%V"'
+            assert winreg.QueryValue(key, None) == '"second.exe" "%V\\."'
     finally:
         shellmenu.uninstall()
 
