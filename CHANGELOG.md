@@ -22,7 +22,11 @@ project uses [semantic versioning][semver].
   failure rather than as "you are the newest release": the never-raising form
   of the check returns nothing for a failed fetch, a TLS error and an
   unparseable feed alike, and saying you are up to date on the strength of a
-  failed lookup is a claim. Whose result it is belongs to the check that is
+  failed lookup is a claim. The feed is the releases collection, so an empty
+  collection or one with nothing newer is "up to date", and anything that is
+  not a collection of releases (a single object, which from that endpoint is
+  an error body such as a rate limit notice, a proxy's HTML page, or nothing)
+  is the failure. Whose result it is belongs to the check that is
   running, so a manual check started during the first couple of seconds
   survives the launch timer firing behind it instead of being answered
   silently.

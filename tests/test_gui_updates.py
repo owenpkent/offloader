@@ -184,18 +184,37 @@ def test_a_genuine_up_to_date_answer_is_still_up_to_date(qapp):
     assert failures == []
 
 
+def _listed(tag: str) -> dict:
+    version = tag.lstrip("v")
+    return {"tag_name": tag, "draft": False, "assets": [
+        {"name": f"Offloader-Setup-{version}.exe",
+         "browser_download_url": f"https://github.com/a/b/{version}.exe"}]}
+
+
 @pytest.mark.parametrize("payload,outcome", [
-    ({"tag_name": "v0.9.0", "assets": [
-        {"name": "Offloader-Setup-0.9.0.exe",
-         "browser_download_url": "https://github.com/a/b/x.exe"}]}, "found"),
-    ({"tag_name": "v0.1.0", "assets": []}, "up to date"),
+    # The releases collection, which is what the feed returns.
+    ([_listed("v0.9.0")], "found"),
+    ([_listed("v0.1.0"), _listed("v0.9.0"), _listed("v0.6.0")], "found"),
+    ([_listed("v0.1.0"), _listed("v0.5.0")], "up to date"),
+    ([], "up to date"),
+    # Anything that is not a collection of releases.
+    ({"message": "API rate limit exceeded"}, "failed"),
+    (_listed("v0.9.0"), "failed"),
+    (["v0.9.0"], "failed"),
     ("<html>a proxy login page</html>", "failed"),
     (None, "failed"),
 ])
 def test_the_feed_check_separates_its_three_outcomes(payload, outcome):
     """At the source, where the distinction is made. `check_feed` raises for a
     feed it could not read and returns None only when the feed answered and had
-    nothing newer."""
+    nothing newer.
+
+    REGRESSION. The feed became the releases collection, and this check still
+    accepted only a single object, so every normal response was refused before
+    any version was compared: the app reported a feed failure on every check,
+    and `check()` swallowed it and never offered an update. A single object is
+    what GitHub sends from that endpoint as an error body, so it is the
+    malformed case now, not the normal one."""
     from offloader import update
 
     def fetch(_url):
@@ -204,9 +223,31 @@ def test_the_feed_check_separates_its_three_outcomes(payload, outcome):
     if outcome == "failed":
         with pytest.raises(FeedError):
             update.check_feed("0.5.0", fetch=fetch)
+        assert update.check("0.5.0", fetch=fetch) is None
         return
     result = update.check_feed("0.5.0", fetch=fetch)
     assert (result is not None) is (outcome == "found")
+    if outcome == "found":
+        assert result.version == "0.9.0"
+        # The never-raising form finds it too, rather than swallowing a
+        # refusal of the collection and reporting nothing.
+        assert update.check("0.5.0", fetch=fetch) == result
+
+
+def test_the_default_feed_is_the_collection_check_feed_accepts():
+    """The two halves of the parent correction, held together: the URL that
+    returns a collection, and the check that reads one."""
+    from offloader import update
+
+    assert "/releases?" in update.FEED_URL
+    seen: list[str] = []
+
+    def fetch(url):
+        seen.append(url)
+        return [_listed("v0.9.0")]
+
+    assert update.check_feed("0.5.0", fetch=fetch).version == "0.9.0"
+    assert seen == [update.FEED_URL]
 
 
 def test_a_fetch_that_raises_becomes_a_feed_error():

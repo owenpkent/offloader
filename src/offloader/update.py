@@ -166,7 +166,9 @@ def release_from_feed(payload: Any, *, installed: str = __version__) -> Release 
     """The best newer release the feed describes, or None.
 
     Takes the releases collection, or a single release object for a caller that
-    already has one. The greatest eligible version wins rather than whichever
+    already has one. The network feed is read through `check_feed`, which
+    accepts only the collection and refuses anything else as malformed. The
+    greatest eligible version wins rather than whichever
     the feed happens to list first: GitHub orders by creation date, and a
     patched `0.1.0b2` published after `0.1.0rc1` would otherwise be offered as
     the upgrade from it.
@@ -242,10 +244,17 @@ def check_feed(installed: str = __version__, *, url: str = FEED_URL,
                fetch: Callable[[str], Any] = _fetch_json) -> Release | None:
     """Ask the feed for a newer release, raising if it could not be asked.
 
-    None here means the feed answered and has nothing newer. A feed that could
-    not be fetched, or that answered with something that is not a release
-    description, raises `FeedError` instead, so a caller with somewhere to put
-    the difference can tell "you are up to date" from "I could not find out".
+    None here means the feed answered and has nothing newer, including an
+    empty collection: a repository with no releases yet has nothing to offer.
+    A feed that could not be fetched, or that answered with something that is
+    not a releases collection, raises `FeedError` instead, so a caller with
+    somewhere to put the difference can tell "you are up to date" from "I
+    could not find out".
+
+    The feed is the collection, so a single object is malformed here. What
+    GitHub sends as one object from this endpoint is an error body, such as a
+    rate limit notice, and reading that as "nothing newer" is the false
+    confirmation this function exists to prevent.
     """
     try:
         payload = fetch(url)
@@ -253,8 +262,10 @@ def check_feed(installed: str = __version__, *, url: str = FEED_URL,
         raise
     except Exception as exc:
         raise FeedError(f"could not reach the release feed: {exc}") from exc
-    if not isinstance(payload, dict):
-        raise FeedError("the release feed did not describe a release")
+    if not isinstance(payload, list):
+        raise FeedError("the release feed did not return a releases collection")
+    if not all(isinstance(item, dict) for item in payload):
+        raise FeedError("the release feed listed something that is not a release")
     return release_from_feed(payload, installed=installed)
 
 

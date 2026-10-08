@@ -139,6 +139,12 @@ uses `check_feed()`, which returns `None` only when the feed answered and had
 nothing newer, and raises `FeedError` otherwise. A check that could not be
 made is reported as a failure.
 
+"Answered" means it returned the releases collection. An empty collection, or
+one with nothing newer for this install's channel, is up to date. Anything
+else is malformed and raises `FeedError`: a single object (which this endpoint
+returns only as an error body, such as a rate limit notice), a list holding
+something other than release objects, a proxy's HTML page, or no body at all.
+
 Whose result it is belongs to the check that is running, not to whoever asked
 last. A manual check started inside the first couple of seconds is still
 running when the launch timer fires; the timer's check is refused as a
