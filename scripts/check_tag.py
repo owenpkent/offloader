@@ -17,6 +17,8 @@ and lets the same gate run locally before a tag is pushed.
 from __future__ import annotations
 
 import argparse
+import os
+import re
 import sys
 from pathlib import Path
 
@@ -29,6 +31,10 @@ from offloader.update import parse_version  # noqa: E402
 #: Tags are pushed as `v0.1.0b1`; a workflow hands over the full ref.
 _PREFIXES = ("refs/tags/", "v")
 
+#: A stable release is `X.Y.Z` and nothing else. Everything the version
+#: grammar allows after that -- a, b, rc -- is a prerelease.
+_STABLE_RE = re.compile(r"^\d+\.\d+\.\d+$")
+
 
 def version_from_tag(tag: str) -> str:
     """The version a tag names, with the ref path and `v` prefix removed."""
@@ -37,6 +43,27 @@ def version_from_tag(tag: str) -> str:
         if value.startswith(prefix):
             value = value[len(prefix):]
     return value
+
+
+def is_prerelease(version: str) -> bool:
+    """Whether a version names a prerelease rather than a shipping release.
+
+    The draft's classification is derived from this rather than assumed. A
+    stable release created as a prerelease stays outside GitHub's
+    `/releases/latest`, which is the feed the updater reads, so every installed
+    copy would keep declining the release that was meant for them.
+    """
+    return _STABLE_RE.match(version.strip()) is None
+
+
+def _emit_outputs(version: str) -> None:
+    """Hand the workflow what it needs, from the gate that validated it."""
+    destination = os.environ.get("GITHUB_OUTPUT")
+    if not destination:
+        return
+    with open(destination, "a", encoding="utf-8") as handle:
+        handle.write(f"version={version}\n")
+        handle.write(f"prerelease={'true' if is_prerelease(version) else 'false'}\n")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -56,7 +83,9 @@ def main(argv: list[str] | None = None) -> int:
               f"src/offloader/_version.py declares {__version__!r}. Bump the "
               f"version literal and commit before tagging.", file=sys.stderr)
         return 1
-    print(f"tag {args.tag} matches the declared version {__version__}")
+    _emit_outputs(__version__)
+    kind = "prerelease" if is_prerelease(__version__) else "stable release"
+    print(f"tag {args.tag} matches the declared version {__version__} ({kind})")
     return 0
 
 
