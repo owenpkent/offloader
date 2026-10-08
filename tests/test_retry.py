@@ -453,6 +453,49 @@ def test_a_bad_sector_is_recovered_without_re_reading_the_file(
     assert log.count(0) == 1, f"the file was restarted: {log}"
 
 
+def test_a_reopen_that_fails_spends_an_attempt_not_the_offload(
+    tmp_path: Path, monkeypatch
+):
+    """REGRESSION. Recovery used to run in `before_retry`, which `retry.call`
+    invokes outside the clause that catches OSError. A reopen that failed
+    therefore escaped with attempts still unspent, and the handler wrapped it in
+    `Exhausted`, closing the whole-file retry as well. A reader that takes a
+    moment to come back costs one attempt of the chunk's budget."""
+    monkeypatch.setattr(engine, "CHUNK_SIZE", 4096)
+    card, payload = _chunked_card(tmp_path, 3)
+    log: list[int] = []
+    failures = {"n": 0}
+    reopens = {"n": 0}
+    real_open = builtins.open
+
+    def flaky_open(path, mode="r", *args, **kwargs):
+        try:
+            inside = Path(path).resolve().is_relative_to(card.resolve())
+        except (OSError, ValueError):
+            inside = False
+        if inside and "r" in str(mode) and "b" in str(mode):
+            # Keyed off the read having already failed rather than off a count
+            # of opens, so nothing else opening the card can shift which one
+            # this is. The handle does not come back on the first try.
+            if failures["n"] and not reopens["n"]:
+                reopens["n"] += 1
+                raise _os_error(errno.EIO, winerror=1117)
+            return _BadSector(real_open(path, mode, *args, **kwargs),
+                              log, failures, 4096, 1)
+        return real_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", flaky_open)
+    job = engine.run(card, _options(tmp_path))
+    monkeypatch.undo()
+
+    assert reopens["n"] == 1, "the failing reopen never happened"
+    assert job.final_status == "Verified"
+    assert (tmp_path / "dest" / "A001_C001.mov").read_bytes() == payload
+    assert log.count(0) == 1, f"the file was restarted: {log}"
+    assert log.count(4096) == 2, \
+        f"the chunk did not resume at its own offset: {log}"
+
+
 def test_a_recovered_chunk_is_reported_with_where_it_was(tmp_path: Path,
                                                          monkeypatch):
     monkeypatch.setattr(engine, "CHUNK_SIZE", 4096)

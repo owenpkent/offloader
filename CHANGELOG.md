@@ -27,6 +27,26 @@ project uses [semantic versioning][semver].
 
 ### Fixed
 
+- **A report directory more than one level down failed its own verification.**
+  The writer records a relocated report directory as a relative path, so
+  `--report-dir` two levels below the destination was recorded as
+  `delivery/reports`. That matched neither the whole path nor any single
+  component of `delivery/reports/JobReport.pdf`, so the verifier folded the
+  report it had just written into the recomputed directory hashes and an
+  unchanged delivery failed. Recorded exclusions now carry down to everything
+  beneath them, which also repairs manifests already on disk. A file arriving
+  anywhere else is still caught.
+- **A reopen that failed spent the offload rather than an attempt.** Recovery
+  ran where the retry loop invokes it outside the clause that catches `OSError`,
+  so a source that did not come back on the first reopen escaped with most of
+  its budget unspent, and the failure closed the whole-file retry as well. A
+  reader that is briefly off the bus now costs one attempt of the chunk's own
+  budget, and the chunk resumes at its own offset.
+- **Originals filed under a folder called `Proxy` were reported as belonging to
+  another clip.** The classification read the folder name alone, so a card that
+  happens to file camera originals there had every one of them treated as a
+  companion of whatever shared its stem. A proxy now has to be a proxy container
+  as well, which is all the proxy search ever looks for.
 - **A decoder ffmpeg lacks is probed once per job, not per clip.** Extracting
   thumbnails from BRAW with a stock ffmpeg fails identically for every clip;
   each one still paid four doomed process spawns. The first clip of a suffix
