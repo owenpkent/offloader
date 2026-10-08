@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import builtins
 import errno
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -665,3 +667,65 @@ def test_a_single_recovered_sector_is_still_named_exactly(tmp_path: Path,
     recovered = [w for w in job.warnings if "recovered" in w]
     assert len(recovered) == 1, recovered
     assert "at byte 8192 on attempt 2" in recovered[0]
+
+
+def test_each_marginal_chunk_gets_its_own_attempt_budget(tmp_path: Path,
+                                                         monkeypatch):
+    """The budget is per chunk, not per file. Two chunks that each need a second
+    attempt under a two-attempt policy would exhaust a budget the whole file
+    shared; per chunk, each gets its own, the way a recovery tool would, and the
+    file copies without the whole-file retry ever being reached."""
+    monkeypatch.setattr(engine, "CHUNK_SIZE", 4096)
+    card, payload = _chunked_card(tmp_path, 3)
+    real_open = builtins.open
+    seen: set[int] = set()
+
+    def flaky_open(path, mode="r", *args, **kwargs):
+        handle = real_open(path, mode, *args, **kwargs)
+        try:
+            inside = Path(path).resolve().is_relative_to(card.resolve())
+        except (OSError, ValueError):
+            inside = False
+        if inside and "r" in str(mode) and "b" in str(mode):
+            return _FlakySectors(handle, {0, 4096}, seen)
+        return handle
+
+    monkeypatch.setattr(builtins, "open", flaky_open)
+    job = engine.run(card, _options(
+        tmp_path, retry=retry.RetryPolicy(attempts=2, delay=0)))
+    monkeypatch.undo()
+
+    assert job.final_status == "Verified"
+    assert (tmp_path / "dest" / "A001_C001.mov").read_bytes() == payload
+    assert not any("copied on attempt" in w for w in job.warnings), job.warnings
+    recovered = [w for w in job.warnings if "recovered" in w]
+    assert len(recovered) == 1, recovered
+    assert "2 failed reads between byte 0 and byte 4096" in recovered[0]
+
+
+def test_a_cancel_lands_during_the_backoff_not_after_it(tmp_path: Path,
+                                                        monkeypatch):
+    """A card failing over a stretch spends most of its time waiting out
+    backoffs. A cancel pressed during one has to take effect then, not once the
+    wait is over, and must not spend another attempt on the way out."""
+    monkeypatch.setattr(engine, "CHUNK_SIZE", 4096)
+    card, _payload = _chunked_card(tmp_path, 3)
+    log: list[int] = []
+    _patch_bad_sector(monkeypatch, card, log, {"n": 0}, offset=4096, times=99)
+
+    control = engine.JobControl()
+    timer = threading.Timer(0.3, control.cancel)
+    timer.start()
+    started = time.monotonic()
+    try:
+        engine.run(card, _options(
+            tmp_path, retry=retry.RetryPolicy(attempts=3, delay=10)),
+            control=control)
+    finally:
+        timer.cancel()
+        monkeypatch.undo()
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 5, f"the cancel waited out the backoff ({elapsed:.1f}s)"
+    assert log.count(4096) == 1, f"an attempt was spent after the cancel: {log}"
+    assert list((tmp_path / "dest").rglob(f"*{engine.PARTIAL_SUFFIX}")) == []

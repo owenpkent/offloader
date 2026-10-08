@@ -231,6 +231,12 @@ handle re-established. Once a chunk has had every attempt the policy allows, the
 file is not started again from the top: that would only repeat the same attempts
 against the same fault.
 
+The budget is per chunk, not per file: a card with several marginal sectors gets
+`--retries` attempts at each one, the way a recovery tool would, rather than one
+budget the whole file must share. On a badly failing card that costs time, never
+integrity, so pause and cancel are honoured during the backoff waits rather than
+after them.
+
 A failed *write* does restart the whole file, because a write that fails
 part-way leaves the destination at a length the copy loop does not know. The
 partial is discarded and the progress it claimed is given back, so a retry

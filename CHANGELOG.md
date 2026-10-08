@@ -42,6 +42,10 @@ project uses [semantic versioning][semver].
   its budget unspent, and the failure closed the whole-file retry as well. A
   reader that is briefly off the bus now costs one attempt of the chunk's own
   budget, and the chunk resumes at its own offset.
+- **A cancel during a chunk's retry backoff waited the backoff out.** The wait
+  between chunk attempts was one uninterruptible sleep, so on a card failing
+  over a stretch a cancel or pause landed only after it. The wait is now taken
+  in short slices that check for both.
 - **Originals filed under a folder called `Proxy` were reported as belonging to
   another clip.** The classification read the folder name alone, so a card that
   happens to file camera originals there had every one of them treated as a
