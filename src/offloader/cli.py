@@ -128,7 +128,8 @@ def _summarize(job: Job, reports: list[Path]) -> None:
     video = f"  ({job.video_files} video)" if job.profile.probes_media else ""
     print(f"  {job.total_files} files, {format_size(job.total_bytes)}"
           f" in {format_elapsed(job.elapsed_sec)}{video}")
-    print(f"  Verification: {job.verification_label}")
+    print(f"  Verification: {job.verification_label}"
+          f"{' + second source read' if job.paranoid else ''}")
     for destination in job.destination_roots:
         print(f"  -> {destination}")
     for report in reports:
@@ -150,7 +151,10 @@ def _summarize(job: Job, reports: list[Path]) -> None:
 def _common_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--hash", default=hashers.DEFAULT_ALGORITHM,
                         choices=sorted(hashers.algorithm_keys()),
-                        help="checksum algorithm (default: %(default)s)")
+                        help="checksum algorithm (default: %(default)s; the "
+                             "engine hashes every byte on the copy path, so a "
+                             "slow choice caps copy speed — md5 is ~40x slower "
+                             "than the default; see 'offloader info')")
     parser.add_argument("--report", type=_parse_reports, default=DEFAULT_REPORTS,
                         metavar="FMT[,FMT...]",
                         help=f"report formats: {', '.join(WRITERS)} (default: pdf)")
@@ -201,13 +205,17 @@ def build_parser() -> argparse.ArgumentParser:
     offload.add_argument("--dest", type=Path, action="append", required=True,
                          dest="destinations", metavar="PATH",
                          help="destination root (repeat for multiple copies)")
-    offload.add_argument("--verify", default=VerificationMode.SOURCE_ONLY.value,
+    offload.add_argument("--verify", default=VerificationMode.FULL.value,
                          choices=[m.value for m in VerificationMode],
                          help="verification depth (default: %(default)s)")
     offload.add_argument("--flat", action="store_true",
                          help="do not recreate the source folder structure")
     offload.add_argument("--skip-existing", action="store_true",
                          help="skip files already present with a matching size")
+    offload.add_argument("--paranoid", action="store_true",
+                         help="read each source file twice and compare, to "
+                              "catch a read that returned wrong bytes without "
+                              "reporting an error (costs a second pass)")
     _common_options(offload)
 
     report = sub.add_parser(
@@ -242,7 +250,7 @@ def _options_from(args: argparse.Namespace, destinations: list[Path]) -> engine.
     return engine.OffloadOptions(
         destinations=destinations,
         algorithm=args.hash,
-        verification=VerificationMode(getattr(args, "verify", "source-only")),
+        verification=VerificationMode(getattr(args, "verify", "full")),
         thumbnail_count=0 if args.no_probe else max(0, args.thumbs),
         excludes=tuple(engine.DEFAULT_EXCLUDES) + tuple(args.exclude),
         preserve_structure=not args.flat,
@@ -252,6 +260,7 @@ def _options_from(args: argparse.Namespace, destinations: list[Path]) -> engine.
         profile=profile,
         retry=retry.RetryPolicy(attempts=max(1, args.retries),
                                 delay=max(0.0, args.retry_wait)),
+        paranoid=getattr(args, "paranoid", False),
     )
 
 
@@ -335,6 +344,8 @@ def cmd_verify(args: argparse.Namespace) -> int:
         print(f"  {report.summary()}")
         for verdict in report.failures:
             print(f"  {verdict.describe()}")
+        for verdict in report.directory_failures:
+            print(f"  {verdict.describe()}")
         for extra in report.unlisted[:20]:
             print(f"  not in manifest: {extra}")
         if len(report.unlisted) > 20:
@@ -368,7 +379,9 @@ def cmd_info(_args: argparse.Namespace) -> int:
                 else "required for destinations past 260 characters")
         print(f"  long paths:  Windows support {'on' if enabled else 'off'};"
               f" {prefix} prefix {note}")
-    print(f"  checksums:   {', '.join(sorted(hashers.algorithm_keys()))}")
+    print("  checksums:   " + "; ".join(
+        f"{key} ({alg.speed})" if alg.speed else key
+        for key, alg in sorted(hashers.ALGORITHMS.items())))
     print(f"  reports:     {', '.join(WRITERS)}")
     print(f"  profiles:    {', '.join(p.value for p in Profile)} "
           f"(--profile; 'data' skips media probing for generic transfers)")
