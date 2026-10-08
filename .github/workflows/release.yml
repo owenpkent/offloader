@@ -130,11 +130,13 @@ jobs:
           python scripts/release_notes.py --tag "$TAG" --commit "$GITHUB_SHA" \
             --out release-notes.md
           # From the validated version, not assumed. check_tag.py accepts a
-          # stable tag, and publishing one classified as a prerelease leaves
-          # the installer outside GitHub's /releases/latest, which is the feed
-          # the updater reads. Set explicitly on both paths so a rerun after a
-          # version change corrects the classification rather than inheriting
-          # whatever the first run chose.
+          # stable tag, and one classified as a prerelease never becomes
+          # GitHub's "Latest" release, so anyone downloading by hand is sent
+          # to the one before it. The updater does not read this flag: it
+          # reads the releases collection, skips drafts, and takes its channel
+          # from the version in the tag. Set explicitly on both paths so a
+          # rerun after a version change corrects the classification rather
+          # than inheriting whatever the first run chose.
           #
           # Refreshed rather than replaced: re-running a tag must not discard
           # a signed asset already uploaded against it.

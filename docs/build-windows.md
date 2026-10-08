@@ -157,9 +157,13 @@ pinned to the tagged commit, with notes and no assets.
 
 Whether that draft is marked as a prerelease comes from the version the gate
 just validated, not from an assumption. `v0.1.0b1` is a prerelease and `v1.0.0`
-is not, and a stable release created as a prerelease would sit outside GitHub's
-`/releases/latest` — the feed the updater reads — so every installed copy would
-go on declining the release meant for them. It is set explicitly on both the
+is not. The flag is not what the updater goes by: it reads the releases
+collection, skips drafts, and takes the channel from the version in the tag
+(see [updates](updates.md)). It is what GitHub goes by. A stable release
+created as a prerelease never becomes the repository's "Latest" release, so
+`/releases/latest` and the releases page keep sending anyone who downloads by
+hand to the release before it, and a beta created as stable would be offered
+to them as the current release. It is set explicitly on both the
 create and the refresh path, so a rerun corrects an existing draft's
 classification rather than inheriting whatever the first run chose.
 
