@@ -135,9 +135,11 @@ Three outcomes, not two. `update.check()` never raises and returns `None` for
 a failed fetch, a TLS error and an unparseable feed alike, so a caller that
 reports its result to somebody cannot use it: "you are the newest release" is
 a claim, and it would be made on the strength of a failed DNS lookup. The app
-uses `check_feed()`, which returns `None` only when the feed answered and had
-nothing newer, and raises `FeedError` otherwise. A check that could not be
-made is reported as a failure.
+and `offloader update` both use `check_feed()`, which returns `None` only when
+the feed answered and had nothing newer, and raises `FeedError` otherwise. A
+check that could not be made is reported as a failure. From the command line
+that is an error on stderr and exit status 2, distinct from 0 (up to date) and
+1 (a newer release exists).
 
 "Answered" means it returned the releases collection. An empty collection, or
 one with nothing newer for this install's channel, is up to date. Anything
