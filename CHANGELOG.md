@@ -88,6 +88,30 @@ project uses [semantic versioning][semver].
 
 ### Added
 
+- Windows desktop/CLI bundles and an NSIS installer, with pinned dependencies,
+  embedded version metadata, signing by default, explicit unsigned CI builds,
+  source/file inventories, checksums, and headless artifact checks. Installation
+  uses an application lifetime lock and inventoried files for replacement,
+  rollback, and uninstall; configuration/history are preserved. Real signing
+  and clean-machine installation qualification remain pending.
+
+  **A rolled-back install can be retried.** Rollback removes the files it
+  promoted, and now also the directories it created to promote them into:
+  recorded as they are made, pruned deepest first, and only while still empty,
+  so a directory that was already there or that holds a file from somewhere
+  else is left alone. Without that, a failed first install left an empty
+  `_internal` behind, which the next attempt read as a nonempty unowned target
+  and refused — a transient failure recovery reported as fully resolved could
+  not be retried through the installer at all. The manifest write is what
+  commits an update and it is atomic, so both outcomes of a failed one, the new
+  inventory absent and the previous one still present, are recovered as "did
+  not commit" and roll back. Treating the second as a mismatch left an
+  installation no later install or uninstall could get past, since both recover
+  first.
+- One release version source for Python package metadata, the application,
+  reports, and Windows executable metadata. CI also installs the built wheel
+  outside the checkout to check its CLI and version consistency.
+
 - **Pause, resume and cancel from the command line.** `JobControl` has existed
   since the desktop app needed transport buttons, and is checked once per 8 MiB
   chunk, but the CLI never passed one — so a job started in a terminal could
