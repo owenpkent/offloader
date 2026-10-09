@@ -262,4 +262,101 @@ def test_sentinel_is_delivered_even_when_the_queue_is_full(tmp_path: Path,
 
     assert not worker.is_alive(), "copy deadlocked waiting for the sentinel"
     assert (tmp_path / "out.bin").stat().st_size == engine.CHUNK_SIZE * 3
-    assert result["digest"][0] == hashers.hash_file(source, "xxh3-64")
+    assert result["digest"].source_checksum == hashers.hash_file(source, "xxh3-64")
+
+
+def test_a_reader_that_will_not_close_still_delivers_the_sentinel(tmp_path: Path,
+                                                                  monkeypatch):
+    """REGRESSION. The reader thread owes its consumer an end-of-file sentinel.
+    Closing the source runs on the way out, including out of a failure, so a
+    close that raises must not skip it — the consumer would block on get()
+    forever and the copy would hang instead of reporting the real error."""
+    import builtins
+    import threading
+
+    real_open = builtins.open
+    source = tmp_path / "clip.mov"
+    source.write_bytes(b"payload " * 500)
+
+    class WontClose:
+        def __init__(self, handle):
+            self._handle = handle
+
+        def read(self, size=-1):
+            return self._handle.read(size)
+
+        def close(self):
+            raise RuntimeError("close is broken")
+
+    def fake_open(path, mode="r", *args, **kwargs):
+        handle = real_open(path, mode, *args, **kwargs)
+        if Path(path).name == source.name and "b" in str(mode):
+            return WontClose(handle)
+        return handle
+
+    monkeypatch.setattr(builtins, "open", fake_open)
+
+    done = threading.Event()
+
+    def run() -> None:
+        try:
+            engine._copy_fanout(source, [tmp_path / "out.bin"], "xxh3-64",
+                                lambda _n: None)
+        finally:
+            done.set()
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    assert done.wait(timeout=20), "copy hung after the source failed to close"
+    monkeypatch.undo()
+
+
+# ------------------------------------------------------------- companions
+
+
+def _card_with_sidecar(tmp_path: Path) -> Path:
+    card = tmp_path / "card"
+    card.mkdir()
+    (card / "A001_C001.braw").write_bytes(b"a clip " * 400)
+    (card / "A001_C001.sidecar").write_bytes(b"the grade")
+    return card
+
+
+def test_a_sidecar_is_linked_to_its_clip_in_the_job(tmp_path: Path):
+    job = engine.run(_card_with_sidecar(tmp_path), _options(tmp_path))
+
+    clip = next(f for f in job.files if f.name == "A001_C001.braw")
+    sidecar = next(f for f in job.files if f.name == "A001_C001.sidecar")
+
+    assert sidecar.companion_of == clip.source
+    assert clip.companions == [sidecar.source]
+    assert clip.companion_of is None
+
+
+def test_a_clip_separated_from_its_sidecar_is_a_warning(tmp_path: Path,
+                                                        monkeypatch):
+    """A graded BRAW delivered without its .sidecar has lost the grade. One
+    Verified row and one Failed row twenty lines apart is not how anyone finds
+    that out."""
+    import builtins
+    import errno
+
+    card = _card_with_sidecar(tmp_path)
+    real_open = builtins.open
+
+    def fake_open(path, mode="r", *args, **kwargs):
+        if Path(path).suffix == ".sidecar" and "b" in str(mode):
+            raise OSError(errno.EACCES, "permission denied")
+        return real_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", fake_open)
+    job = engine.run(card, _options(tmp_path))
+    monkeypatch.undo()
+
+    assert any("A001_C001.sidecar" in w and "belongs with it" in w
+               for w in job.warnings), job.warnings
+
+
+def test_a_clean_offload_says_nothing_about_companions(tmp_path: Path):
+    job = engine.run(_card_with_sidecar(tmp_path), _options(tmp_path))
+    assert not any("belongs with it" in w for w in job.warnings)
