@@ -99,13 +99,6 @@ def test_finished_job_is_recorded_in_history(qapp, controller, source_tree, tmp_
     assert controller.history.entries[0].job_name == "A001"
 
 
-def test_preset_use_count_increments_on_success(qapp, controller, source_tree, tmp_path):
-    preset = _preset(tmp_path)
-    item = controller.enqueue(source_tree, preset, "A001")
-    assert _pump(qapp, controller, lambda: item.state.is_terminal)
-    assert preset.use_count == 1
-
-
 def test_cancelling_a_running_job(qapp, controller, tmp_path):
     source = tmp_path / "card"
     source.mkdir()

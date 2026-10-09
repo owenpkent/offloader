@@ -43,7 +43,7 @@ class JobState(str, Enum):
 
 @dataclass
 class QueueItem:
-    """One entry in the queue: a source, the preset to run it under, and the
+    """One entry in the queue: a source, the options to run it under, and the
     live state of that run."""
 
     identifier: int
@@ -334,7 +334,6 @@ class QueueController(QObject):
         else:
             item.state = JobState.DONE
             item.fraction = 1.0
-            item.preset.mark_used()
 
         if job is not None and not job.cancelled:
             try:

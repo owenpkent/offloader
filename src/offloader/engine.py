@@ -189,7 +189,7 @@ class OffloadOptions:
         # The data profile is defined by the absence of media work, so enforce
         # it here rather than trusting every caller to zero the media knobs.
         # A library caller that sets only `profile=Profile.DATA` gets a clean
-        # generic transfer; the CLI and presets get the same guarantee.
+        # generic transfer; the CLI and the desktop app get the same guarantee.
         if self.profile is Profile.DATA:
             self.extra_probe = False
             self.thumbnail_count = 0
