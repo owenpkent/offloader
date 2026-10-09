@@ -62,6 +62,7 @@ suite fakes all of it:
 | A failing destination | `tests/test_data_safety.py` returns handles that raise on write |
 | Corruption | flip a byte and re-verify; size stays identical, checksum does not |
 | An interrupted recording | write a BRAW with `include_moov=False` |
+| A Linux card mount | the `linux_mounts` fixture in `tests/test_volumes.py` writes a fake `mountinfo` and points the scanner at it |
 | A deep Windows path | build until `len(str(path)) > 260` — do not hard-code, the temp root's length varies |
 
 If you have real hardware, there are tests that use it and skip cleanly when it

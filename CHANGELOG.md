@@ -45,6 +45,15 @@ Found by adding CI on Linux and macOS — the suite had only ever run on Windows
   file would have reported 34 million "frames" and a duration to match. The
   video track is now chosen by handler type. Found by running the parser over
   510 real clips, 2.84 TB, from two camera bodies.
+- **Linux cards never reached the drive panel.** Cards mount at
+  `/media/<user>/<LABEL>` or `/run/media/<user>/<LABEL>`, one level below
+  where the scan looked. It listed the empty `/media/<user>` directory and
+  another user's unreadable mount as fake removable drives instead. Volumes
+  now come from `/proc/self/mountinfo`, which names real mount points and
+  gives the filesystem type, so pseudo, network and system filesystems are
+  filtered by type. An overlay root (containers, live sessions) is still
+  treated as the system volume. Without `/proc` the old directory scan is
+  the fallback.
 
 ### Changed
 
