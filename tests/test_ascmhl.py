@@ -364,6 +364,25 @@ def test_verify_rechecks_the_recorded_directory_hashes(history):
     assert "directory hashes" in report.summary()
 
 
+def test_uppercase_directory_hashes_still_verify(history):
+    """Directory hashes are compared the way file hashes are: hex without
+    regard to case. Another tool's uppercase is not a changed tree."""
+    _job, destination, manifest = history
+    root = ET.parse(manifest).getroot()
+    shouted = 0
+    for side in root.iter():
+        if side.tag.rsplit("}", 1)[-1] in ("content", "structure"):
+            for digest in side:
+                digest.text = digest.text.upper()
+                shouted += 1
+    assert shouted
+    ET.ElementTree(root).write(manifest, encoding="utf-8", xml_declaration=True)
+
+    report = verify.verify_manifest(verify.find_manifests(destination)[0])
+    assert report.directories
+    assert all(v.result is verify.DirectoryResult.OK for v in report.directories)
+
+
 def test_a_rename_is_a_structure_mismatch_not_a_content_one(history):
     """The whole reason the structure hash exists: every file is individually
     fine, and the tree is still not what was recorded."""

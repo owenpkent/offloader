@@ -495,6 +495,9 @@ def _directory_verdicts(base: Path, recorded: dict[str, tuple[str, str]],
         [(Path(relative), digest) for relative, digest in on_disk.items()],
         algorithm_key)
 
+    # The same per-algorithm comparison the file hashes get: a directory hash
+    # another tool wrote in uppercase hex describes the same tree.
+    same = get_algorithm(algorithm_key).digests_match
     verdicts: list[DirectoryVerdict] = []
     for relative in sorted(recorded):
         expected_content, expected_structure = recorded[relative]
@@ -517,9 +520,9 @@ def _directory_verdicts(base: Path, recorded: dict[str, tuple[str, str]],
             continue
 
         actual_content, actual_structure = found
-        if actual_content != expected_content:
+        if not same(actual_content, expected_content):
             result = DirectoryResult.CHANGED
-        elif actual_structure != expected_structure:
+        elif not same(actual_structure, expected_structure):
             result = DirectoryResult.RENAMED
         else:
             result = DirectoryResult.OK

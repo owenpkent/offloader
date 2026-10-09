@@ -102,13 +102,13 @@ Only the newest generation of a history is checked. Every generation covers the
 same files, so verifying all of them would hash the media once per generation
 for no additional evidence.
 
-Digests are compared per algorithm rather than as plain strings. Hex formats
-compare case-insensitively, because a manifest is an interchange format and
-plenty of tools emit their hex uppercase: the same bytes described in a
-different case are not a mismatch, and reporting one is the most expensive
-false alarm this tool can raise. C4 compares exactly, since its base58 alphabet
-uses case to carry information and folding it would make genuinely different
-identifiers compare equal.
+Digests, file and directory alike, are compared per algorithm rather than as
+plain strings. Hex formats compare case-insensitively, because a manifest is an
+interchange format and plenty of tools emit their hex uppercase: the same bytes
+described in a different case are not a mismatch, and reporting one is the most
+expensive false alarm this tool can raise. C4 compares exactly, since its base58
+alphabet uses case to carry information and folding it would make genuinely
+different identifiers compare equal.
 
 ## Validation
 

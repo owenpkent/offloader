@@ -225,7 +225,8 @@ paperwork. Each fix has the reproduction that found it.
   case-sensitive `==`, so a manifest from a tool that emits uppercase hex
   reported every byte-identical file as a mismatch. Comparison is now per
   algorithm: case-folded for hex, exact for C4, whose base58 alphabet uses
-  case to carry information.
+  case to carry information. ASC MHL directory hashes are compared the same
+  way.
 - **A directory junction sent the scanner round in circles.** `scan` was a bare
   `os.walk` with no cycle guard, and `Path.is_symlink()` is False for a
   junction, so the usual check would not have helped. It terminated only
