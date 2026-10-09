@@ -155,6 +155,13 @@ class PresetEditor(QDialog):
         self._skip.setToolTip(
             "Compares size only, never contents. A speed option, not a safety "
             "one — do not use it on a tree whose integrity is in question.")
+        self._proxies_first = QCheckBox("Copy proxies before the originals")
+        self._proxies_first.setToolTip(
+            "Proxy folders are tiny next to camera originals, so moving them "
+            "first costs the job almost nothing and lets an edit start while "
+            "the originals are still copying. The report is unaffected: it "
+            "always reads in tree order.")
+        self._proxies_first.setChecked(self._source.proxies_first)
         self._paranoid = QCheckBox(PARANOID_LABEL)
         self._paranoid.setChecked(self._source.paranoid)
         self._paranoid.setToolTip(PARANOID_TOOLTIP)
@@ -184,7 +191,8 @@ class PresetEditor(QDialog):
         copying.addRow("Verification", self._verification)
         copying.addRow("Exclude", self._excludes)
         copying.addRow("Options",
-                       column(self._preserve, self._skip, self._paranoid))
+                       column(self._preserve, self._skip,
+                              self._proxies_first, self._paranoid))
 
         paperwork = _form()
         paperwork.addRow("Reports", row(*report_row))
@@ -236,6 +244,7 @@ class PresetEditor(QDialog):
             naming_template=self._naming.text().strip() or "{card}",
             preserve_structure=self._preserve.isChecked(),
             skip_existing=self._skip.isChecked(),
+            proxies_first=self._proxies_first.isChecked(),
             paranoid=self._paranoid.isChecked(),
             excludes=excludes,
             logo=Path(logo_text) if logo_text else None,

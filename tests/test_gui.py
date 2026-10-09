@@ -20,6 +20,7 @@ from PySide6.QtCore import QDeadlineTimer, QEventLoop, Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from offloader import engine  # noqa: E402
+from offloader.gui.preset_editor import PresetEditor  # noqa: E402
 from offloader.gui.preset_mode import PresetModePanel  # noqa: E402
 from offloader.gui.queue_view import QueuePanel  # noqa: E402
 from offloader.gui.simple_mode import SimpleModePanel  # noqa: E402
@@ -291,6 +292,30 @@ def test_source_drop_zone_reports_its_path(qapp, tmp_path):
     assert zone.path == tmp_path / "A001"
 
 
+def test_simple_mode_offers_proxies_first_and_defaults_it_on(qapp, tmp_path):
+    panel = SimpleModePanel()
+    panel.set_source(tmp_path / "card")
+    panel.add_destination(tmp_path / "dest")
+
+    assert panel._proxies_first.isChecked()
+    assert panel.build_preset().proxies_first is True
+
+    panel._proxies_first.setChecked(False)
+    assert panel.build_preset().proxies_first is False
+
+
+def test_preset_editor_round_trips_proxies_first(qapp, tmp_path):
+    editor = PresetEditor(Preset(name="dailies", destinations=[tmp_path / "dest"]))
+    assert editor._proxies_first.isChecked(), "new presets should default it on"
+
+    editor._proxies_first.setChecked(False)
+    editor._accept()
+    assert editor.result_preset.proxies_first is False
+
+    # And an existing preset opens showing what it was saved with.
+    reopened = PresetEditor(editor.result_preset)
+    assert not reopened._proxies_first.isChecked()
+
 # ------------------------------------------------------------- the UI sweep
 
 
@@ -330,7 +355,8 @@ def test_the_preset_editor_is_grouped_rather_than_one_flat_list(qapp):
     # Regrouping a form is exactly the change that silently drops a field.
     for name in ("_name", "_color", "_destinations", "_algorithm",
                  "_verification", "_thumbnails", "_naming", "_excludes",
-                 "_logo", "_footer", "_preserve", "_skip", "_paranoid"):
+                 "_logo", "_footer", "_preserve", "_skip", "_proxies_first",
+                 "_paranoid"):
         assert getattr(editor, name).parent() is not None, f"{name} is orphaned"
 
 

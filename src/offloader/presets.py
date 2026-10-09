@@ -45,6 +45,7 @@ class Preset:
     reports: list[str] = field(default_factory=lambda: ["pdf"])
     preserve_structure: bool = True
     skip_existing: bool = False
+    proxies_first: bool = True
     #: Read every source file twice and compare. For irreplaceable material.
     paranoid: bool = False
     excludes: list[str] = field(default_factory=list)
@@ -103,6 +104,7 @@ class Preset:
             excludes=tuple(DEFAULT_EXCLUDES) + tuple(self.excludes),
             preserve_structure=self.preserve_structure,
             skip_existing=self.skip_existing,
+            proxies_first=self.proxies_first,
             job_name=job_name,
             # Metadata is cheap next to the copy itself and useful even when
             # thumbnails are switched off, so it is always collected — unless
@@ -127,6 +129,7 @@ class Preset:
             "reports": list(self.reports),
             "preserve_structure": self.preserve_structure,
             "skip_existing": self.skip_existing,
+            "proxies_first": self.proxies_first,
             "paranoid": self.paranoid,
             "excludes": list(self.excludes),
             "naming_template": self.naming_template,
@@ -196,6 +199,9 @@ class Preset:
                      if data.get("reports") is not None else ["pdf"]),
             preserve_structure=bool(value("preserve_structure", True)),
             skip_existing=bool(value("skip_existing", False)),
+            # Presets written before this option existed have no key, and
+            # inherit the new default rather than the old behaviour.
+            proxies_first=bool(value("proxies_first", True)),
             paranoid=bool(value("paranoid", False)),
             excludes=[e for e in as_list("excludes") if isinstance(e, str)],
             naming_template=str(value("naming_template", DEFAULT_TEMPLATE)),

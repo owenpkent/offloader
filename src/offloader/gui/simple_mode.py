@@ -86,6 +86,13 @@ class SimpleModePanel(QWidget):
 
         self._preserve = QCheckBox("Recreate the source folder structure")
         self._preserve.setChecked(True)
+        self._proxies_first = QCheckBox("Copy proxies before the originals")
+        self._proxies_first.setToolTip(
+            "Proxy folders are tiny next to camera originals, so moving them "
+            "first costs the job almost nothing and lets an edit start while "
+            "the originals are still copying. The report is unaffected: it "
+            "always reads in tree order.")
+        self._proxies_first.setChecked(True)
         self._paranoid = QCheckBox(PARANOID_LABEL)
         self._paranoid.setToolTip(PARANOID_TOOLTIP)
 
@@ -98,7 +105,8 @@ class SimpleModePanel(QWidget):
         form.addRow("Verification", self._verification)
         form.addRow("Thumbnails", self._thumbnails)
         form.addRow("Reports", row(*report_row))
-        form.addRow("Options", column(self._preserve, self._paranoid))
+        form.addRow("Options", column(self._preserve, self._proxies_first,
+                                      self._paranoid))
 
         self._start = button("Start offload", accent=True)
         self._start.clicked.connect(self._start_clicked)
@@ -196,6 +204,7 @@ class SimpleModePanel(QWidget):
             thumbnail_count=self._thumbnails.value(),
             reports=[key for key, box in self._reports.items() if box.isChecked()],
             preserve_structure=self._preserve.isChecked(),
+            proxies_first=self._proxies_first.isChecked(),
             paranoid=self._paranoid.isChecked(),
         )
 

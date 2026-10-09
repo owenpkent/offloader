@@ -196,6 +196,20 @@ def test_an_explicitly_empty_report_list_is_respected():
     assert Preset.from_dict({}).reports == ["pdf"]
 
 
+def test_proxies_first_defaults_on_and_survives_a_round_trip():
+    assert Preset(name="p").proxies_first is True
+
+    preset = Preset(name="p", proxies_first=False)
+    assert Preset.from_dict(preset.to_dict()).proxies_first is False
+    assert preset.to_options().proxies_first is False
+
+
+def test_presets_written_before_the_option_existed_get_the_new_default():
+    """An old config has no key, and must not silently keep the old order."""
+    assert Preset.from_dict({"name": "legacy"}).proxies_first is True
+    # A null value is what a hand-edited config produces; it falls back too.
+    assert Preset.from_dict({"name": "legacy", "proxies_first": None}).proxies_first is True
+
 def test_paranoid_survives_a_save_and_reload(tmp_path: Path):
     """It changes what "Verified" is worth, so it has to persist with the
     preset rather than being re-chosen each time."""

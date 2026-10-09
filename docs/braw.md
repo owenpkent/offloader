@@ -71,6 +71,12 @@ Matching is by stem across a set of candidate directories (`Proxy`, `proxy`,
 `Proxies`, beside the original), so it survives the usual naming variations. When
 no proxy exists the clip falls back to the placeholder icon rather than failing.
 
+Because proxies are copied before the originals by default, the matching proxy
+is normally already on the destination by the time its clip is probed, so the
+frames are decoded from the destination disk rather than competing with the
+copy for the card. Nothing depends on that ordering: the source is still
+searched when the proxy is not there yet.
+
 The report always says where the frames came from — `Frames from proxy:
 A001_08041254_C001.mp4`. Without that line a reader would take the contact sheet
 as evidence the original decoded, which it is not.
