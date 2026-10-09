@@ -37,7 +37,7 @@ pip install -e ".[dev]"
 `ffmpeg` and `ffprobe` on `PATH` are optional — the suite runs without them.
 
 ```sh
-pytest                      # 571 tests
+pytest                      # 593 tests
 pytest --fuzz               # property tests at 3000 examples each, about 2 min
 ruff check src tests
 pytest --cov=offloader --cov-report=term-missing
