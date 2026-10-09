@@ -97,6 +97,7 @@ offloader verify D:\video\080426\A001
 | `report` | regenerate paperwork for an existing tree, copying nothing |
 | `info` | show tool and environment status |
 | `gui` | launch the desktop app (also `offloader-gui`) |
+| `update` | check for a newer release, and install it (Windows) |
 
 ### `offload` and `report`
 
@@ -599,7 +600,7 @@ ruff check src tests
 pytest --cov=offloader --cov-report=term-missing
 ```
 
-824 tests at 84% line coverage. They cover formatting against the reference's
+895 tests at 84% line coverage. They cover formatting against the reference's
 exact strings, checksum vectors and streaming equivalence, copy/verify
 behaviour including simulated destination corruption, pause/resume/cancel
 concurrency, retry discrimination, BRAW container parsing, ffprobe parsing,

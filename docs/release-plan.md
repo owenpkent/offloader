@@ -57,7 +57,7 @@ tests or builds were run for this documentation task.
 | Dependencies | Minimum versions and optional extras | Recorded build environment and pinned release dependency sets |
 | Media tools | ffmpeg/ffprobe discovered externally; copying works without them | Explicit installer dependency policy and useful missing-tool messaging |
 | Integrity | Detailed guarantees and remaining limits in `data-safety.md` | Release-specific regression evidence and operational validation |
-| Updates | No updater found | Manual updates for the beta; documented safe upgrade and recovery |
+| Updates | `offloader update` checks GitHub Releases, verifies the signed installer and hands it over; no in-app check or notification | Wire the check into the desktop interface; qualify an end-to-end update against a published release |
 
 Sources: [`pyproject.toml`](../pyproject.toml),
 [`CI`](../.github/workflows/ci.yml), [`README`](../README.md),
@@ -107,8 +107,10 @@ credentials, update endpoints, or installation paths.
 - **Timeline support:** include and test OpenTimelineIO and the currently
   declared adapter in the desktop bundle if timeline import is advertised for
   that bundle. Otherwise mark that capability source-only for the beta.
-- **Updates:** manual installation initially. Refuse replacement while the app
-  or CLI has an active job; never force-kill a copy to install an update.
+- **Updates:** `offloader update` finds and verifies a release and runs the
+  signed installer; the in-app check remains deferred. Refuse replacement
+  while the app or CLI has an active job; never force-kill a copy to install
+  an update.
 - **Scope freeze:** defer new media features, cloud services, notifications,
   auto-update, and a marketing website. Fix integrity and packaging blockers
   discovered during qualification.
@@ -194,13 +196,18 @@ user data. Remove only inventoried application files, never recursively erase
 an arbitrary install directory that might contain user material.
 
 **Updater boundary:** installer parity includes the silent-install contract,
-user-context relaunch, and safe settings preservation. An in-app download/
-update client is still a separate deferred feature. Future callers must verify
-the installer signature, publisher, and version before elevation. Preserve
-NSIS's `/D=` contract: last argument, unquoted even when the path has spaces,
-and computed from a trusted installation target rather than an unvalidated
-registry command. A generic unattended deployment must not launch an app in
-a missing or unrelated user's session.
+user-context relaunch, and safe settings preservation. A generic unattended
+deployment must not launch an app in a missing or unrelated user's session.
+
+The command-line half of the update client is now implemented in
+`src/offloader/update.py` and documented in [updates.md](updates.md). It meets
+the conditions this section set: the signature, publisher and embedded version
+are all verified before elevation, and the `/D=` target is computed from the
+running executable rather than from the uninstall registry key. It does not
+close a running instance, so an update requires the operator to finish first
+and the installer's refusal remains the guarantee. What is still deferred is
+the in-app part: an automatic check, a notification, and a progress surface in
+the desktop interface.
 
 **Acceptance gates:** exercise first install, custom path, same-version
 reinstall, upgrade, failed upgrade recovery, silent install, and uninstall on
