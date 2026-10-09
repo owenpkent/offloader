@@ -10,6 +10,13 @@ project uses [semantic versioning][semver].
 
 ### Changed
 
+- **One screen instead of two modes.** Preset mode and Simple mode are gone.
+  The desktop app is now source, destinations and a Start button, with every
+  other option behind an Advanced disclosure that is remembered between runs
+  in `settings.json`. A readout beside the disclosure summarises the next job
+  (checksum, verification, reports, profile) while it is collapsed. The
+  preset editor dialog is removed; the `Preset` dataclass stays as the
+  internal job-options bundle the worker runs.
 - **Desktop app restyled.** The interface now borrows from audio-plugin
   design: near-black graphite rails with a hairline top highlight, one cyan
   accent reserved for the things that move data, uppercase letter-spaced

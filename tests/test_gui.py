@@ -20,13 +20,12 @@ from PySide6.QtCore import QDeadlineTimer, QEventLoop, Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from offloader import engine  # noqa: E402
-from offloader.gui.preset_mode import PresetModePanel  # noqa: E402
+from offloader.gui.job_panel import JobPanel  # noqa: E402
 from offloader.gui.queue_view import QueuePanel  # noqa: E402
-from offloader.gui.simple_mode import SimpleModePanel  # noqa: E402
 from offloader.gui.widgets import DestinationList, SourceDropZone  # noqa: E402
 from offloader.gui.worker import JobState, QueueController  # noqa: E402
 from offloader.models import VerificationMode  # noqa: E402
-from offloader.presets import Preset, PresetStore  # noqa: E402
+from offloader.presets import Preset  # noqa: E402
 
 
 @pytest.fixture(scope="session")
@@ -220,10 +219,10 @@ def test_destination_list_rejects_duplicates(qapp, tmp_path):
     assert widget.paths() == [tmp_path / "a"]
 
 
-def test_simple_mode_blocks_a_destination_inside_the_source(qapp, tmp_path):
+def test_job_panel_blocks_a_destination_inside_the_source(qapp, tmp_path):
     source = tmp_path / "card"
     (source / "inner").mkdir(parents=True)
-    panel = SimpleModePanel()
+    panel = JobPanel()
     panel.set_source(source)
     panel.add_destination(source / "inner")
     assert not panel._start.isEnabled()
@@ -232,8 +231,8 @@ def test_simple_mode_blocks_a_destination_inside_the_source(qapp, tmp_path):
     assert panel._start.isEnabled()
 
 
-def test_simple_mode_requires_source_and_destination(qapp, tmp_path):
-    panel = SimpleModePanel()
+def test_job_panel_requires_source_and_destination(qapp, tmp_path):
+    panel = JobPanel()
     assert not panel._start.isEnabled()
     panel.set_source(tmp_path / "card")
     assert not panel._start.isEnabled()
@@ -241,8 +240,8 @@ def test_simple_mode_requires_source_and_destination(qapp, tmp_path):
     assert panel._start.isEnabled()
 
 
-def test_simple_mode_builds_a_preset_from_its_controls(qapp, tmp_path):
-    panel = SimpleModePanel()
+def test_job_panel_builds_a_job_from_its_controls(qapp, tmp_path):
+    panel = JobPanel()
     panel.set_source(tmp_path / "card")
     panel.add_destination(tmp_path / "dest")
     preset = panel.build_preset()
@@ -252,36 +251,53 @@ def test_simple_mode_builds_a_preset_from_its_controls(qapp, tmp_path):
     assert preset.verification is VerificationMode.SOURCE_ONLY
 
 
-def test_preset_panel_disables_run_for_a_preset_without_destinations(qapp, tmp_path):
-    store = PresetStore(tmp_path / "presets.json")
-    store.presets.clear()
-    store.add(Preset(name="no destinations"))
-    store.add(Preset(name="ready", destinations=[tmp_path / "d"]))
+def test_job_panel_options_round_trip(qapp, tmp_path):
+    panel = JobPanel()
+    panel.apply_options({
+        "algorithm": "sha256",
+        "verification": "full",
+        "profile": "data",
+        "reports": ["csv", "ascmhl"],
+        "excludes": ["*.tmp"],
+        "skip_existing": True,
+        "advanced_open": True,
+    })
+    options = panel.options()
+    assert options["algorithm"] == "sha256"
+    assert options["verification"] == "full"
+    assert options["reports"] == ["csv", "ascmhl"]
+    assert options["excludes"] == ["*.tmp"]
+    assert options["skip_existing"] is True
+    assert options["advanced_open"] is True
+    assert panel._advanced.isVisible() or not panel.isVisible()
 
-    panel = PresetModePanel(store)
+    preset = panel.build_preset()
+    assert preset.algorithm == "sha256"
+    assert preset.verification is VerificationMode.FULL
+    assert preset.profile.value == "data"
+    assert preset.excludes == ["*.tmp"]
+
+
+def test_job_panel_tolerates_garbage_options(qapp, tmp_path):
+    panel = JobPanel()
+    panel.apply_options({"algorithm": "nope", "thumbnail_count": "x",
+                         "reports": "pdf", "excludes": 3})
+    options = panel.options()
+    assert options["algorithm"] in ("xxh3-64", options["algorithm"])
+    assert options["thumbnail_count"] == 4
+    assert options["reports"] == ["pdf"]
+    assert options["excludes"] == []
+
+
+def test_job_panel_emits_the_job(qapp, tmp_path):
+    panel = JobPanel()
     panel.set_source(tmp_path / "card")
-
-    panel._list.setCurrentRow([p.name for p in panel._visible].index("no destinations"))
-    assert not panel._run.isEnabled()
-
-    panel._list.setCurrentRow([p.name for p in panel._visible].index("ready"))
-    assert panel._run.isEnabled()
-
-
-def test_preset_panel_emits_the_selected_preset(qapp, tmp_path):
-    store = PresetStore(tmp_path / "presets.json")
-    store.presets.clear()
-    store.add(Preset(name="ready", destinations=[tmp_path / "d"]))
-
-    panel = PresetModePanel(store)
-    panel.set_source(tmp_path / "card")
-    panel._list.setCurrentRow(0)
+    panel.add_destination(tmp_path / "dest")
 
     captured = []
-    panel.runRequested.connect(lambda source, preset: captured.append((source, preset)))
-    panel._run_selected()
-
-    assert captured == [(tmp_path / "card", store.presets[0])]
+    panel.runRequested.connect(lambda s, p, n: captured.append((s, p.destinations, n)))
+    panel._start_clicked()
+    assert captured == [(tmp_path / "card", [tmp_path / "dest"], "card")]
 
 
 def test_source_drop_zone_reports_its_path(qapp, tmp_path):

@@ -23,7 +23,7 @@ from . import theme
 from .widgets import _paint_meter, button, label, row, section
 from .worker import JobState, QueueController, QueueItem
 
-COLUMNS = ("Job", "Source", "Preset", "Status", "Progress", "Throughput")
+COLUMNS = ("Job", "Source", "Options", "Status", "Progress", "Throughput")
 COL_STATUS = 3
 COL_PROGRESS = 4
 
@@ -85,7 +85,7 @@ class QueueModel(QAbstractTableModel):
             return (
                 item.name,
                 str(item.source),
-                item.preset.name,
+                f"{item.preset.algorithm} · {item.preset.verification.value}",
                 item.status_text,
                 "",                      # painted by ProgressDelegate
                 _throughput(item),
@@ -108,10 +108,10 @@ class QueueModel(QAbstractTableModel):
                      else item.status_text.lower())
             return QColor(theme.status_color(state))
 
-        if role == Qt.ForegroundRole and column in (1, len(COLUMNS) - 1):
+        if role == Qt.ForegroundRole and column in (1, 2, len(COLUMNS) - 1):
             return QColor(theme.FG_MUTED)
 
-        if role == Qt.FontRole and column in (1, COL_STATUS, len(COLUMNS) - 1):
+        if role == Qt.FontRole and column in (1, 2, COL_STATUS, len(COLUMNS) - 1):
             font = _mono_font(9)
             if column == COL_STATUS:
                 font.setBold(True)
@@ -242,7 +242,7 @@ class QueuePanel(QWidget):
         self._reports.clicked.connect(self._open_reports)
         self._clear.clicked.connect(controller.clear_finished)
 
-        self._empty = label("NO JOBS  ·  drop a card on a preset to start", "readout")
+        self._empty = label("NO JOBS  ·  choose a source and a destination to start", "readout")
         self._empty.setAlignment(Qt.AlignCenter)
         self._count = label("", "readout")
 

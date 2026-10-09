@@ -279,7 +279,7 @@ class CapacityBar(QWidget):
 
 
 class ColorChip(QWidget):
-    """The colour swatch shown against a preset: a lit vertical bar."""
+    """A lit vertical colour bar, for tagging a row."""
 
     def __init__(self, color: str, diameter: int = 12,
                  parent: QWidget | None = None) -> None:
