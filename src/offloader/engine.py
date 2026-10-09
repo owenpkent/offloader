@@ -28,6 +28,7 @@ from .models import (
     FileEntry,
     FileStatus,
     Job,
+    MediaInfo,
     Profile,
     VerificationMode,
 )
@@ -103,6 +104,45 @@ def assert_safe_destinations(source_root: Path, destinations: Sequence[Path]) ->
                 "directory"
             )
         seen[resolved] = Path(destination)
+
+
+def assert_no_destination_collisions(
+    sources: Sequence[Path], source_root: Path,
+    destination_roots: Sequence[Path], preserve_structure: bool,
+) -> None:
+    """Refuse a layout that maps two source files onto one destination path.
+
+    Flattening a tree is a lossy operation whenever two cards, or two folders
+    on one card, hold a clip of the same name. Copying both leaves one file on
+    disk, and because each is verified as it lands, before the next one
+    overwrites it, both are reported VERIFIED. A report that attests to a file
+    which is not at the destination is worse than no report, so this is caught
+    up front, before a single byte moves.
+
+    Paths are compared with `os.path.normcase`, so on Windows this also
+    catches two names differing only in case: distinct on the case-sensitive
+    volume they came from, one file on the volume they are going to.
+    """
+    claimed: dict[str, Path] = {}
+    collisions: list[tuple[Path, Path, Path]] = []
+
+    for source in sources:
+        for root in destination_roots:
+            target = _destination_for(source, source_root, root, preserve_structure)
+            key = os.path.normcase(str(target))
+            if key in claimed:
+                collisions.append((claimed[key], source, target))
+            else:
+                claimed[key] = source
+
+    if collisions:
+        first, second, target = collisions[0]
+        extra = (f" (and {len(collisions) - 1} more)" if len(collisions) > 1 else "")
+        raise UnsafeDestination(
+            f"{first} and {second} would both be copied to {target}{extra}; "
+            "one would silently overwrite the other. Keep the source folder "
+            "structure, or offload the colliding folders separately."
+        )
 
 
 class JobControl:
@@ -217,12 +257,47 @@ def is_excluded(path: Path, patterns: Iterable[str]) -> bool:
 
 
 def scan(root: Path, excludes: Iterable[str] = DEFAULT_EXCLUDES) -> list[Path]:
-    """Every file under `root`, sorted, with junk filtered out."""
+    """Every file under `root`, sorted, with junk filtered out.
+
+    Directories are visited at most once each. A Windows junction pointing at
+    its own parent otherwise walks forever, and `Path.is_symlink()` is False
+    for a junction, so the usual symlink guard does not see it. Termination is
+    left to chance without this: today it only stops because Windows refuses
+    paths past MAX_PATH, and it stops having already returned the same file
+    dozens of times.
+
+    Only directories the walk will actually enter are recorded. `os.walk`
+    does not follow a directory symlink, so recording one would mark its
+    target as seen without anything having scanned it: an alias `a -> z`
+    listed before `z` would then hide `z` itself, and neither path's files
+    would be found. A junction is not a symlink to `os.walk`, which does enter
+    it, so a junction still goes through the guard.
+    """
     patterns = tuple(excludes)
     found: list[Path] = []
+    visited: set[str] = set()
+
+    def already_seen(directory: Path) -> bool:
+        if os.path.islink(directory):
+            # Not followed by os.walk, so not a visit. See the docstring.
+            return False
+        try:
+            real = os.path.normcase(os.path.realpath(directory))
+        except OSError:                  # pragma: no cover - unreadable entry
+            return True
+        if real in visited:
+            return True
+        visited.add(real)
+        return False
+
+    # The root is always entered, even when it is itself a symlink.
+    visited.add(os.path.normcase(os.path.realpath(root)))
     for dirpath, dirnames, filenames in os.walk(root):
         here = Path(dirpath)
-        dirnames[:] = sorted(d for d in dirnames if not is_excluded(here / d, patterns))
+        dirnames[:] = sorted(
+            d for d in dirnames
+            if not is_excluded(here / d, patterns) and not already_seen(here / d)
+        )
         for filename in sorted(filenames):
             candidate = here / filename
             if not is_excluded(candidate, patterns):
@@ -549,6 +624,8 @@ def run(source_root: Path, options: OffloadOptions,
     assert_safe_destinations(source_root, dest_roots)
 
     files = scan(source_root, options.excludes)
+    assert_no_destination_collisions(files, source_root, dest_roots,
+                                     options.preserve_structure)
     counters = _Counters(job_bytes_total=sum(p.stat().st_size for p in files))
 
     host = sysinfo.collect()
@@ -823,15 +900,24 @@ def run(source_root: Path, options: OffloadOptions,
             emit(ProgressEvent(index, len(files), source.name, "probe",
                                0, stat.st_size,
                                counters.job_bytes_done, counters.job_bytes_total))
-            entry.media = probe_mod.probe(source)
+            # Everything from here down is metadata: nice to have, and not
+            # worth a transfer. The bytes are already copied and verified by
+            # this point, so a clip whose container will not parse costs its
+            # own metadata and a line in the report, not the rest of the card.
+            try:
+                entry.media = probe_mod.probe(source)
 
-            if braw_mod.is_braw(source):
-                # A clip whose recording was interrupted has no moov atom. It
-                # copies and verifies perfectly and will not play, so the time
-                # to notice is now, while the card is still in hand.
-                check = braw_mod.check_container(source)
-                if check.is_fatal:
-                    job.warnings.append(f"{source.name}: {check.detail}")
+                if braw_mod.is_braw(source):
+                    # A clip whose recording was interrupted has no moov atom.
+                    # It copies and verifies perfectly and will not play, so
+                    # the time to notice is now, while the card is in hand.
+                    check = braw_mod.check_container(source)
+                    if check.is_fatal:
+                        job.warnings.append(f"{source.name}: {check.detail}")
+            except Exception as exc:            # noqa: BLE001 - see above
+                entry.media = MediaInfo()
+                job.warnings.append(
+                    f"{source.name}: metadata could not be read ({exc})")
 
             if options.thumbnail_count > 0 and entry.media.is_video:
                 emit(ProgressEvent(index, len(files), source.name, "thumbs",
@@ -950,12 +1036,19 @@ def rescan(source_root: Path, destination_roots: Sequence[Path],
             )
 
         if options.extra_probe:
-            entry.media = probe_mod.probe(source)
-            if options.thumbnail_count > 0 and entry.media.is_video:
-                entry.thumbnails = thumbs.extract(
-                    source, entry.media, thumb_dir, options.thumbnail_count,
-                    memo=thumb_memo,
-                )
+            # Same reasoning as in run(): a rescan exists to regenerate
+            # paperwork, and one unparseable clip must not stop it.
+            try:
+                entry.media = probe_mod.probe(source)
+                if options.thumbnail_count > 0 and entry.media.is_video:
+                    entry.thumbnails = thumbs.extract(
+                        source, entry.media, thumb_dir, options.thumbnail_count,
+                        memo=thumb_memo,
+                    )
+            except Exception as exc:            # noqa: BLE001
+                entry.media = MediaInfo()
+                job.warnings.append(
+                    f"{source.name}: metadata could not be read ({exc})")
         job.files.append(entry)
 
     job.finished = _dt.datetime.now()

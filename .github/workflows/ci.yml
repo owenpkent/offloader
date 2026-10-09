@@ -104,7 +104,10 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
       - name: Run the property tests at soak depth
-        run: pytest tests/test_fuzz.py --fuzz -q
+        # All three property modules: test_fuzz.py fuzzes what a filename can
+        # contain, test_fuzz_edges.py what a card can contain, and
+        # test_edge_cases.py the layers between the bytes and the paperwork.
+        run: pytest tests/test_fuzz.py tests/test_fuzz_edges.py tests/test_edge_cases.py --fuzz -q
 
   build:
     name: build the distribution

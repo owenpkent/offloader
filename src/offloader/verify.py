@@ -28,7 +28,7 @@ from xml.etree import ElementTree as ET
 from .ascmhl import ASCMHL_DIRNAME
 from .ascmhl import NAMESPACE as ASCMHL_NAMESPACE
 from .ascmhl import directory_hashes as ascmhl_directory_hashes
-from .hashers import ALGORITHMS, hash_file
+from .hashers import ALGORITHMS, get_algorithm, hash_file
 from .integrity import evict_from_cache
 
 #: Where this tool files its own paperwork, as a pattern. Only used to read
@@ -333,7 +333,10 @@ def verify_manifest(
                             detail=str(exc)))
             continue
 
-        matched = actual == expected
+        # Case-folded for hex, exact for C4. An MHL is an interchange format,
+        # and plenty of tools write their hex uppercase: comparing those with
+        # `==` calls every byte-identical file a mismatch.
+        matched = get_algorithm(algorithm_key).digests_match(actual, expected)
         relative = note(path, actual)
         if not matched and relative is not None:
             unsound.add(relative)
@@ -492,6 +495,9 @@ def _directory_verdicts(base: Path, recorded: dict[str, tuple[str, str]],
         [(Path(relative), digest) for relative, digest in on_disk.items()],
         algorithm_key)
 
+    # The same per-algorithm comparison the file hashes get: a directory hash
+    # another tool wrote in uppercase hex describes the same tree.
+    same = get_algorithm(algorithm_key).digests_match
     verdicts: list[DirectoryVerdict] = []
     for relative in sorted(recorded):
         expected_content, expected_structure = recorded[relative]
@@ -514,9 +520,9 @@ def _directory_verdicts(base: Path, recorded: dict[str, tuple[str, str]],
             continue
 
         actual_content, actual_structure = found
-        if actual_content != expected_content:
+        if not same(actual_content, expected_content):
             result = DirectoryResult.CHANGED
-        elif actual_structure != expected_structure:
+        elif not same(actual_structure, expected_structure):
             result = DirectoryResult.RENAMED
         else:
             result = DirectoryResult.OK

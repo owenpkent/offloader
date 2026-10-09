@@ -30,18 +30,30 @@ def config_dir() -> Path:
 
 
 def config_file(name: str) -> Path:
-    return config_dir() / name
+    """A path for `name` inside the config directory.
+
+    `name` is coerced into the directory rather than joined onto it. pathlib's
+    `/` discards the left operand entirely when the right one is absolute, so
+    a plain join would put `config_file("D:/x.json")` at the root of D:.
+    """
+    parts = [part for part in Path(name).parts
+             if part not in ("", ".", "..") and not Path(part).anchor]
+    if not parts:
+        raise ValueError(f"not a usable config file name: {name!r}")
+    return config_dir().joinpath(*parts)
 
 
 def read_json(path: Path, default: Any) -> Any:
     """Load JSON, falling back to `default` on anything unreadable.
 
     Config corruption must never stop someone offloading a card, so a bad file
-    is treated as an empty one.
+    is treated as an empty one. That includes a file that is not valid UTF-8:
+    `read_text` raises UnicodeDecodeError, which is a ValueError rather than an
+    OSError, and json.JSONDecodeError is a ValueError too.
     """
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):
         return default
 
 

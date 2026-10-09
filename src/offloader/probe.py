@@ -7,6 +7,7 @@ uses ("H264/AVC", "QuickTime", "LINEAR PCM") rather than ffmpeg's internal ids.
 from __future__ import annotations
 
 import json
+import math
 import shutil
 import subprocess
 from pathlib import Path
@@ -64,20 +65,56 @@ def ffprobe_path() -> str | None:
 
 
 def _parse_rate(value: str | None) -> float | None:
-    """ffprobe rates arrive as "24/1" or "24000/1001"."""
+    """ffprobe rates arrive as "24/1" or "24000/1001".
+
+    A frame rate that is not a finite positive number is not a frame rate.
+    `float()` accepts "inf" and "nan" without complaint, and everything
+    downstream calls `round()` on the result, which does not.
+    """
     if not value or value in ("0/0", "0"):
         return None
     if "/" in value:
         num, _, den = value.partition("/")
         try:
             den_f = float(den)
-            return float(num) / den_f if den_f else None
-        except ValueError:
+            rate = float(num) / den_f if den_f else None
+        except (TypeError, ValueError):
             return None
-    try:
-        return float(value)
-    except ValueError:
+    else:
+        try:
+            rate = float(value)
+        except (TypeError, ValueError):
+            return None
+    if rate is None or not math.isfinite(rate) or rate <= 0:
         return None
+    return rate
+
+
+def _as_int(value: object) -> int | None:
+    """ffprobe writes the literal string "N/A" in numeric fields routinely:
+    for codecs that declare no sample rate, for data streams, and for anything
+    it only partly decoded. That is ordinary output, not corruption."""
+    try:
+        return int(value)                        # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_float(value: object) -> float | None:
+    try:
+        parsed = float(value)                    # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
+def _tags(obj: object) -> dict:
+    """A stream's or format's `tags`, defended against it not being a map."""
+    if isinstance(obj, dict):
+        tags = obj.get("tags")
+        if isinstance(tags, dict):
+            return tags
+    return {}
 
 
 def _from_braw(path: Path) -> MediaInfo:
@@ -126,9 +163,20 @@ def _from_braw(path: Path) -> MediaInfo:
 
 
 def probe(path: Path, timeout: float = 30.0) -> MediaInfo:
-    """Read metadata for one file. Returns an empty MediaInfo for non-media
-    files, unreadable files, or when ffprobe is missing — a failed probe must
-    never fail the offload."""
+    """Read metadata for one file.
+
+    Returns an empty MediaInfo for non-media files, unreadable files, and when
+    ffprobe is missing. A failed probe must never fail the offload, so this
+    catches everything rather than only the failures we predicted: metadata is
+    a convenience, and no clip is worth abandoning a transfer over.
+    """
+    try:
+        return _probe(path, timeout)
+    except Exception:                    # noqa: BLE001 - see the docstring
+        return MediaInfo()
+
+
+def _probe(path: Path, timeout: float) -> MediaInfo:
     path = Path(path)
     if path.suffix.lower() == ".braw":
         return _from_braw(path)
@@ -153,8 +201,11 @@ def probe(path: Path, timeout: float = 30.0) -> MediaInfo:
 
 
 def _build(data: dict) -> MediaInfo:
-    fmt = data.get("format", {})
-    streams = data.get("streams", [])
+    fmt = data.get("format")
+    fmt = fmt if isinstance(fmt, dict) else {}
+    # ffprobe is the only thing that should be writing this document, but it is
+    # still parsed JSON from a subprocess: entries need not be maps.
+    streams = [s for s in data.get("streams", []) if isinstance(s, dict)]
     video = next((s for s in streams if s.get("codec_type") == "video"), None)
     audios = [s for s in streams if s.get("codec_type") == "audio"]
 
@@ -163,10 +214,7 @@ def _build(data: dict) -> MediaInfo:
     info.container = _CONTAINERS.get(format_name, format_name.upper() or None)
 
     duration = fmt.get("duration") or (video or {}).get("duration")
-    try:
-        info.duration_sec = float(duration) if duration else None
-    except (TypeError, ValueError):
-        info.duration_sec = None
+    info.duration_sec = _as_float(duration) if duration else None
 
     if video is not None:
         info.width = video.get("width")
@@ -186,11 +234,11 @@ def _build(data: dict) -> MediaInfo:
         # Timecode lives on the format, the video stream, or a dedicated
         # data stream depending on the camera.
         tc = (
-            fmt.get("tags", {}).get("timecode")
-            or video.get("tags", {}).get("timecode")
+            _tags(fmt).get("timecode")
+            or _tags(video).get("timecode")
             or next(
-                (s.get("tags", {}).get("timecode") for s in streams
-                 if s.get("tags", {}).get("timecode")),
+                (_tags(s).get("timecode") for s in streams
+                 if _tags(s).get("timecode")),
                 None,
             )
         )
@@ -201,15 +249,14 @@ def _build(data: dict) -> MediaInfo:
 
     for stream in audios:
         codec = stream.get("codec_name", "")
-        bit_rate = stream.get("bit_rate")
-        sample_rate = stream.get("sample_rate")
+        bit_rate = _as_float(stream.get("bit_rate"))
         info.audio_tracks.append(
             AudioTrack(
-                channels=int(stream.get("channels") or 0),
+                channels=_as_int(stream.get("channels")) or 0,
                 layout=stream.get("channel_layout") or "",
                 codec=_AUDIO_CODECS.get(codec, codec.upper() or "Unknown"),
-                bit_rate_kbps=float(bit_rate) / 1000.0 if bit_rate else None,
-                sample_rate_hz=int(sample_rate) if sample_rate else None,
+                bit_rate_kbps=bit_rate / 1000.0 if bit_rate else None,
+                sample_rate_hz=_as_int(stream.get("sample_rate")),
             )
         )
     return info

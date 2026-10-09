@@ -102,6 +102,31 @@ the original was already broken.
 The same walk catches an atom whose declared length runs past the end of the
 file, which is what a truncated transfer from some other tool looks like.
 
+## Reading a file that is lying to you
+
+Every offset in this parser is derived from a length the *file* supplied, and a
+corrupt clip supplies whatever it likes. The rule throughout is that a declared
+size is a claim and the buffer is the fact:
+
+- Fixed-offset reads inside an atom are bounded by that atom's real end, so a
+  short `mdhd` or an `stts` promising entries it does not carry yields nothing
+  rather than raising out of the parser.
+- Descent into container atoms is depth-limited. Real BRAW nests about six
+  deep; without a cap, a 16 KB file of nothing but nested headers exhausts the
+  interpreter stack.
+- The `moov` read is clamped to the bytes actually present. The extended-size
+  header can claim up to 2^64, and asking the allocator for that is its own
+  kind of failure.
+- Sensor dimensions arrive as a raw IEEE 754 pair, so they can decode to NaN or
+  infinity. Neither survives `int()`, and both are rejected.
+
+None of this makes a broken clip readable. It makes a broken clip cost its own
+metadata instead of the rest of the card: metadata is read *after* the bytes
+are copied and verified, and a container that will not parse now leaves a
+warning on the job rather than ending it. `tests/test_fuzz_edges.py` fuzzes
+this by pinning the atom shape `_read_timing` looks for and generating the two
+bodies it then reads at fixed offsets.
+
 ## Testing
 
 Fixtures are synthesised — `tests/test_braw.py` builds a structurally faithful
