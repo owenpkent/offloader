@@ -17,7 +17,11 @@ an oversight.
 ## Done
 
 Engine, CLI, five report formats (PDF, CSV, MHL 1.1, ASC MHL v2.0, HTML), the
-desktop app, and cross-platform CI.
+desktop app, and cross-platform CI. A first live card offload then drove a
+round of fixes: full verification as the default, windowed throughput/ETA,
+checksum-cost labels in every picker, a running-job summary line, the
+local-first parallel drive scan, jobs named after the volume label, and a PDF
+title that tells reports apart.
 
 Offloading from an **edit timeline** rather than a card: `offloader resolve`
 and `offload --timeline` read an NLE's interchange file with OpenTimelineIO,
@@ -34,10 +38,16 @@ streams. ASC MHL is diffed against the reference implementation's own worked
 example. BRAW metadata comes out of the container because ffprobe cannot read
 the format at all, and has been run over 510 real clips from two camera bodies.
 
-Transient read failures retry at the failing chunk rather than restarting the
-file: the reader resumes from the last chunk it delivered, so one marginal
-sector costs a re-read of 8 MiB, not of a 79 GB clip. Whole-file restart
-remains the fallback for everything the chunk retry cannot reach.
+`offloader verify` re-checks the ASC MHL directory content and structure hashes,
+not only the file hashes — so a rename or a moved file, which every file hash
+agrees is fine, is reported as the structure-hash mismatch it is. See
+[`docs/ascmhl.md`](docs/ascmhl.md#directory-hashes).
+
+`--paranoid` reads every source file a second time and compares, which is the
+only thing that catches a read returning wrong bytes without reporting an error.
+Retry works at the chunk that failed rather than restarting the file. Sidecars
+and proxies are grouped with the clip they belong to, so a clip separated from
+its grade is a warning rather than two unrelated rows.
 
 ## Next
 
@@ -46,37 +56,35 @@ The proposed first packaged Windows beta is tracked in
 integrity gates, a private pilot, and recovery steps. It adapts Alpha-OSK's
 release process to Offloader's data-safety requirements.
 
-### Verify what is already written
+### `--skip-existing` by checksum, not size
 
-`offloader verify` checks file hashes. ASC MHL also records **directory content
-and structure hashes**, and those are written but never re-checked. The
-structure hash exists precisely to catch a rename or a moved file — a change no
-file hash can see, because every file is individually fine.
+Today it is explicitly a speed option and says so: a destination file of the
+right length is assumed to be the right file. That is the one place the tool
+takes something on trust, and it is listed under "What is still not protected"
+in [`docs/data-safety.md`](docs/data-safety.md) for that reason. A checksum
+variant would make it a safe option rather than a fast one.
 
-Today a rename shows up only as a "not in manifest" line. It should be a
-structure-hash mismatch, which is a much stronger statement.
+*Where:* `engine.py`, in the `skip_existing` branch. `timeline._same_file` is
+the comparison already written: size first, because it settles almost every
+case for a stat, then the checksum. What is missing is only the wiring into the
+engine's own skip, where the file being skipped is at the destination rather
+than under another search root.
 
-*Where:* `verify.py`, using the directory-hash code already in `ascmhl.py`.
+### `previousPath`, so a rename survives a generation
 
-### Read the source twice, optionally
+Verifying directory hashes made a rename visible; it did not make it
+*explicable*. A renamed directory reports as one `MISSING` line and one
+`RENAMED` parent, with nothing saying the first became the second. The format
+has `previousPath` for exactly this and it is not written.
 
-A source read that returns wrong bytes without raising is rare, but nothing
-currently catches it: the checksum is computed from what was read, so a bad read
-produces a destination that faithfully matches a corrupted source and verifies
-clean.
+*Where:* `ascmhl.py`, and `verify.py` to read it back.
 
-A `--paranoid` mode reading the source twice and comparing would close it, at
-the cost of a second pass. Worth having as an option for irreplaceable material,
-not as a default.
+### Coordination between instances
 
-*Where:* `engine.py`, alongside the existing verification modes.
-
-### `.sidecar` and companion grouping
-
-BRAW `.sidecar` files carry colour metadata. They are copied like any other
-file, but nothing links them to their clip, so a missing one is not flagged and
-a report does not show them together. The proxy pairing in `companions.py`
-already does the stem-matching this needs.
+One app instance serialises its queue. Two pointed at the same destination do
+not know about each other, which is a documented gap in
+[`docs/data-safety.md`](docs/data-safety.md). A lock file in the destination
+would close it.
 
 ## Later
 
@@ -109,8 +117,6 @@ already does the stem-matching this needs.
 
 - **Nested histories** — an `ascmhl` folder further down the tree with its own
   chain, and a parent taking a child's root hash as its directory hash.
-- **`previousPath`** so a rename is tracked across generations rather than
-  reading as a new `original` plus a missing path.
 - **The flatten operation**, consolidating a history into one manifest.
 - **Several hash formats per manifest**, which the format allows.
 
@@ -118,15 +124,6 @@ already does the stem-matching this needs.
 
 - **Email or SMS on completion.** ShotPut Pro has it; a DIT running a long
   offload wants to leave the cart.
-- **Coordination between instances.** One app instance serialises its queue; two
-  pointed at the same destination do not know about each other. A lock file in
-  the destination would do it.
-- **`--skip-existing` by checksum**, not size. Today it is explicitly a speed
-  option and says so; a checksum variant would make it a safe one.
-  `timeline._same_file` is the comparison already written: size first, because
-  it settles almost every case for a stat, then the checksum. What is missing
-  is only the wiring into the engine's own skip, where the file being skipped
-  is at the destination rather than under another search root.
 - **Windows installer and code signing**, so it can be handed to someone who
   does not have Python.
 - **Per-job report templates and custom branding.**

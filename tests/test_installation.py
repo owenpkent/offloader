@@ -192,6 +192,86 @@ def test_recovery_rolls_forward_stop_after_manifest_write(tmp_path, monkeypatch)
     assert not (target / ".offloader-installing").exists()
 
 
+def _fail_manifest_write(monkeypatch, before=None):
+    """Break the installation manifest write, which is the last step before a
+    fresh install commits and so leaves every file already promoted."""
+    import offloader.installation as installation
+
+    real_write = installation._write_json_atomic
+
+    def fail_manifest(path, data):
+        if path.name == MANIFEST_NAME:
+            if before is not None:
+                before()
+            raise OSError("simulated disk failure")
+        return real_write(path, data)
+
+    monkeypatch.setattr(installation, "_write_json_atomic", fail_manifest)
+
+
+def test_a_rolled_back_first_install_can_be_retried(tmp_path, monkeypatch):
+    """REGRESSION. Rollback removed the promoted files and left the directories
+    promotion had created, so the target still held an empty `runtime`. The next
+    attempt read that as a nonempty unowned directory and refused: a transient
+    first-install failure could not be retried through the installer, even
+    though recovery reported no outstanding transaction."""
+    target = tmp_path / "installed"
+    payload = _payload(tmp_path / "payload")
+
+    _fail_manifest_write(monkeypatch)
+    with pytest.raises(OSError, match="simulated disk failure"):
+        install(payload, target)
+    monkeypatch.undo()
+
+    assert {item.name for item in target.iterdir()} == {LOCK_NAME}
+
+    install(payload, target)
+    assert (target / "Offloader.exe").read_text(encoding="utf-8") == "first"
+    assert (target / "runtime" / "support.dll").read_text(encoding="utf-8") == "support"
+
+
+def test_rollback_keeps_a_created_directory_that_holds_somebody_elses_file(
+        tmp_path, monkeypatch):
+    """Only empty, and only ours. A file that arrived during the transaction is
+    not this installer's to delete, and the directory holding it stays."""
+    target = tmp_path / "installed"
+    payload = _payload(tmp_path / "payload")
+    stray = target / "runtime" / "from-somebody-else.txt"
+
+    _fail_manifest_write(monkeypatch,
+                         before=lambda: stray.write_text("keep me", encoding="utf-8"))
+    with pytest.raises(OSError, match="simulated disk failure"):
+        install(payload, target)
+    monkeypatch.undo()
+
+    assert stray.read_text(encoding="utf-8") == "keep me"
+    assert not (target / "runtime" / "support.dll").exists()
+
+
+def test_a_failed_upgrade_keeps_the_directories_it_did_not_create(
+        tmp_path, monkeypatch):
+    """`runtime` already existed, so it was never recorded and is not pruned.
+    The restored old file goes back where it came from."""
+    target = tmp_path / "installed"
+    install(_payload(tmp_path / "first", "old"), target)
+
+    _fail_manifest_write(monkeypatch)
+    with pytest.raises(OSError, match="simulated disk failure"):
+        install(_payload(tmp_path / "second", "new"), target)
+    monkeypatch.undo()
+
+    assert (target / "runtime" / "support.dll").read_text(encoding="utf-8") == "support"
+    assert (target / "Offloader.exe").read_text(encoding="utf-8") == "old"
+
+    # ...and the installation is still usable. The manifest write is what
+    # commits an update, so a failed one leaving the previous inventory in
+    # place means it did not commit. Recovery used to read that as a mismatch
+    # and raise, which wedged every later install and uninstall.
+    install(_payload(tmp_path / "third", "new"), target)
+    assert (target / "Offloader.exe").read_text(encoding="utf-8") == "new"
+    uninstall(target)
+
+
 def test_recovery_retries_after_stop_during_rollback(tmp_path, monkeypatch):
     target = tmp_path / "installed"
     first = _payload(tmp_path / "first", "old")
