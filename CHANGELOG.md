@@ -107,7 +107,9 @@ project uses [semantic versioning][semver].
   is the failure. Whose result it is belongs to the check that is
   running, so a manual check started during the first couple of seconds
   survives the launch timer firing behind it instead of being answered
-  silently.
+  silently. `offloader update` makes the same distinction: a
+  check that could not be made is an error on stderr with exit status 2, not
+  "the newest release available".
 
   Installing follows the installer's refusal rather than working around it: a
   running *or paused* job declines the update with the reason, since a paused

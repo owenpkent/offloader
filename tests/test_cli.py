@@ -331,3 +331,62 @@ def test_a_clip_with_dialogue_is_not_counted_twice(capsys):
     cli._summarize(job, [])
     assert "(3 video)" in capsys.readouterr().out
 
+
+
+def _feed(monkeypatch, result):
+    """Stand in for `update.check_feed`: return `result`, or raise it."""
+    from offloader import update
+
+    def check_feed(*args, **kwargs):
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+    monkeypatch.setattr(update, "check_feed", check_feed)
+
+
+def test_update_names_a_newer_release(monkeypatch, capsys):
+    from offloader.update import Release
+
+    _feed(monkeypatch, Release(version="99.0.0",
+                               asset_name="Offloader-Setup-99.0.0.exe",
+                               download_url="https://github.com/x/y.exe"))
+    assert cli.main(["update"]) == 1
+    out = capsys.readouterr().out
+    assert "Offloader 99.0.0 is available" in out
+    assert "newest" not in out
+
+
+def test_update_up_to_date_when_the_feed_has_nothing_newer(monkeypatch, capsys):
+    _feed(monkeypatch, None)
+    assert cli.main(["update"]) == 0
+    assert "is the newest release available" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("error", [
+    "could not reach the release feed: [Errno -2] Name or service not known",
+    "the release feed did not return a releases collection",
+])
+def test_update_failed_fetch_is_an_error_not_a_confirmation(monkeypatch, capsys,
+                                                            error):
+    from offloader.update import FeedError
+
+    _feed(monkeypatch, FeedError(error))
+    assert cli.main(["update"]) == 2
+    captured = capsys.readouterr()
+    assert "newest" not in captured.out + captured.err
+    assert "could not check for updates" in captured.err
+    assert error in captured.err
+
+
+def test_update_failed_fetch_through_the_real_feed_check(monkeypatch, capsys):
+    from offloader import update
+
+    def unreachable(*args, **kwargs):
+        raise OSError("network is unreachable")
+
+    monkeypatch.setattr(update.urllib.request, "urlopen", unreachable)
+    assert cli.main(["update"]) == 2
+    captured = capsys.readouterr()
+    assert "newest" not in captured.out
+    assert "network is unreachable" in captured.err
