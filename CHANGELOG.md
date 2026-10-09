@@ -27,6 +27,18 @@ project uses [semantic versioning][semver].
 
 ### Fixed
 
+- **A source on a network share survives its session dropping.** The retry
+  machinery reopened a dead handle and resumed from the last delivered chunk
+  already; the classifier just did not recognise a dropped SMB session as
+  transient, so the retry never fired and the file failed outright. The
+  network-mount codes now qualify — including `ERROR_UNEXP_NET_ERR`, which
+  Explorer reports as **0x8007003B** before abandoning the whole transfer, and
+  `ECONNRESET`, `ENETRESET`, `EPIPE` and `ESTALE` on a POSIX mount. Observed
+  offloading from a NAS over a VPN link: the path pings clean either side of
+  the drop, which is exactly why the retry is worth making. Recovery costs one
+  re-read of the chunk in flight.
+
+
 - **A report directory more than one level down failed its own verification.**
   The writer records a relocated report directory as a relative path, so
   `--report-dir` two levels below the destination was recorded as

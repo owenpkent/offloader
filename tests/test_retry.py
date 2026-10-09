@@ -54,6 +54,56 @@ def test_windows_error_codes(winerror: int, expected: bool):
     assert retry.is_transient(_os_error(errno.EIO, winerror=winerror)) is expected
 
 
+@pytest.mark.parametrize("winerror", [53, 54, 58, 59, 64, 71, 1231, 1232, 1450])
+def test_dropped_network_session_is_retried(winerror: int):
+    """A source on an SMB share over a VPN loses its session mid-copy and the
+    handle with it. 59 (ERROR_UNEXP_NET_ERR) is the one Explorer reports as
+    0x8007003B before abandoning the whole transfer; the engine reopens and
+    resumes from the last delivered chunk instead."""
+    assert retry.is_transient(_os_error(errno.EIO, winerror=winerror))
+
+
+@pytest.mark.parametrize("code", [errno.ECONNRESET, errno.ENETRESET,
+                                  errno.EHOSTUNREACH, errno.ENOTCONN,
+                                  errno.EPIPE, errno.ESTALE])
+def test_posix_network_mount_errors_are_retried(code: int):
+    """The same drop seen through a POSIX mount, where there is no winerror to
+    short-circuit on."""
+    assert retry.is_transient(_os_error(code))
+
+
+def test_a_windows_error_code_decides_over_the_mapped_errno():
+    """Python maps a winerror onto whichever errno it thinks fits, and for a
+    dropped session that mapping can land on something in the permanent set.
+    The winerror is the specific fact and has to win, or the errno silently
+    vetoes a code that was deliberately added."""
+    dropped = _os_error(errno.ENOENT, winerror=59)
+    assert retry.is_transient(dropped)
+
+
+def test_a_permanent_windows_code_is_not_rescued_by_a_transient_errno():
+    """The precedence has to cut both ways, or it is not precedence — it is
+    just a second chance for anything with the right errno."""
+    denied = _os_error(errno.EIO, winerror=5)
+    assert not retry.is_transient(denied)
+
+
+def test_an_unknown_windows_code_is_not_retried():
+    """The default is to fail. A code nobody has reasoned about is not given
+    the benefit of the doubt, because the cost of guessing wrong is a delay
+    that hides the real fault."""
+    assert not retry.is_transient(_os_error(errno.EIO, winerror=999999))
+
+
+def test_exhausted_wrapping_a_network_drop_is_not_retried_again():
+    """A chunk-level loop raises Exhausted once it has spent its attempts.
+    Retrying it at a coarser level would repeat the same attempts against the
+    same dead session and re-read everything that already succeeded."""
+    spent = retry.Exhausted("read failed at offset 0 after 3 attempts")
+    spent.winerror = 59
+    assert not retry.is_transient(spent)
+
+
 def test_non_os_errors_are_never_retried():
     assert not retry.is_transient(ValueError("nope"))
     assert not retry.is_transient(KeyboardInterrupt())
@@ -453,14 +503,17 @@ def test_a_bad_sector_is_recovered_without_re_reading_the_file(
     assert log.count(0) == 1, f"the file was restarted: {log}"
 
 
+@pytest.mark.parametrize("reopen_winerror", [1117, 59, 64])
 def test_a_reopen_that_fails_spends_an_attempt_not_the_offload(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, reopen_winerror: int
 ):
     """REGRESSION. Recovery used to run in `before_retry`, which `retry.call`
     invokes outside the clause that catches OSError. A reopen that failed
     therefore escaped with attempts still unspent, and the handler wrapped it in
     `Exhausted`, closing the whole-file retry as well. A reader that takes a
-    moment to come back costs one attempt of the chunk's budget."""
+    moment to come back costs one attempt of the chunk's budget. The 59 and 64
+    cases are a network share whose session is still down when the reopen is
+    tried: classified transient, so retried inside the chunk's budget."""
     monkeypatch.setattr(engine, "CHUNK_SIZE", 4096)
     card, payload = _chunked_card(tmp_path, 3)
     log: list[int] = []
@@ -479,7 +532,7 @@ def test_a_reopen_that_fails_spends_an_attempt_not_the_offload(
             # this is. The handle does not come back on the first try.
             if failures["n"] and not reopens["n"]:
                 reopens["n"] += 1
-                raise _os_error(errno.EIO, winerror=1117)
+                raise _os_error(errno.EIO, winerror=reopen_winerror)
             return _BadSector(real_open(path, mode, *args, **kwargs),
                               log, failures, 4096, 1)
         return real_open(path, mode, *args, **kwargs)
