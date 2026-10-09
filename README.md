@@ -239,7 +239,7 @@ scrolls at 1280 × 800; the rules behind that are in
 [`docs/ui-philosophy.md`](docs/ui-philosophy.md).
 
 Down the left is the **drive panel**: every mounted volume with a capacity bar
-(amber past 80 %, red past 95 %) and one-click *Source* / *Destination* buttons.
+(amber past 80 %, red past 95 %) and one-click *Source* / *Dest* buttons.
 Volumes that look like camera media are badged `CARD` and sorted to the top —
 detected by the marker directories cameras write (`DCIM`, `PRIVATE`, `XDROOT`
 and friends) or by a root full of camera originals, since a Blackmagic card
@@ -358,17 +358,17 @@ what makes the report layer testable without moving bytes.
 
 ```sh
 pip install -e ".[dev]"
-pytest                      # 409 tests, ~33s
+pytest                      # 388 tests, ~25s
 pytest --fuzz               # same suite, 3000 examples per property (~2 min)
 ruff check src tests
 pytest --cov=offloader --cov-report=term-missing
 ```
 
-409 tests at 82% line coverage. They cover formatting against the reference's
+388 tests at 84% line coverage. They cover formatting against the reference's
 exact strings, checksum vectors and streaming equivalence, copy/verify
 behaviour including simulated destination corruption, pause/resume/cancel
 concurrency, retry discrimination, BRAW container parsing, ffprobe parsing,
-preset and history persistence, card detection, PDF geometry read back with
+settings and history persistence, card detection, PDF geometry read back with
 PyMuPDF, the CLI, and the GUI.
 
 The GUI tests run on Qt's offscreen platform and drive the real queue
@@ -398,8 +398,6 @@ The properties worth knowing about:
   chunk boundaries — the engine's boundaries fall wherever a read lands.
 - `sanitize()` always returns a legal filename, and `build()` never collides
   with a name already taken.
-- Presets survive a JSON round trip, and load from arbitrary garbage without
-  raising — a hand-edited or version-skewed config must not brick the app.
 
 This found a real bug: XML 1.0 cannot represent most C0 control characters even
 as character references, so a control byte in one filename produced an MHL that
