@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from offloader import engine, hashers
+from offloader import companions, engine, hashers
 from offloader.models import FileStatus, VerificationMode
 
 
@@ -299,6 +299,39 @@ def test_is_proxy_matches_directories_not_filenames(tmp_path: Path):
     assert not engine.is_proxy(tmp_path / "C001.braw", tmp_path)
     # Outside the root there is no relative path to inspect.
     assert not engine.is_proxy(Path("/elsewhere/Proxy/C001.mp4"), tmp_path)
+
+
+@pytest.mark.parametrize("name", ["C001.braw", "C001.r3d"])
+def test_is_proxy_needs_a_proxy_container_not_just_the_folder(tmp_path: Path,
+                                                              name: str):
+    # A camera original filed under a folder called Proxy is still an original.
+    assert not engine.is_proxy(tmp_path / "Proxy" / name, tmp_path)
+    # The real proxies in that folder still are proxies.
+    assert engine.is_proxy(tmp_path / "Proxy" / "C001.mov", tmp_path)
+    assert engine.is_proxy(tmp_path / "Proxy" / "C001.mp4", tmp_path)
+
+
+def test_is_proxy_agrees_with_the_clip_grouping(tmp_path: Path):
+    for relative in ("Proxy/C001.mp4", "Proxy/C001.braw", "proxies/C001.MOV",
+                     "Proxy/C001.r3d", "C001.braw", "clips/C001.mp4"):
+        path = tmp_path / relative
+        assert engine.is_proxy(path, tmp_path) == companions.in_proxy_directory(path)
+
+
+def test_order_for_transfer_keeps_originals_filed_under_proxy_in_place(tmp_path: Path):
+    root = tmp_path / "A007"
+    (root / "Proxy").mkdir(parents=True)
+    (root / "Proxy" / "C001.braw").write_bytes(b"original" * 200)
+    (root / "Proxy" / "C002.r3d").write_bytes(b"original" * 200)
+    (root / "Proxy" / "C003.mov").write_bytes(b"proxy")
+    (root / "C004.braw").write_bytes(b"original" * 200)
+    files = engine.scan(root)
+
+    order = engine.order_for_transfer(files, root)
+
+    assert [p.name for p in order[:1]] == ["C003.mov"]
+    assert [p.name for p in order[1:]] == [p.name for p in files
+                                          if p.name != "C003.mov"]
 
 
 def test_order_for_transfer_hoists_proxies(proxy_card: Path):
