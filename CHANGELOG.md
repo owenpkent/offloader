@@ -16,7 +16,8 @@ project uses [semantic versioning][semver].
   in `settings.json`. A readout beside the disclosure summarises the next job
   (checksum, verification, reports, profile) while it is collapsed. The
   preset editor dialog is removed; the `Preset` dataclass stays as the
-  internal job-options bundle the worker runs. Advanced is a two-column
+  internal job-options bundle the worker runs, and nothing else of presets
+  remains (see Removed). Advanced is a two-column
   compact grid and the queue is a one-line live strip with the full table
   behind a Details toggle, so nothing on the main screen scrolls at
   1280 × 800. Only one of the two opens at a time. The rules are written down
@@ -27,8 +28,7 @@ project uses [semantic versioning][semver].
   section labels, monospace readouts for paths and capacities, and LED status
   lamps (the header lamp breathes while a job runs). Capacity and progress
   bars are segmented meters with a soft glow, the source drop zone glows when
-  a card is dragged over it, and the mode switch is a segmented control. The
-  mode panel scrolls instead of squashing its form on a short window.
+  a card is dragged over it.
 
 ### Added
 
@@ -40,19 +40,23 @@ project uses [semantic versioning][semver].
   disk image, render output or backup is copied, checksummed, verified and
   documented (CSV, MHL, ASC MHL, PDF, HTML) with nothing depending on ffmpeg.
   The default stays `media`, so the camera-card workflow is unchanged. The
-  profile is a first-class field on `OffloadOptions`, `Job` and saved presets,
-  and is selectable in the desktop app's Simple mode and preset editor. This is
+  profile is a first-class field on `OffloadOptions` and `Job`, and is
+  selectable in the desktop app's Advanced section. This is
   a one-way verified transfer, not two-way sync — see `ROADMAP.md`.
+
+### Removed
+
+- **Saved presets.** `presets.json` is no longer read or written. The preset
+  store, its colour swatches, sort modes and usage counts went with the
+  preset editor, since nothing in the app could reach them. Existing preset
+  files are left on disk untouched. Retry attempts and wait now run at their
+  defaults in the desktop app; the CLI's `--retries` and `--retry-wait` are
+  unchanged.
 
 ### Fixed
 
 Found by adding CI on Linux and macOS — the suite had only ever run on Windows.
 
-- **A preset with explicit nulls loaded unusable.** `dict.get(key, default)`
-  returns None when the key is present with a null value, so a hand-edited or
-  version-skewed `presets.json` produced a preset whose algorithm was None,
-  which crashed when the job ran. Every field now falls back on missing *or*
-  null. Caught by the property tests.
 - **macOS badged the boot drive as a camera card.** The system volume also
   appears as `/Volumes/Macintosh HD`, a firmlink to `/`, so the system-volume
   guard missed it by string comparison — and macOS has a `/private` directory,
