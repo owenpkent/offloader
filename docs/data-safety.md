@@ -206,9 +206,14 @@ known.
   returning bytes. The job now says so: reads are taken in 1 MiB sub-reads, and
   a gap longer than `--stall-after` (15 s by default) is reported as a stall
   rather than left looking like a slow link, with the file named in the job's
-  warnings afterwards. A cancel is honoured during it too. What still cannot
-  happen is aborting the read itself, so *recovery* waits on the operating
-  system to turn the hang into one of the codes above — on Windows, the SMB
+  warnings afterwards. The duration the queue shows counts from the last byte,
+  not from the warning: the first report only fires once the threshold has
+  already passed, so timing it from there would show "no data for 0s" on a
+  source that had been silent for fifteen seconds, and stay that far short for
+  as long as the outage lasted. It is the number someone reads to decide
+  whether to go and look at the cable. A cancel is honoured during it too.
+  What still cannot happen is aborting the read itself, so *recovery* waits on
+  the operating system to turn the hang into one of the codes above — on Windows, the SMB
   client's `SessionTimeout`, 60 seconds by default. No data is at risk in the
   meantime; the wait is real.
 

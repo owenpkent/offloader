@@ -255,6 +255,44 @@ def test_the_stall_warning_reports_the_longest_gap(tmp_path: Path, monkeypatch):
     assert "no bytes arriving" in stalled[0]
 
 
+def test_the_stalled_event_carries_the_silence_already_observed(
+        tmp_path: Path, monkeypatch):
+    """REGRESSION. The first stalled event only fires once `stall_after` has
+    passed, so a consumer timing from its arrival starts at zero and stays a
+    whole threshold short of the real outage. The engine has measured that
+    silence by then; it just was not carrying it."""
+    monkeypatch.setattr(engine, "STALL_POLL", 0.02)
+    card = tmp_path / "card"
+    card.mkdir()
+    (card / "A001_C001.mov").write_bytes(b"x" * 2048)
+
+    stalls: list[float] = []
+    _pace_source_reads(monkeypatch, card, [0.9])
+    engine.run(card, _options(tmp_path, stall_after=0.3),
+               progress=lambda event: stalls.append(event.stalled_for)
+               if event.stage == "stalled" else None)
+    monkeypatch.undo()
+
+    assert stalls, "no stalled event was emitted"
+    assert stalls[0] >= 0.3, f"the first event reported {stalls[0]:.2f}s"
+    assert stalls == sorted(stalls), f"the reported silence went backwards: {stalls}"
+
+
+def test_no_other_stage_claims_a_stall_duration(tmp_path: Path, monkeypatch):
+    """The field is only meaningful on a stalled event, and a copy event
+    carrying a leftover value would restart a cleared clock."""
+    card = tmp_path / "card"
+    card.mkdir()
+    (card / "A001_C001.mov").write_bytes(b"x" * 2048)
+
+    seen: list[tuple[str, float]] = []
+    engine.run(card, _options(tmp_path, stall_after=0.0),
+               progress=lambda event: seen.append((event.stage, event.stalled_for)))
+
+    assert seen
+    assert all(value == 0.0 for stage, value in seen if stage != "stalled")
+
+
 def test_a_cancel_is_noticed_while_a_read_hangs(tmp_path: Path, monkeypatch):
     """A hung read never reaches the reader thread's own checkpoint, so without
     the consumer's the cancel would wait on the operating system too.
