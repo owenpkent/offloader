@@ -20,7 +20,12 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "src"))
+# The one list of what a release carries. Written down once because the build
+# checksums these files, its own verification refuses anything it did not
+# expect, and the instructions below upload them -- and the three had drifted.
+sys.path.insert(0, str(REPO / "build" / "windows"))
 
+from artifacts import release_assets  # noqa: E402,I001
 from offloader._version import __version__  # noqa: E402
 
 TEMPLATE = """\
@@ -41,7 +46,7 @@ available:
 git checkout {tag}
 python build/windows/build.py --clean
 python build/windows/build.py --verify-only
-gh release upload {tag} dist/windows/Offloader-Setup-{version}.exe dist/windows/SHA256SUMS.txt dist/windows/Offloader-{version}-inventory.json
+gh release upload {tag} {assets}
 ```
 
 Then work through the acceptance matrix in `docs/release-plan.md` and publish
@@ -63,7 +68,10 @@ def notes(tag: str, commit: str, version: str = __version__) -> str:
         raise SystemExit(
             f"error: tag {tag!r} names {tagged!r} but the source declares "
             f"{version!r}; the release notes would contradict themselves")
-    return TEMPLATE.format(tag=tag, commit=commit, version=version)
+    assets = " ".join(f"dist/windows/{name}"
+                      for name in release_assets(version))
+    return TEMPLATE.format(tag=tag, commit=commit, version=version,
+                           assets=assets)
 
 
 def main(argv: list[str] | None = None) -> int:

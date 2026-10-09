@@ -21,11 +21,25 @@ implemented now. CI includes Windows bundle checks and fresh-environment wheel
 installation.
 See [build-windows.md](build-windows.md) for commands and validation details.
 
+A build now also emits a CycloneDX 1.6 SBOM, a third-party notices inventory
+and a pinned requirements file for the runtime closure, all checksummed with
+the other outputs. They flag the packages whose licences carry redistribution
+conditions; Qt's LGPL/GPL terms against Offloader's MIT are the open decision
+they surface, and that decision has not been made here.
+
+Those three files cover the **Python distribution dependencies** and say so in
+their own text. They are not the complete third-party inventory: a frozen
+application also ships the CPython runtime DLL and the PyInstaller bootloader
+compiled into each executable, neither of which has packaging metadata for the
+closure to walk. `sbom.uncovered_in_bundle` reports which of those are present
+in a built bundle, so the gap is measured against the tree rather than
+asserted.
+
 Hardware-key signing, clean-machine interactive installation and alternate
-credential checks, the complete third-party license inventory/SBOM, private
-pilot, public release workflow, and release qualification remain pending. The
-tables below retain the planned stage gates; implementation does not complete
-those gates.
+credential checks, the Qt redistribution decision the notices flag, the
+complete third-party inventory covering the frozen runtime components, private
+pilot, and release qualification remain pending. The tables below retain the
+planned stage gates; implementation does not complete those gates.
 
 ## Release target
 
@@ -401,7 +415,9 @@ format; do not ask users to delete state as the default recovery procedure.
 
 Version unification, artifact identity and inventory, the NSIS installer path,
 transactional maintenance, shared installed-instance locking, signing hooks,
-and checksum records are implemented. The clean-account GUI walkthrough,
-hardware-key signing, alternate-credential install checks, complete license
-inventory/SBOM, private pilot, release workflow, and candidate qualification
-remain to be done.
+checksum records, the update client, the tag-triggered candidate workflow, and
+the SBOM/notices/lockfile set for the Python dependency closure are
+implemented. The clean-account GUI walkthrough, hardware-key signing,
+alternate-credential install checks, the Qt redistribution decision, the
+complete third-party inventory covering the frozen runtime components, private
+pilot, and candidate qualification remain to be done.
