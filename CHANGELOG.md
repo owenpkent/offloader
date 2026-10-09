@@ -88,6 +88,40 @@ project uses [semantic versioning][semver].
 
 ### Added
 
+- **A tag-triggered release candidate workflow.** Pushing `v*` gates the tag
+  against `src/offloader/_version.py` before spending a packaging run on it,
+  builds the unsigned bundle and installer on `windows-latest`, confirms every
+  artifact the release contract names exists, uploads them for inspection, and
+  prepares a draft pinned to the tagged commit. It attaches no
+  assets: signing needs the hardware token that only the release workstation
+  has, and the release plan requires every Windows download to be signed, so
+  the signed installer is uploaded separately. `contents: write` is held only
+  by the drafting job, and a test asserts no job in the workflow can attach
+  what it built to a release. The tag gate is `scripts/check_tag.py`, sharing
+  one version grammar with the updater and the installer's Windows fields, so
+  a tag that cannot be published is refused rather than producing an asset
+  nothing can compare.
+
+  Whether the draft is marked a prerelease comes from the version the gate
+  validated, and is set on both the create and the refresh path, so a rerun
+  corrects an existing draft rather than inheriting the first run's choice.
+  The updater does not read the flag (it reads the releases collection, skips
+  drafts, and takes the channel from the tag's version), but GitHub does: a
+  stable release created as a prerelease never becomes the "Latest" release,
+  so `/releases/latest` and the releases page keep pointing anyone who
+  downloads by hand at the one before it.
+
+  `workflow_dispatch` rehearses the checks against a tag that does not exist
+  yet: the proposed tag is a version to gate, not a ref to fetch, so the run
+  checks out whatever commit it was started from. Only a *pushed* tag may touch
+  a release — a dispatch can be started against an existing tag, and the ref
+  test alone let a rehearsal take the write token and edit the release,
+  including passing `--draft` to one already published. A rerun of the
+  original tag push is still a push, so the drafting step also asks whether
+  the release is a draft before editing it: a draft is refreshed, and a
+  release that has been published is left untouched and the step fails with
+  a diagnostic, rather than being withdrawn and given candidate notes.
+
 - **`offloader update` finds, verifies and applies a newer release.** GitHub
   Releases is the feed, so there is no manifest server and no second place a
   version is written down. Before anything runs: HTTPS with a host allowlist
