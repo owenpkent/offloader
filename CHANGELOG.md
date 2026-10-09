@@ -16,7 +16,11 @@ project uses [semantic versioning][semver].
   in `settings.json`. A readout beside the disclosure summarises the next job
   (checksum, verification, reports, profile) while it is collapsed. The
   preset editor dialog is removed; the `Preset` dataclass stays as the
-  internal job-options bundle the worker runs.
+  internal job-options bundle the worker runs. Advanced is a two-column
+  compact grid and the queue is a one-line live strip with the full table
+  behind a Details toggle, so nothing on the main screen scrolls at
+  1280 × 800. Only one of the two opens at a time. The rules are written down
+  in `docs/ui-philosophy.md`.
 - **Desktop app restyled.** The interface now borrows from audio-plugin
   design: near-black graphite rails with a hairline top highlight, one cyan
   accent reserved for the things that move data, uppercase letter-spaced

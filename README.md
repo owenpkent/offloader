@@ -234,7 +234,9 @@ One screen: drop a card or folder on **Source**, add one or more
 The checksum, verification depth, reports, profile and the rest sit behind an
 **Advanced** disclosure and are remembered between runs, so the common case is
 three things and a button. A one-line readout beside the disclosure shows what
-the next job will do even when it is collapsed.
+the next job will do even when it is collapsed. Nothing on the main screen
+scrolls at 1280 × 800; the rules behind that are in
+[`docs/ui-philosophy.md`](docs/ui-philosophy.md).
 
 Down the left is the **drive panel**: every mounted volume with a capacity bar
 (amber past 80 %, red past 95 %) and one-click *Source* / *Destination* buttons.
@@ -244,7 +246,9 @@ and friends) or by a root full of camera originals, since a Blackmagic card
 writes clips straight to the root and a reader in a dock reports as a fixed
 disk.
 
-Along the bottom is the **queue**. Jobs run one at a time — offloads are I/O
+Along the bottom is the **queue**: a one-line strip with the running job's
+name, stage, meter and throughput, and a *Details* toggle for the full table
+and transport controls. Jobs run one at a time — offloads are I/O
 bound, and running two at once against the same bus makes both slower and the
 progress readout meaningless. Each row shows live throughput and ETA, and the
 transport controls pause, resume, cancel, reprioritise, and open the reports

@@ -267,6 +267,14 @@ QSpinBox::down-arrow {{
 QSpinBox::up-arrow:hover {{ border-bottom-color: {ACCENT}; }}
 QSpinBox::down-arrow:hover {{ border-top-color: {ACCENT}; }}
 
+/* compact grid: the Advanced section packs two columns of short controls */
+QFrame[compact="true"] QLineEdit, QFrame[compact="true"] QComboBox,
+QFrame[compact="true"] QSpinBox {{
+    padding: 3px 7px; font-size: 12px; min-height: 20px; max-height: 24px;
+}}
+QFrame[compact="true"] QCheckBox {{ font-size: 12px; }}
+QFrame[compact="true"] QLabel[role="section"] {{ font-size: 9px; }}
+
 /* ---------------------------------------------------------------- lists */
 QListWidget, QTableView, QTreeWidget, QScrollArea {{
     background: {BG_INPUT};

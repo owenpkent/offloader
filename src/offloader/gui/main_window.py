@@ -8,10 +8,8 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
-    QFrame,
     QMainWindow,
     QMessageBox,
-    QScrollArea,
     QSplitter,
     QVBoxLayout,
 )
@@ -39,8 +37,8 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle(f"{PRODUCT_NAME} {__version__}")
-        self.resize(1280, 880)
-        self.setMinimumSize(980, 640)
+        self.resize(1280, 800)
+        self.setMinimumSize(1024, 720)
 
         self.settings = {**DEFAULT_SETTINGS,
                          **read_json(config_file(SETTINGS_FILE), {})}
@@ -57,18 +55,18 @@ class MainWindow(QMainWindow):
         self.job.optionsChanged.connect(
             lambda: self._save_setting("job", self.job.options()))
 
-        job_scroll = QScrollArea()
-        job_scroll.setProperty("role", "bare")
-        job_scroll.setWidget(self.job)
-        job_scroll.setWidgetResizable(True)
-        job_scroll.setFrameShape(QFrame.NoFrame)
-        job_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-
         self.drives = DrivesPanel()
         self.drives.useAsSource.connect(self._set_source)
         self.drives.useAsDestination.connect(self._add_destination)
 
         self.queue = QueuePanel(self.controller)
+
+        # One secondary surface at a time, so the screen never overflows
+        # (docs/ui-philosophy.md, rule 3).
+        self.job.advancedToggled.connect(
+            lambda on: self.queue.set_expanded(False) if on else None)
+        self.queue.expandedChanged.connect(
+            lambda on: self.job.set_advanced_open(False) if on else None)
 
         # ----------------------------------------------------------- chrome
         self._activity_led = Led(theme.FG_FAINT)
@@ -84,28 +82,22 @@ class MainWindow(QMainWindow):
         )
 
         left = card(self.drives, margins=14, role="rail")
-        left.setMinimumWidth(250)
+        left.setMinimumWidth(290)
         left.setMaximumWidth(380)
 
         upper = QSplitter(Qt.Horizontal)
         upper.addWidget(left)
-        upper.addWidget(card(job_scroll, margins=18, role="rail"))
+        upper.addWidget(card(self.job, margins=18, role="rail"))
         upper.setStretchFactor(1, 1)
         upper.setSizes([290, 900])
-
-        vertical = QSplitter(Qt.Vertical)
-        vertical.addWidget(upper)
-        vertical.addWidget(card(self.queue, margins=14, role="rail"))
-        vertical.setStretchFactor(0, 3)
-        vertical.setStretchFactor(1, 2)
-        vertical.setSizes([560, 280])
 
         central = Backdrop()
         layout = QVBoxLayout(central)
         layout.setContentsMargins(18, 12, 18, 14)
         layout.setSpacing(12)
         layout.addWidget(header)
-        layout.addWidget(vertical, 1)
+        layout.addWidget(upper, 1)
+        layout.addWidget(card(self.queue, margins=14, role="rail"), 0)
         self.setCentralWidget(central)
 
         self._build_menu()

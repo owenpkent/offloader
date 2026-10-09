@@ -14,8 +14,8 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFileDialog,
-    QFormLayout,
     QFrame,
+    QGridLayout,
     QLineEdit,
     QSpinBox,
     QVBoxLayout,
@@ -30,8 +30,8 @@ from .widgets import DestinationList, SourceDropZone, button, label, row, sectio
 
 VERIFICATION_LABELS = {
     VerificationMode.NONE: "None — copy only",
-    VerificationMode.SOURCE_ONLY: "Source only — hash while reading and writing",
-    VerificationMode.FULL: "Full — re-read each destination from disk",
+    VerificationMode.SOURCE_ONLY: "Source only — hash on read and write",
+    VerificationMode.FULL: "Full — re-read each destination",
 }
 
 DEFAULT_OPTIONS = {
@@ -54,16 +54,19 @@ class JobPanel(QWidget):
 
     runRequested = Signal(Path, object, str)   # source, Preset, job name
     optionsChanged = Signal()
+    advancedToggled = Signal(bool)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
 
         self.drop_zone = SourceDropZone()
+        self.drop_zone.setMinimumHeight(84)
         self.drop_zone.pathChosen.connect(self._on_source_chosen)
 
         self.destinations = DestinationList()
         self.destinations.changed.connect(self._sync)
-        self.destinations.setMaximumHeight(120)
+        self.destinations.setMinimumHeight(72)
+        self.destinations.setMaximumHeight(104)
         add = button("Add…", ghost=True)
         add.clicked.connect(self.destinations.browse_and_add)
         remove = button("Remove", ghost=True)
@@ -79,10 +82,8 @@ class JobPanel(QWidget):
         self._name.textChanged.connect(self._sync)
 
         self._profile = QComboBox()
-        self._profile.addItem("Media — camera card (ffprobe, thumbnails, BRAW)",
-                              Profile.MEDIA.value)
-        self._profile.addItem("Data — any large transfer (copy and verify only)",
-                              Profile.DATA.value)
+        self._profile.addItem("Media — camera card", Profile.MEDIA.value)
+        self._profile.addItem("Data — generic transfer", Profile.DATA.value)
         self._profile.currentIndexChanged.connect(self._on_profile_changed)
 
         self._algorithm = QComboBox()
@@ -117,34 +118,47 @@ class JobPanel(QWidget):
         self._footer = QLineEdit()
         self._footer.setPlaceholderText("Footer line for the PDF")
 
-        self._preserve = QCheckBox("Recreate the source folder structure")
-        self._skip = QCheckBox("Skip files already present at matching size")
+        self._preserve = QCheckBox("Keep folder structure")
+        self._preserve.setToolTip("Recreate the source folder structure at each "
+                                  "destination; off copies everything flat.")
+        self._skip = QCheckBox("Skip existing")
+        self._skip.setToolTip("Skip files already present at the destination with "
+                              "a matching size.")
 
-        form = QFormLayout()
-        form.setSpacing(10)
-        form.setHorizontalSpacing(18)
-        form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        form.addRow(section("Job name"), self._name)
-        form.addRow(section("Profile"), self._profile)
-        form.addRow(section("Checksum"), self._algorithm)
-        form.addRow(section("Verify"), self._verification)
-        form.addRow(section("Thumbs"), self._thumbnails)
-        form.addRow(section("Reports"), row(*report_row))
-        form.addRow(section("Exclude"), self._excludes)
-        form.addRow(section("PDF logo"), row(self._logo, browse_logo))
-        form.addRow(section("PDF footer"), self._footer)
-        form.addRow("", self._preserve)
-        form.addRow("", self._skip)
+        # Two columns of short controls, so the whole section fits beneath the
+        # Start row without scrolling (docs/ui-philosophy.md, rules 1 and 5).
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(12)
+        grid.setVerticalSpacing(6)
+
+        def put(r: int, c: int, text: str, widget: QWidget) -> None:
+            grid.addWidget(section(text), r, c * 2, Qt.AlignRight | Qt.AlignVCenter)
+            grid.addWidget(widget, r, c * 2 + 1)
+
+        put(0, 0, "Job name", self._name)
+        put(0, 1, "Reports", row(*report_row, spacing=10))
+        put(1, 0, "Checksum", self._algorithm)
+        put(1, 1, "Thumbs", self._thumbnails)
+        put(2, 0, "Verify", self._verification)
+        put(2, 1, "Exclude", self._excludes)
+        put(3, 0, "Profile", self._profile)
+        put(3, 1, "PDF footer", self._footer)
+        put(4, 0, "PDF logo", row(self._logo, browse_logo, spacing=6))
+        grid.addWidget(row(self._preserve, self._skip, None, spacing=14), 4, 3)
+        grid.setColumnStretch(1, 1)
+        grid.setColumnStretch(3, 1)
 
         self._advanced = QFrame()
         self._advanced.setProperty("role", "card")
+        self._advanced.setProperty("compact", "true")
         advanced_layout = QVBoxLayout(self._advanced)
-        advanced_layout.setContentsMargins(16, 14, 16, 14)
-        advanced_layout.addLayout(form)
+        advanced_layout.setContentsMargins(14, 12, 14, 12)
+        advanced_layout.addLayout(grid)
 
         self._toggle = button("Advanced ▸", ghost=True)
         self._toggle.setCheckable(True)
-        self._toggle.toggled.connect(self._set_advanced_open)
+        self._toggle.toggled.connect(self.set_advanced_open)
         self._summary = label("", "readout")
 
         # ----------------------------------------------------------- layout
@@ -184,10 +198,19 @@ class JobPanel(QWidget):
             self._name.setPlaceholderText(Path(path).name or "Offload")
         self._sync()
 
-    def _set_advanced_open(self, open_: bool) -> None:
+    def set_advanced_open(self, open_: bool) -> None:
+        if self._toggle.isChecked() != open_:
+            self._toggle.blockSignals(True)
+            self._toggle.setChecked(open_)
+            self._toggle.blockSignals(False)
         self._advanced.setVisible(open_)
         self._toggle.setText("ADVANCED ▾" if open_ else "ADVANCED ▸")
+        self.advancedToggled.emit(open_)
         self.optionsChanged.emit()
+
+    @property
+    def advanced_open(self) -> bool:
+        return self._toggle.isChecked()
 
     def _on_profile_changed(self) -> None:
         # Thumbnails are contact-sheet frames from a clip — meaningless for a
@@ -283,8 +306,7 @@ class JobPanel(QWidget):
         self._logo.setText(str(merged["logo"] or ""))
         self._footer.setText(str(merged["footer"] or ""))
         self._on_profile_changed()
-        self._toggle.setChecked(bool(merged["advanced_open"]))
-        self._set_advanced_open(bool(merged["advanced_open"]))
+        self.set_advanced_open(bool(merged["advanced_open"]))
         self._sync()
 
     def _excludes_list(self) -> list[str]:

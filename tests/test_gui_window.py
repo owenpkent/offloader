@@ -220,6 +220,28 @@ def test_destination_from_the_drive_panel_reaches_the_job_panel(window, tmp_path
     assert window.job.destinations.paths() == [tmp_path / "d"]
 
 
+def test_only_one_secondary_surface_is_open(window):
+    window.job.set_advanced_open(True)
+    window.queue.set_expanded(True)
+    assert window.queue.expanded and not window.job.advanced_open
+
+    window.job.set_advanced_open(True)
+    assert window.job.advanced_open and not window.queue.expanded
+
+
+def test_the_job_panel_fits_at_the_reference_size(window, qapp):
+    """docs/ui-philosophy.md rule 1: nothing on the main screen scrolls at
+    1280 x 800, with Advanced open."""
+    window.resize(1280, 800)
+    window.show()
+    window.job.set_advanced_open(True)
+    qapp.processEvents()
+    panel = window.job
+    assert panel._advanced.geometry().bottom() <= panel.height()
+    assert panel._start.geometry().bottom() <= panel.height()
+    window.hide()
+
+
 def test_advanced_options_persist(window, tmp_path):
     window.job._algorithm.setCurrentIndex(window.job._algorithm.findData("sha256"))
     from offloader.config import read_json

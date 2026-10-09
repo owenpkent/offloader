@@ -278,29 +278,24 @@ class CapacityBar(QWidget):
                      segments=24)
 
 
-class ColorChip(QWidget):
-    """A lit vertical colour bar, for tagging a row."""
+class MiniMeter(QWidget):
+    """A fixed-width meter for a strip or a table cell."""
 
-    def __init__(self, color: str, diameter: int = 12,
-                 parent: QWidget | None = None) -> None:
+    def __init__(self, width: int = 150, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._color = color
-        self.setFixedWidth(diameter)
-        self.setMinimumHeight(diameter)
-        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
+        self._fraction = 0.0
+        self._colour = theme.ACCENT
+        self.setFixedSize(width, 7)
 
-    def set_color(self, color: str) -> None:
-        self._color = color
+    def set_value(self, fraction: float, colour: str = theme.ACCENT) -> None:
+        self._fraction = max(0.0, min(1.0, fraction))
+        self._colour = colour
         self.update()
 
     def paintEvent(self, event) -> None:  # noqa: N802 - Qt naming
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        bar = QRectF(self.width() / 2 - 1.5, 2, 3, self.height() - 4)
-        _glow(painter, bar, self._color, 1.5, spread=4, alpha=120)
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor(self._color))
-        painter.drawRoundedRect(bar, 1.5, 1.5)
+        _paint_meter(painter, QRectF(self.rect()), self._fraction, self._colour,
+                     segments=20)
 
 
 class SourceDropZone(QFrame):
