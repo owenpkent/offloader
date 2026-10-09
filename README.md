@@ -244,7 +244,9 @@ Volumes that look like camera media are badged `CARD` and sorted to the top —
 detected by the marker directories cameras write (`DCIM`, `PRIVATE`, `XDROOT`
 and friends) or by a root full of camera originals, since a Blackmagic card
 writes clips straight to the root and a reader in a dock reports as a fixed
-disk.
+disk. On Linux the panel reads the kernel's mount table, so a card mounted under
+`/media/<user>/` or `/run/media/<user>/` appears with its filesystem type, and
+pseudo, network and system mounts stay out of the list.
 
 Along the bottom is the **queue**. Jobs run one at a time — offloads are I/O
 bound, and running two at once against the same bus makes both slower and the
@@ -356,17 +358,17 @@ what makes the report layer testable without moving bytes.
 
 ```sh
 pip install -e ".[dev]"
-pytest                      # 409 tests, ~33s
+pytest                      # 408 tests, ~33s
 pytest --fuzz               # same suite, 3000 examples per property (~2 min)
 ruff check src tests
 pytest --cov=offloader --cov-report=term-missing
 ```
 
-409 tests at 82% line coverage. They cover formatting against the reference's
+408 tests at 81% line coverage. They cover formatting against the reference's
 exact strings, checksum vectors and streaming equivalence, copy/verify
 behaviour including simulated destination corruption, pause/resume/cancel
 concurrency, retry discrimination, BRAW container parsing, ffprobe parsing,
-preset and history persistence, card detection, PDF geometry read back with
+preset and history persistence, card and mount-table detection, PDF geometry read back with
 PyMuPDF, the CLI, and the GUI.
 
 The GUI tests run on Qt's offscreen platform and drive the real queue
