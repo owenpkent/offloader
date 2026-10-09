@@ -16,20 +16,47 @@ GitHub Releases, read through the REST API. There is no manifest server to run
 or keep honest, and no second place a version number is written down.
 
 ```
-https://api.github.com/repos/owenpkent/offloader/releases/latest
+https://api.github.com/repos/owenpkent/offloader/releases?per_page=30
 ```
 
 That URL is compiled into every shipped build, so moving it orphans every
 install that already exists. Renaming or transferring the repository is a
 breaking change for installed copies, not an administrative detail.
 
-Three fields are read. `tag_name` must be a version this project publishes
-(`0.2.0`, `0.1.0b1`, with or without a leading `v`); anything else, including
-`latest` or `1.0.3-evil`, is refused rather than compared as a string.
-`assets[]` must contain an entry named exactly
+The collection, not `/releases/latest`. GitHub documents that endpoint as
+returning the newest published *full* release and excluding prereleases, so an
+installed `0.1.0b1` could never discover `0.1.0b2` through it, and a repository
+holding only the betas the candidate workflow publishes with `--prerelease`
+would answer with nothing at all. Ordering prereleases is the point of the
+grammar below, so the feed has to be one that carries them.
+
+The collection is ordered by creation date, which is not the same as version
+order: a patched `0.1.0b2` published after `0.1.0rc1` is listed above it. So
+every entry is read and the greatest eligible version wins, rather than the
+first one that parses.
+
+Four fields are read per release. `draft` excludes it: a draft is visible to
+anyone who can write to the repository and its assets are not published, so
+offering one would hand an installer to the maintainer's own machine before the
+release exists for anybody else. `tag_name` must be a version this project
+publishes (`0.2.0`, `0.1.0b1`, with or without a leading `v`); anything else,
+including `latest` or `1.0.3-evil`, is refused rather than compared as a
+string. `assets[]` must contain an entry named exactly
 `Offloader-Setup-{version}.exe` for the version the tag claims, so a file
 attached beside the real installer cannot be served in its place. `body`
 becomes the release notes.
+
+## Which releases an install is offered
+
+Newer, and on the channel it is already on. An installation that is itself a
+prerelease is testing the prereleases, so it takes the next one, beta or
+release candidate or final. An installation on a stable release is offered only
+stable releases: it did not volunteer for the next beta, and `0.1.0b1` finding
+`0.1.0b2` must not also mean `1.0.0` finding `1.0.1b1`.
+
+A prerelease install still takes the stable release when it arrives, because
+`0.1.0b2` < `0.1.0` in the ordering below. That is how a beta tester ends up on
+the shipping build without doing anything.
 
 ## Version ordering
 
@@ -114,6 +141,35 @@ report either outcome, and **Options, Check for updates on launch** turns the
 automatic one off. The check runs on a pool thread, so a slow or unreachable
 network delays nothing and a failure appears in the status bar rather than in
 a dialog.
+
+Three outcomes, not two. `update.check()` never raises and returns `None` for
+a failed fetch, a TLS error and an unparseable feed alike, so a caller that
+reports its result to somebody cannot use it: "you are the newest release" is
+a claim, and it would be made on the strength of a failed DNS lookup. The app
+uses `check_feed()`, which returns `None` only when the feed answered and had
+nothing newer, and raises `FeedError` otherwise. A check that could not be
+made is reported as a failure.
+
+"Answered" means it returned the releases collection. An empty collection, or
+one with nothing newer for this install's channel, is up to date. Anything
+else is malformed and raises `FeedError`: a single object (which this endpoint
+returns only as an error body, such as a rate limit notice), a list holding
+something other than release objects, a proxy's HTML page, or no body at all.
+
+Whose result it is belongs to the check that is running, not to whoever asked
+last. A manual check started inside the first couple of seconds is still
+running when the launch timer fires; the timer's check is refused as a
+duplicate, and the announcement the manual request asked for survives it. The
+intent is only ever raised while work is in flight, so a manual request behind
+an automatic check is answered too.
+
+**Cancel cancels.** The download runs on a pool thread and cannot be
+interrupted, so cancellation is cooperative: the progress callback is the one
+place the loop hands control back often enough, and it raises there. The
+request is then terminal — the incomplete download is removed, nothing is
+verified, and `ready` is not emitted, so the app cannot go on to offer what
+the user just declined. Only the file named by the release is removed, because
+the download directory can be one the caller owns.
 
 Installing from the app follows the refusal above rather than working around
 it. If any job is running or paused, the update is declined with the reason;

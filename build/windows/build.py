@@ -15,6 +15,11 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
+# The sibling build scripts are imported by name from inside functions. Running
+# this file directly puts its directory on the path; importing it as a module,
+# which the tests do, does not.
+if str(HERE) not in sys.path:
+    sys.path.insert(0, str(HERE))
 SPEC = HERE / "offloader.spec"
 DIST = REPO / "dist" / "windows"
 WORK = REPO / ".pyinstaller" / "windows"
@@ -60,15 +65,14 @@ def check_signatures(bundle: Path, *, signing: bool, version: str) -> list[dict]
 def sbom_names(version: str) -> set[str]:
     """The bill-of-materials files a release carries.
 
-    Named in one place because `save_outputs` checksums them and
-    `validate_outputs` refuses anything it did not expect, so the two have to
-    agree or a build fails at its own verification step.
+    Named in `artifacts` because four places have to agree about them:
+    `save_outputs` checksums them, `validate_outputs` refuses anything it did
+    not expect, and `scripts/release_notes.py` writes the upload command that
+    publishes them.
     """
-    return {
-        f"Offloader-{version}-sbom.cyclonedx.json",
-        f"Offloader-{version}-third-party-notices.txt",
-        f"Offloader-{version}-requirements.txt",
-    }
+    from artifacts import sbom_names as names
+
+    return set(names(version))
 
 
 def save_outputs(bundle: Path, setup: Path | None, identity: dict,
