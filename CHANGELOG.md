@@ -8,6 +8,17 @@ project uses [semantic versioning][semver].
 
 ## [Unreleased]
 
+### Changed
+
+- **Desktop app restyled.** The interface now borrows from audio-plugin
+  design: near-black graphite rails with a hairline top highlight, one cyan
+  accent reserved for the things that move data, uppercase letter-spaced
+  section labels, monospace readouts for paths and capacities, and LED status
+  lamps (the header lamp breathes while a job runs). Capacity and progress
+  bars are segmented meters with a soft glow, the source drop zone glows when
+  a card is dragged over it, and the mode switch is a segmented control. The
+  mode panel scrolls instead of squashing its form on a short window.
+
 ### Added
 
 - **A `data` profile for generic large-data transfers.** The verified copy

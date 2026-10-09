@@ -9,12 +9,15 @@ from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
+    QFrame,
+    QHBoxLayout,
     QMainWindow,
     QMessageBox,
+    QScrollArea,
+    QSizePolicy,
     QSplitter,
     QStackedWidget,
     QVBoxLayout,
-    QWidget,
 )
 
 from .. import PRODUCT_NAME, __version__, engine, history, probe, thumbs
@@ -26,7 +29,7 @@ from .drives import DrivesPanel
 from .preset_mode import PresetModePanel
 from .queue_view import QueuePanel, reveal
 from .simple_mode import SimpleModePanel
-from .widgets import button, label, row
+from .widgets import Backdrop, Led, button, card, label, row
 from .worker import JobState, QueueController
 
 SETTINGS_FILE = "settings.json"
@@ -41,7 +44,7 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle(f"{PRODUCT_NAME} {__version__}")
-        self.resize(1280, 840)
+        self.resize(1280, 880)
         self.setMinimumSize(980, 640)
 
         self.settings = {**DEFAULT_SETTINGS,
@@ -62,6 +65,14 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.stack.addWidget(self.presets)
         self.stack.addWidget(self.simple)
+        # Scroll rather than squash when the window is short: the splitter
+        # may otherwise hand the mode panel less height than its form needs.
+        stack_scroll = QScrollArea()
+        stack_scroll.setProperty("role", "bare")
+        stack_scroll.setWidget(self.stack)
+        stack_scroll.setWidgetResizable(True)
+        stack_scroll.setFrameShape(QFrame.NoFrame)
+        stack_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
         self.drives = DrivesPanel()
         self.drives.useAsSource.connect(self._set_source)
@@ -81,37 +92,50 @@ class MainWindow(QMainWindow):
         group.addButton(self._simple_button, 1)
         group.idClicked.connect(self._set_mode)
 
+        segment = QFrame()
+        segment.setProperty("role", "segment")
+        segment_layout = QHBoxLayout(segment)
+        segment_layout.setContentsMargins(3, 3, 3, 3)
+        segment_layout.setSpacing(2)
+        segment_layout.addWidget(self._preset_button)
+        segment_layout.addWidget(self._simple_button)
+
+        self._activity_led = Led(theme.FG_FAINT)
+        self._activity = label("IDLE", "readout")
+
         header = row(
-            label(PRODUCT_NAME, "title"),
+            label(PRODUCT_NAME.upper(), "wordmark"),
+            label(f"v{__version__}", "version"),
             24,
-            self._preset_button,
-            self._simple_button,
+            segment,
             None,
+            self._activity_led,
+            self._activity,
+            spacing=10,
         )
 
-        left = QWidget()
-        left_layout = QVBoxLayout(left)
-        left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.addWidget(self.drives)
-        left.setMinimumWidth(240)
-        left.setMaximumWidth(360)
+        left = card(self.drives, margins=14, role="rail")
+        left.setMinimumWidth(250)
+        left.setMaximumWidth(380)
+
+        centre = card(stack_scroll, margins=18, role="rail")
 
         upper = QSplitter(Qt.Horizontal)
         upper.addWidget(left)
-        upper.addWidget(self.stack)
+        upper.addWidget(centre)
         upper.setStretchFactor(1, 1)
-        upper.setSizes([280, 900])
+        upper.setSizes([290, 900])
 
         vertical = QSplitter(Qt.Vertical)
         vertical.addWidget(upper)
-        vertical.addWidget(self.queue)
+        vertical.addWidget(card(self.queue, margins=14, role="rail"))
         vertical.setStretchFactor(0, 3)
         vertical.setStretchFactor(1, 2)
-        vertical.setSizes([520, 300])
+        vertical.setSizes([610, 230])
 
-        central = QWidget()
+        central = Backdrop()
         layout = QVBoxLayout(central)
-        layout.setContentsMargins(18, 14, 18, 14)
+        layout.setContentsMargins(18, 12, 18, 14)
         layout.setSpacing(12)
         layout.addWidget(header)
         layout.addWidget(vertical, 1)
@@ -176,7 +200,16 @@ class MainWindow(QMainWindow):
         write_json(config_file(SETTINGS_FILE), self.settings)
 
     def _set_mode(self, index: int) -> None:
+        # A stacked widget asks for the tallest of *all* its pages, which would
+        # push the shorter page's run button below the fold. Only the visible
+        # page gets a say in the height.
+        for page_index in range(self.stack.count()):
+            page = self.stack.widget(page_index)
+            policy = (QSizePolicy.Preferred if page_index == index
+                      else QSizePolicy.Ignored)
+            page.setSizePolicy(policy, policy)
         self.stack.setCurrentIndex(index)
+        self.stack.adjustSize()
         self._preset_button.setChecked(index == 0)
         self._simple_button.setChecked(index == 1)
         self._save_setting("mode", "simple" if index else "preset")
@@ -297,6 +330,7 @@ class MainWindow(QMainWindow):
     # ---------------------------------------------------------------- events
     def _update_status(self) -> None:
         running = [i for i in self.controller.items if i.state is JobState.RUNNING]
+        paused = [i for i in self.controller.items if i.state is JobState.PAUSED]
         queued = [i for i in self.controller.items if i.state is JobState.QUEUED]
         if running:
             item = running[0]
@@ -305,8 +339,23 @@ class MainWindow(QMainWindow):
                 f"— {item.fraction * 100:.0f}%"
                 + (f", {len(queued)} waiting" if queued else "")
             )
+            self._set_activity(theme.ACCENT, f"{item.stage.upper() or 'RUNNING'}  "
+                               f"{item.fraction * 100:3.0f}%", pulse=True)
+        elif paused:
+            self._set_activity(theme.WARN, "PAUSED")
         elif queued:
             self.statusBar().showMessage(f"{len(queued)} job(s) waiting")
+            self._set_activity(theme.FG_MUTED, f"{len(queued)} QUEUED")
+        else:
+            self._set_activity(theme.FG_FAINT, "IDLE")
+
+    def _set_activity(self, colour: str, text: str, pulse: bool = False) -> None:
+        self._activity_led.set_colour(colour, pulse=pulse)
+        self._activity.setText(text)
+        self._activity.setProperty(
+            "role", "readout-accent" if colour == theme.ACCENT else "readout")
+        self._activity.style().unpolish(self._activity)
+        self._activity.style().polish(self._activity)
 
     def _on_job_finished(self, identifier: int) -> None:
         item = self.controller.find(identifier)

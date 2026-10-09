@@ -26,7 +26,7 @@ from ..naming import TOKENS
 from ..presets import PRESET_COLORS, Preset
 from ..reports import WRITERS
 from . import theme
-from .widgets import DestinationList, button, label, row
+from .widgets import DestinationList, button, label, row, section
 
 VERIFICATION_LABELS = {
     VerificationMode.NONE: "None — copy only",
@@ -68,9 +68,9 @@ class PresetEditor(QDialog):
 
         self._destinations = DestinationList()
         self._destinations.set_paths(self._source.destinations)
-        add = button("Add…", flat=True)
+        add = button("Add…", ghost=True)
         add.clicked.connect(self._destinations.browse_and_add)
-        remove = button("Remove", flat=True)
+        remove = button("Remove", ghost=True)
         remove.clicked.connect(self._destinations.remove_selected)
 
         self._algorithm = QComboBox()
@@ -112,8 +112,7 @@ class PresetEditor(QDialog):
 
         self._naming = QLineEdit(self._source.naming_template)
         self._naming.setPlaceholderText("{card}")
-        tokens = label("  ".join(sorted(TOKENS)), "muted")
-        tokens.setStyleSheet("font-size: 11px;")
+        tokens = label("  ".join(sorted(TOKENS)), "readout")
         tokens.setWordWrap(True)
         tokens.setToolTip("\n".join(f"{k}  {v}" for k, v in sorted(TOKENS.items())))
 
@@ -127,7 +126,7 @@ class PresetEditor(QDialog):
 
         self._logo = QLineEdit(str(self._source.logo) if self._source.logo else "")
         self._logo.setPlaceholderText("Optional image for the PDF header")
-        browse_logo = button("Browse…", flat=True)
+        browse_logo = button("Browse…", ghost=True)
         browse_logo.clicked.connect(self._choose_logo)
 
         self._footer = QLineEdit(self._source.footer or "")
@@ -135,21 +134,22 @@ class PresetEditor(QDialog):
 
         form = QFormLayout()
         form.setSpacing(10)
+        form.setHorizontalSpacing(18)
         form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        form.addRow("Name", self._name)
-        form.addRow("Colour", self._color)
-        form.addRow("Destinations", self._destinations)
-        form.addRow("", row(add, remove, None))
-        form.addRow("Profile", self._profile)
-        form.addRow("Checksum", self._algorithm)
-        form.addRow("Verification", self._verification)
-        form.addRow("Thumbnails", self._thumbnails)
-        form.addRow("Reports", row(*report_row))
-        form.addRow("Job name", self._naming)
+        form.addRow(section("Name"), self._name)
+        form.addRow(section("Colour"), self._color)
+        form.addRow(section("Destinations"), self._destinations)
+        form.addRow("", row(add, remove, None, spacing=6))
+        form.addRow(section("Profile"), self._profile)
+        form.addRow(section("Checksum"), self._algorithm)
+        form.addRow(section("Verify"), self._verification)
+        form.addRow(section("Thumbs"), self._thumbnails)
+        form.addRow(section("Reports"), row(*report_row))
+        form.addRow(section("Job name"), self._naming)
         form.addRow("", tokens)
-        form.addRow("Exclude", self._excludes)
-        form.addRow("PDF logo", row(self._logo, browse_logo))
-        form.addRow("PDF footer", self._footer)
+        form.addRow(section("Exclude"), self._excludes)
+        form.addRow(section("PDF logo"), row(self._logo, browse_logo))
+        form.addRow(section("PDF footer"), self._footer)
         form.addRow("", self._preserve)
         form.addRow("", self._skip)
 

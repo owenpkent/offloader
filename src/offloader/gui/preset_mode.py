@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
 
 from ..presets import SORT_MODES, Preset, PresetStore
 from .preset_editor import PresetEditor
-from .widgets import ColorChip, SourceDropZone, button, label, row
+from .widgets import ColorChip, SourceDropZone, button, label, row, section
 
 
 class PresetRow(QWidget):
@@ -24,23 +24,21 @@ class PresetRow(QWidget):
     def __init__(self, preset: Preset, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         name = label(preset.name, "heading")
-        summary = label(preset.summary(), "muted")
-        summary.setStyleSheet("font-size: 11px;")
+        summary = label(preset.summary(), "readout")
 
-        usage = label(f"used {preset.use_count}×" if preset.in_use else "unused",
-                      "muted")
-        usage.setStyleSheet("font-size: 11px;")
+        usage = label(f"×{preset.use_count}" if preset.in_use else "NEW",
+                      "readout-accent" if preset.in_use else "readout")
 
         text = QWidget()
         text_layout = QVBoxLayout(text)
         text_layout.setContentsMargins(0, 0, 0, 0)
-        text_layout.setSpacing(2)
+        text_layout.setSpacing(3)
         text_layout.addWidget(name)
         text_layout.addWidget(summary)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 6, 8, 6)
-        layout.addWidget(row(ColorChip(preset.color), 4, text, None, usage))
+        layout.setContentsMargins(6, 6, 10, 6)
+        layout.addWidget(row(ColorChip(preset.color), 6, text, None, usage))
 
 
 class PresetList(QListWidget):
@@ -107,10 +105,10 @@ class PresetModePanel(QWidget):
         self._list.currentRowChanged.connect(lambda _: self._sync())
         self._list.sourceDropped.connect(self._on_dropped)
 
-        self._new = button("New", flat=True)
-        self._edit_button = button("Edit", flat=True)
-        self._duplicate = button("Duplicate", flat=True)
-        self._delete = button("Delete", flat=True)
+        self._new = button("New", ghost=True)
+        self._edit_button = button("Edit", ghost=True)
+        self._duplicate = button("Duplicate", ghost=True)
+        self._delete = button("Delete", ghost=True)
         self._new.clicked.connect(self._create)
         self._edit_button.clicked.connect(self._edit)
         self._duplicate.clicked.connect(self._duplicate_selected)
@@ -120,19 +118,19 @@ class PresetModePanel(QWidget):
         self._run.clicked.connect(self._run_selected)
 
         self._hint = label("Drop a card on a preset, or pick both and add to queue.",
-                           "muted")
+                           "readout")
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
         layout.addWidget(self.drop_zone)
-        layout.addWidget(row(label("Presets", "heading"), None,
-                             label("Sort", "muted"), self._sort))
+        layout.addSpacing(4)
+        layout.addWidget(row(section("Presets"), None,
+                             section("Sort"), self._sort))
         layout.addWidget(self._list, 1)
         layout.addWidget(row(self._new, self._edit_button, self._duplicate,
-                             self._delete, None))
-        layout.addWidget(self._hint)
-        layout.addWidget(row(None, self._run))
+                             self._delete, None, spacing=6))
+        layout.addWidget(row(self._hint, None, self._run))
 
         self.drop_zone.pathChosen.connect(lambda _: self._sync())
         self.reload()
@@ -185,7 +183,7 @@ class PresetModePanel(QWidget):
             self._hint.setText("Choose a card above, or drop one on a preset.")
         else:
             self._hint.setText(
-                f"Ready: {self.drop_zone.path} → “{preset.name}”")
+                f"READY  {self.drop_zone.path}  →  {preset.name}")
 
     # ---------------------------------------------------------------- actions
     def _store_index(self, preset: Preset) -> int:

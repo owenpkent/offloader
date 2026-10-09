@@ -24,7 +24,7 @@ from ..models import Profile, VerificationMode
 from ..presets import Preset
 from ..reports import WRITERS
 from .preset_editor import VERIFICATION_LABELS
-from .widgets import DestinationList, SourceDropZone, button, label, row
+from .widgets import DestinationList, SourceDropZone, button, label, row, section
 
 
 class SimpleModePanel(QWidget):
@@ -40,9 +40,10 @@ class SimpleModePanel(QWidget):
 
         self.destinations = DestinationList()
         self.destinations.changed.connect(self._sync)
-        add = button("Add…", flat=True)
+        self.destinations.setMaximumHeight(120)
+        add = button("Add…", ghost=True)
         add.clicked.connect(self.destinations.browse_and_add)
-        remove = button("Remove", flat=True)
+        remove = button("Remove", ghost=True)
         remove.clicked.connect(self.destinations.remove_selected)
 
         self._name = QLineEdit()
@@ -87,29 +88,32 @@ class SimpleModePanel(QWidget):
 
         form = QFormLayout()
         form.setSpacing(10)
+        form.setHorizontalSpacing(18)
         form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        form.addRow("Job name", self._name)
-        form.addRow("Profile", self._profile)
-        form.addRow("Checksum", self._algorithm)
-        form.addRow("Verification", self._verification)
-        form.addRow("Thumbnails", self._thumbnails)
-        form.addRow("Reports", row(*report_row))
+        form.addRow(section("Job name"), self._name)
+        form.addRow(section("Profile"), self._profile)
+        form.addRow(section("Checksum"), self._algorithm)
+        form.addRow(section("Verify"), self._verification)
+        form.addRow(section("Thumbs"), self._thumbnails)
+        form.addRow(section("Reports"), row(*report_row))
         form.addRow("", self._preserve)
 
         self._start = button("Start offload", accent=True)
         self._start.clicked.connect(self._start_clicked)
-        self._hint = label("Choose a source and at least one destination.", "muted")
+        self._hint = label("Choose a source and at least one destination.", "readout")
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
         layout.addWidget(self.drop_zone)
-        layout.addWidget(row(label("Destinations", "heading"), None, add, remove))
+        layout.addSpacing(4)
+        layout.addWidget(row(section("Destinations"), None, add, remove, spacing=6))
         layout.addWidget(self.destinations)
+        layout.addSpacing(4)
+        layout.addWidget(section("Options"))
         layout.addLayout(form)
         layout.addStretch(1)
-        layout.addWidget(self._hint)
-        layout.addWidget(row(None, self._start))
+        layout.addWidget(row(self._hint, None, self._start))
 
         self._sync()
 
@@ -142,7 +146,7 @@ class SimpleModePanel(QWidget):
             self._hint.setText("A destination sits inside the source — pick another.")
         else:
             copies = f"{len(destinations)} cop{'ies' if len(destinations) > 1 else 'y'}"
-            self._hint.setText(f"Ready: {source} → {copies}")
+            self._hint.setText(f"READY  {source}  →  {copies}")
 
     @staticmethod
     def _overlaps(source: Path, destination: Path) -> bool:
