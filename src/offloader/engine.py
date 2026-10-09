@@ -518,15 +518,22 @@ def scan(root: Path, excludes: Iterable[str] = DEFAULT_EXCLUDES) -> list[Path]:
 
 
 def is_proxy(path: Path, source_root: Path) -> bool:
-    """Whether `path` sits inside a proxy directory under `source_root`."""
+    """Whether `path` is a proxy inside `source_root`, for transfer order.
+
+    The rule is `companions.in_proxy_directory`, so ordering and the report's
+    clip grouping agree: a proxy is a proxy container in a proxy directory. The
+    folder name alone is not enough -- a card that files its BRAW or R3D
+    originals under `Proxy` would otherwise have them hoisted ahead of the
+    real originals as if they were somebody's proxies.
+    """
+    path = Path(path)
     try:
-        relative = Path(path).relative_to(source_root)
+        relative = path.relative_to(source_root)
     except ValueError:                   # not under this root at all
         return False
-    names = {name.lower() for name in companions.PROXY_DIRECTORIES}
-    # parts[:-1] is the directories only -- a *file* called "proxy" is a clip
-    # with an unlucky name, not a proxy.
-    return any(part.lower() in names for part in relative.parts[:-1])
+    # The proxy directory has to be inside the root: offloading a bare Proxy
+    # folder has nothing to hoist the proxies ahead of.
+    return len(relative.parts) > 1 and companions.in_proxy_directory(path)
 
 
 def order_for_transfer(files: Sequence[Path], source_root: Path,
