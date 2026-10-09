@@ -259,10 +259,10 @@ whichever is listed first. So an installed beta such as `0.1.0b1` is offered the
 next beta, release candidate or final release, while a stable install is
 offered stable releases only.
 
-One limit, stated because this page is meant to describe the checkout rather
-than the plan: the command line reports a feed it could not reach the same way
-as one with nothing newer, as "the newest release available". The desktop app
-tells the two apart.
+A feed that could not be read is a failure, not "the newest release
+available": the command line prints an error and exits with status 2 (0 is up
+to date, 1 is a newer release found), and the desktop app reports the check as
+failed.
 
 **It never closes a running Offloader.** The installer refuses maintenance
 while a transfer is in flight, which is the guarantee rather than a
@@ -346,6 +346,11 @@ offloader offload --source E:\ --dest D:\video\A001 --originals-first
 `--originals-first` restores plain tree order, and both GUI modes have a
 checkbox. Presets saved before the option existed inherit the new default.
 A card with no proxy directory is unaffected.
+
+A proxy is a proxy container (MP4, MOV, M4V or MXF) in a proxy directory
+(`Proxy`, `Proxies` and their usual spellings), the same rule the report uses
+to group a proxy with its clip. A BRAW or R3D original that a card happens to
+file under a folder called `Proxy` keeps its place among the originals.
 
 ## Sound recorder cards
 
@@ -634,7 +639,7 @@ ruff check src tests
 pytest --cov=offloader --cov-report=term-missing
 ```
 
-1010 tests at 83% line coverage. They cover formatting against the reference's
+1019 tests at 83% line coverage. They cover formatting against the reference's
 exact strings, checksum vectors and streaming equivalence, copy/verify
 behaviour including simulated destination corruption, pause/resume/cancel
 concurrency, retry discrimination, BRAW container parsing, ffprobe parsing,

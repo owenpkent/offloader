@@ -624,14 +624,20 @@ def cmd_update(args: argparse.Namespace) -> int:
     """Report or apply a newer release.
 
     Exit status: 0 when up to date or an install was started, 1 when an update
-    exists but was not applied, 2 on a usage or verification failure. A caller
-    scripting this can therefore tell "nothing to do" from "something to do".
+    exists but was not applied, 2 when the feed could not be read or on a
+    usage or verification failure. A caller scripting this can therefore tell
+    "nothing to do" from "something to do", and neither from "could not find
+    out": a check that never got an answer is not reported as up to date.
     """
     import tempfile
 
     from . import update as update_mod
 
-    release = update_mod.check()
+    try:
+        release = update_mod.check_feed()
+    except update_mod.UpdateError as exc:
+        print(f"error: could not check for updates: {exc}", file=sys.stderr)
+        return 2
     if release is None:
         print(f"Offloader {__version__} is the newest release available.")
         return 0
