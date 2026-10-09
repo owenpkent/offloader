@@ -209,22 +209,44 @@ def test_enqueue_adds_a_job_when_the_guards_pass(window, prompts, tmp_path):
     assert [i.name for i in window.controller.items] == ["A001"]
 
 
-def test_mode_switch_persists(window, tmp_path):
-    window._set_mode(1)
-    assert window.stack.currentIndex() == 1
-    assert window._simple_button.isChecked()
-    assert window.settings["mode"] == "simple"
-
-    window._set_mode(0)
-    assert window.settings["mode"] == "preset"
-    assert window._preset_button.isChecked()
-
-
-def test_choosing_a_source_reaches_both_panels(window, tmp_path):
+def test_choosing_a_source_reaches_the_job_panel(window, tmp_path):
     source = _card(tmp_path)
     window._set_source(source)
-    assert window.simple.drop_zone.path == source
-    assert window.presets.drop_zone.path == source
+    assert window.job.drop_zone.path == source
+
+
+def test_destination_from_the_drive_panel_reaches_the_job_panel(window, tmp_path):
+    window._add_destination(tmp_path / "d")
+    assert window.job.destinations.paths() == [tmp_path / "d"]
+
+
+def test_only_one_secondary_surface_is_open(window):
+    window.job.set_advanced_open(True)
+    window.queue.set_expanded(True)
+    assert window.queue.expanded and not window.job.advanced_open
+
+    window.job.set_advanced_open(True)
+    assert window.job.advanced_open and not window.queue.expanded
+
+
+def test_the_job_panel_fits_at_the_reference_size(window, qapp):
+    """docs/ui-philosophy.md rule 1: nothing on the main screen scrolls at
+    1280 x 800, with Advanced open."""
+    window.resize(1280, 800)
+    window.show()
+    window.job.set_advanced_open(True)
+    qapp.processEvents()
+    panel = window.job
+    assert panel._advanced.geometry().bottom() <= panel.height()
+    assert panel._start.geometry().bottom() <= panel.height()
+    window.hide()
+
+
+def test_advanced_options_persist(window, tmp_path):
+    window.job._algorithm.setCurrentIndex(window.job._algorithm.findData("sha256"))
+    from offloader.config import read_json
+    saved = read_json(tmp_path / mw.SETTINGS_FILE, {})
+    assert saved["job"]["algorithm"] == "sha256"
 
 
 def test_settings_survive_a_reload(window, tmp_path):

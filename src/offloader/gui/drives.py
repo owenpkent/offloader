@@ -12,6 +12,7 @@ from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, Signal
 from PySide6.QtWidgets import (
     QFrame,
     QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -19,7 +20,7 @@ from PySide6.QtWidgets import (
 from ..util import format_size
 from ..volumes import Volume, list_volumes
 from . import theme
-from .widgets import CapacityBar, button, label, row
+from .widgets import CapacityBar, Led, button, label, row, section
 
 REFRESH_MS = 4000
 
@@ -109,36 +110,48 @@ class VolumeRow(QFrame):
 
         title = label(volume.display_name, "heading")
         badge = label("CARD" if volume.is_camera_card else volume.drive_type.upper(),
-                      "muted")
-        badge.setStyleSheet(
-            f"color: {theme.ACCENT if volume.is_camera_card else theme.FG_MUTED};"
-            "font-size: 10px; font-weight: 700; letter-spacing: 1px;"
-        )
+                      "badge")
+        if volume.is_camera_card:
+            badge.setProperty("accent", "true")
+        led = Led(theme.ACCENT if volume.is_camera_card else theme.FG_FAINT)
 
         self._bar = CapacityBar(volume.percent_used)
-        detail = label(
-            f"{format_size(volume.free_bytes)} free of "
-            f"{format_size(volume.total_bytes)}"
-            + (f" · {volume.filesystem}" if volume.filesystem else ""),
-            "muted",
-        )
-        detail.setStyleSheet("font-size: 11px;")
+        self._detail = label("", "readout")
+        self._percent = label("", "readout-accent" if volume.is_camera_card
+                              else "readout")
+        self._set_detail(volume)
 
-        source_button = button("Source", flat=True,
+        source_button = button("Source", ghost=True,
                                tooltip=f"Offload from {volume.root}")
         source_button.clicked.connect(lambda: self.useAsSource.emit(volume.root))
-        dest_button = button("Destination", flat=True,
+        dest_button = button("Dest", ghost=True,
                              tooltip=f"Copy to {volume.root}")
         dest_button.clicked.connect(lambda: self.useAsDestination.emit(volume.root))
 
+        path = label(str(volume.root), "readout")
+        # Readouts may be wider than the rail; let them clip rather than force
+        # the whole panel wider than its splitter pane.
+        for widget in (title, path, self._detail):
+            widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            widget.setMinimumWidth(1)   # an explicit minimum beats the text width
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 10, 12, 10)
-        layout.setSpacing(6)
-        layout.addWidget(row(title, None, badge))
-        layout.addWidget(label(str(volume.root), "muted"))
+        layout.setSpacing(5)
+        layout.addWidget(row(led, title, None, badge, spacing=4))
+        layout.addWidget(path)
+        layout.addSpacing(2)
         layout.addWidget(self._bar)
-        layout.addWidget(detail)
-        layout.addWidget(row(source_button, dest_button, None))
+        layout.addWidget(row(self._detail, None, self._percent))
+        layout.addSpacing(2)
+        layout.addWidget(row(source_button, dest_button, None, spacing=6))
+
+    def _set_detail(self, volume: Volume) -> None:
+        self._detail.setText(
+            f"{format_size(volume.free_bytes)} free of "
+            f"{format_size(volume.total_bytes)}"
+            + (f"  ·  {volume.filesystem}" if volume.filesystem else ""))
+        self._percent.setText(f"{volume.percent_used:.0f}%")
 
     def matches(self, volume: Volume) -> bool:
         """Whether an updated Volume describes this same row, so refreshes can
@@ -150,6 +163,7 @@ class VolumeRow(QFrame):
     def update_usage(self, volume: Volume) -> None:
         self.volume = volume
         self._bar.set_percent(volume.percent_used)
+        self._set_detail(volume)
 
 
 class DrivesPanel(QWidget):
@@ -165,9 +179,9 @@ class DrivesPanel(QWidget):
         self.watcher = VolumeWatcher(self)
         self.watcher.volumesChanged.connect(self._rebuild)
 
-        refresh = button("Refresh", flat=True)
+        refresh = button("Refresh", ghost=True)
         refresh.clicked.connect(self.watcher.refresh)
-        header = row(label("Drives", "heading"), None, refresh)
+        header = row(section("Drives"), None, refresh)
 
         self._container = QWidget()
         self._container_layout = QVBoxLayout(self._container)
@@ -176,6 +190,7 @@ class DrivesPanel(QWidget):
         self._container_layout.addStretch(1)
 
         scroll = QScrollArea()
+        scroll.setProperty("role", "bare")
         scroll.setWidget(self._container)
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)

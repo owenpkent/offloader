@@ -6,11 +6,12 @@ import subprocess
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt
-from PySide6.QtGui import QColor, QPainter
+from PySide6.QtCore import QAbstractTableModel, QModelIndex, QRectF, Qt, Signal
+from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QHeaderView,
+    QStyle,
     QStyledItemDelegate,
     QTableView,
     QVBoxLayout,
@@ -19,10 +20,10 @@ from PySide6.QtWidgets import (
 
 from ..util import format_elapsed, format_size
 from . import theme
-from .widgets import button, label, row
+from .widgets import Led, MiniMeter, _paint_meter, button, label, row, section
 from .worker import JobState, QueueController, QueueItem
 
-COLUMNS = ("Job", "Source", "Preset", "Status", "Progress", "Throughput")
+COLUMNS = ("Job", "Source", "Options", "Status", "Progress", "Throughput")
 COL_STATUS = 3
 COL_PROGRESS = 4
 
@@ -43,6 +44,30 @@ def _throughput(item: QueueItem) -> str:
     if item.state is JobState.PAUSED:
         return "Paused"
     return ""
+
+
+def _state_colour(item: QueueItem) -> str:
+    if item.state is JobState.FAILED:
+        return theme.BAD
+    if item.state is JobState.PAUSED:
+        return theme.WARN
+    if item.state is JobState.DONE:
+        return theme.OK
+    if item.state.is_terminal:
+        return theme.FG_MUTED
+    if item.state is JobState.RUNNING:
+        return theme.ACCENT
+    return theme.FG_MUTED
+
+
+def _mono_font(point_size: int) -> QFont:
+    font = QFont()
+    for family in ("JetBrains Mono", "Cascadia Code", "Consolas", "DejaVu Sans Mono"):
+        font.setFamily(family)
+        if QFont(family).exactMatch():
+            break
+    font.setPointSize(point_size)
+    return font
 
 
 class QueueModel(QAbstractTableModel):
@@ -74,7 +99,7 @@ class QueueModel(QAbstractTableModel):
             return (
                 item.name,
                 str(item.source),
-                item.preset.name,
+                f"{item.preset.algorithm} · {item.preset.verification.value}",
                 item.status_text,
                 "",                      # painted by ProgressDelegate
                 _throughput(item),
@@ -83,10 +108,24 @@ class QueueModel(QAbstractTableModel):
         if role == Qt.UserRole and column == COL_PROGRESS:
             return item.fraction
 
+        if role == Qt.UserRole + 1 and column == COL_PROGRESS:
+            return _state_colour(item)
+
         if role == Qt.ForegroundRole and column == COL_STATUS:
             state = ("failed" if item.state is JobState.FAILED
                      else item.status_text.lower())
             return QColor(theme.status_color(state))
+
+        if role == Qt.ForegroundRole and column in (1, 2, len(COLUMNS) - 1):
+            return QColor(theme.FG_MUTED)
+
+        if role == Qt.FontRole and column in (1, 2, COL_STATUS, len(COLUMNS) - 1):
+            font = _mono_font(9)
+            if column == COL_STATUS:
+                font.setBold(True)
+                font.setCapitalization(QFont.AllUppercase)
+                font.setLetterSpacing(QFont.AbsoluteSpacing, 1.2)
+            return font
 
         if role == Qt.ToolTipRole:
             if item.error:
@@ -131,23 +170,24 @@ class ProgressDelegate(QStyledItemDelegate):
         if fraction is None:
             super().paint(painter, option, index)
             return
-
-        rect = option.rect.adjusted(6, 0, -6, 0)
-        height = 8
-        bar = rect.adjusted(0, (rect.height() - height) // 2, 0,
-                            -(rect.height() - height) // 2)
+        colour = index.data(Qt.UserRole + 1) or theme.ACCENT
 
         painter.save()
-        painter.setRenderHint(QPainter.Antialiasing)
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor(theme.BG))
-        painter.drawRoundedRect(bar, 4, 4)
+        if option.state & QStyle.State_Selected:
+            painter.fillRect(option.rect, QColor(theme.ACCENT_DIM))
 
-        width = int(bar.width() * max(0.0, min(1.0, float(fraction))))
-        if width > 0:
-            filled = bar.adjusted(0, 0, width - bar.width(), 0)
-            painter.setBrush(QColor(theme.ACCENT))
-            painter.drawRoundedRect(filled, 4, 4)
+        rect = option.rect.adjusted(8, 0, -48, 0)
+        height = 7
+        bar = QRectF(rect.left(), rect.top() + (rect.height() - height) / 2,
+                     rect.width(), height)
+        _paint_meter(painter, bar, float(fraction), colour, segments=20)
+
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setFont(_mono_font(9))
+        painter.setPen(QPen(QColor(colour if fraction > 0 else theme.FG_FAINT)))
+        painter.drawText(option.rect.adjusted(0, 0, -8, 0),
+                         Qt.AlignRight | Qt.AlignVCenter,
+                         f"{float(fraction) * 100:3.0f}%")
         painter.restore()
 
 
@@ -167,7 +207,10 @@ def reveal(path: Path) -> None:
 
 
 class QueuePanel(QWidget):
-    """Queue table plus the transport controls that act on the selection."""
+    """A one-line strip that always shows what is happening, and the full
+    table with its transport controls one click away."""
+
+    expandedChanged = Signal(bool)
 
     def __init__(self, controller: QueueController, parent=None) -> None:
         super().__init__(parent)
@@ -182,7 +225,10 @@ class QueuePanel(QWidget):
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().setVisible(False)
         self.table.setShowGrid(False)
-        self.table.verticalHeader().setDefaultSectionSize(30)
+        self.table.verticalHeader().setDefaultSectionSize(32)
+        self.table.setFocusPolicy(Qt.NoFocus)
+        self.table.setMinimumHeight(150)
+        self.table.setMaximumHeight(210)
 
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
@@ -191,15 +237,15 @@ class QueuePanel(QWidget):
         header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(4, QHeaderView.Fixed)
         header.setSectionResizeMode(5, QHeaderView.ResizeToContents)
-        header.resizeSection(4, 150)
+        header.resizeSection(4, 210)
 
-        self._pause = button("Pause", flat=True)
-        self._cancel = button("Cancel", flat=True)
-        self._up = button("Move up", flat=True, tooltip="Run this job sooner")
-        self._down = button("Move down", flat=True, tooltip="Run this job later")
-        self._remove = button("Remove", flat=True)
-        self._reports = button("Show reports", flat=True)
-        self._clear = button("Clear finished", flat=True)
+        self._pause = button("Pause", ghost=True)
+        self._cancel = button("Cancel", ghost=True)
+        self._up = button("▲", ghost=True, tooltip="Run this job sooner")
+        self._down = button("▼", ghost=True, tooltip="Run this job later")
+        self._remove = button("Remove", ghost=True)
+        self._reports = button("Reports", ghost=True)
+        self._clear = button("Clear finished", ghost=True)
 
         self._pause.clicked.connect(self._toggle_pause)
         self._cancel.clicked.connect(self._cancel_selected)
@@ -209,23 +255,84 @@ class QueuePanel(QWidget):
         self._reports.clicked.connect(self._open_reports)
         self._clear.clicked.connect(controller.clear_finished)
 
-        self._empty = label("Nothing queued. Drop a card on a preset to start.",
-                            "muted")
+        # ------------------------------------------------------------ strip
+        self._count = label("", "readout")
+        self._empty = label("NO JOBS  ·  choose a source and a destination to start",
+                            "readout")
+        self._live_led = Led(theme.FG_FAINT)
+        self._live_name = label("", "dim")
+        self._live_status = label("", "readout")
+        self._live_meter = MiniMeter(150)
+        self._live_percent = label("", "readout")
+        self._live_rate = label("", "readout")
+        self._live = row(self._live_led, self._live_name, 4, self._live_status, 10,
+                         self._live_meter, self._live_percent, 10, self._live_rate,
+                         spacing=6)
+
+        self._details = button("Details ▸", ghost=True)
+        self._details.setCheckable(True)
+        self._details.toggled.connect(self.set_expanded)
+
+        strip = row(section("Queue"), 8, self._count, 14, self._empty, self._live,
+                    None, self._details, spacing=6)
+
+        self._body = QWidget()
+        body = QVBoxLayout(self._body)
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(8)
+        body.addWidget(self.table)
+        body.addWidget(row(self._pause, self._cancel, 12, self._up, self._down,
+                           12, self._remove, self._reports, None, self._clear,
+                           spacing=6))
+        self._body.setVisible(False)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
-        layout.addWidget(row(label("Queue", "heading"), None, self._clear))
-        layout.addWidget(self._empty)
-        layout.addWidget(self.table, 1)
-        layout.addWidget(row(self._pause, self._cancel, 12, self._up, self._down,
-                             12, self._remove, self._reports, None))
+        layout.setSpacing(10)
+        layout.addWidget(strip)
+        layout.addWidget(self._body)
 
         self.table.selectionModel().selectionChanged.connect(self._sync_buttons)
         controller.itemsChanged.connect(self._sync_buttons)
         controller.itemChanged.connect(lambda _: self._sync_buttons())
         controller.jobStarted.connect(self._select_job)
         self._sync_buttons()
+
+    # ---------------------------------------------------------------- strip
+    @property
+    def expanded(self) -> bool:
+        return self._details.isChecked()
+
+    def set_expanded(self, expanded: bool) -> None:
+        if self._details.isChecked() != expanded:
+            self._details.blockSignals(True)
+            self._details.setChecked(expanded)
+            self._details.blockSignals(False)
+        self._body.setVisible(expanded)
+        self._details.setText("DETAILS ▾" if expanded else "DETAILS ▸")
+        self.expandedChanged.emit(expanded)
+
+    def _refresh_strip(self) -> None:
+        items = self.controller.items
+        self._empty.setVisible(not items)
+        self._live.setVisible(bool(items))
+        total = len(items)
+        done = sum(1 for i in items if i.state.is_terminal)
+        self._count.setText(f"{done}/{total}" if total else "")
+        if not items:
+            return
+
+        focus = next((i for i in items if i.state is JobState.RUNNING), None) \
+            or next((i for i in items if i.state is JobState.PAUSED), None) \
+            or items[-1]
+        colour = _state_colour(focus)
+        self._live_led.set_colour(colour, pulse=focus.state is JobState.RUNNING)
+        self._live_name.setText(focus.name)
+        self._live_status.setText(focus.status_text.upper())
+        self._live_status.setStyleSheet(f"color: {colour};")
+        self._live_meter.set_value(focus.fraction, colour)
+        self._live_percent.setText(f"{focus.fraction * 100:3.0f}%")
+        self._live_rate.setText(_throughput(focus))
 
     def _select_job(self, identifier: int) -> None:
         """Follow the running job, so the transport controls act on it without
@@ -246,9 +353,7 @@ class QueuePanel(QWidget):
         return self.model.item_at(indexes[0])
 
     def _sync_buttons(self) -> None:
-        has_rows = bool(self.controller.items)
-        self._empty.setVisible(not has_rows)
-        self.table.setVisible(has_rows)
+        self._refresh_strip()
 
         item = self._selected()
         running = item is not None and item.state is JobState.RUNNING
@@ -257,7 +362,7 @@ class QueuePanel(QWidget):
         terminal = item is not None and item.state.is_terminal
 
         self._pause.setEnabled(running or paused)
-        self._pause.setText("Resume" if paused else "Pause")
+        self._pause.setText("RESUME" if paused else "PAUSE")
         self._cancel.setEnabled(item is not None and not terminal)
         self._up.setEnabled(queued)
         self._down.setEnabled(queued)

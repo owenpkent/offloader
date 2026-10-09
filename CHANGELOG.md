@@ -8,6 +8,28 @@ project uses [semantic versioning][semver].
 
 ## [Unreleased]
 
+### Changed
+
+- **One screen instead of two modes.** Preset mode and Simple mode are gone.
+  The desktop app is now source, destinations and a Start button, with every
+  other option behind an Advanced disclosure that is remembered between runs
+  in `settings.json`. A readout beside the disclosure summarises the next job
+  (checksum, verification, reports, profile) while it is collapsed. The
+  preset editor dialog is removed; the `Preset` dataclass stays as the
+  internal job-options bundle the worker runs. Advanced is a two-column
+  compact grid and the queue is a one-line live strip with the full table
+  behind a Details toggle, so nothing on the main screen scrolls at
+  1280 × 800. Only one of the two opens at a time. The rules are written down
+  in `docs/ui-philosophy.md`.
+- **Desktop app restyled.** The interface now borrows from audio-plugin
+  design: near-black graphite rails with a hairline top highlight, one cyan
+  accent reserved for the things that move data, uppercase letter-spaced
+  section labels, monospace readouts for paths and capacities, and LED status
+  lamps (the header lamp breathes while a job runs). Capacity and progress
+  bars are segmented meters with a soft glow, the source drop zone glows when
+  a card is dragged over it, and the mode switch is a segmented control. The
+  mode panel scrolls instead of squashing its form on a short window.
+
 ### Added
 
 - **A `data` profile for generic large-data transfers.** The verified copy
