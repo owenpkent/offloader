@@ -495,3 +495,13 @@ def test_the_html_escapes_what_the_card_wrote(tmp_path: Path):
     assert "<script>alert(1)</script>" not in text
     assert "&lt;script&gt;" in text
 
+def test_pdf_document_title_carries_route_and_date(sample_job: Job, tmp_path: Path):
+    """A stack of reports is told apart by this title in a file manager or a
+    browser tab; "Offload Job Report" identified nothing."""
+    path = write_pdf(sample_job, tmp_path / "JobReport.pdf")
+    with fitz.open(path) as document:
+        title = document.metadata["title"]
+    assert sample_job.name in title
+    assert str(sample_job.source_root) in title
+    assert str(sample_job.destination_roots[0]) in title
+    assert f"{sample_job.started:%Y-%m-%d}" in title
