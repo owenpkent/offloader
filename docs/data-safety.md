@@ -201,6 +201,12 @@ known.
   safety one, and should not be used on a tree whose integrity is in question.
 - **Concurrent instances.** One app instance serialises its queue. Two instances
   pointed at the same destination are not coordinated.
+- **A source that changes while it is being read.** The checksum is of the
+  bytes that were read, so a file modified mid-copy, or swapped between a
+  retry's close and reopen, produces a destination that faithfully matches
+  what was read rather than any one version of the source. The tool cannot
+  freeze the source; offload from media nothing else is writing to. (A swap
+  that changes the size is caught by the size check.)
 
 ## Marginal media
 
@@ -224,6 +230,12 @@ sought back to the offset, because a reader that dropped off the bus needs its
 handle re-established. Once a chunk has had every attempt the policy allows, the
 file is not started again from the top: that would only repeat the same attempts
 against the same fault.
+
+The budget is per chunk, not per file: a card with several marginal sectors gets
+`--retries` attempts at each one, the way a recovery tool would, rather than one
+budget the whole file must share. On a badly failing card that costs time, never
+integrity, so pause and cancel are honoured during the backoff waits rather than
+after them.
 
 A failed *write* does restart the whole file, because a write that fails
 part-way leaves the destination at a length the copy loop does not know. The

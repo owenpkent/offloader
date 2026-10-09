@@ -13,6 +13,7 @@ import os
 import queue
 import shutil
 import threading
+import time
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -345,12 +346,27 @@ def _copy_fanout(source: Path, targets: Sequence[Path], algorithm: str,
                 nonlocal stale
                 stale = True
 
+            def back_off(pause: float) -> None:
+                # Sleep in slices so a pause or cancel is honoured while the
+                # backoff is waited out. A card failing over a stretch can
+                # spend several seconds per chunk here, and a cancel that only
+                # lands once the stretch is over is not much of a cancel.
+                deadline = time.monotonic() + pause
+                while not stop.is_set():
+                    if control is not None:
+                        control.checkpoint()
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        return
+                    time.sleep(min(0.2, remaining))
+
             while not stop.is_set():
                 if control is not None:
                     control.checkpoint()
                 try:
                     chunk, attempts = retry_mod.call(read_one, retry,
-                                                     before_retry=recover)
+                                                     before_retry=recover,
+                                                     sleep=back_off)
                 except OSError as exc:
                     if retry.enabled and retry_mod.is_transient(exc):
                         raise retry_mod.Exhausted(

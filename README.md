@@ -103,7 +103,7 @@ offloader verify D:\video\080426\A001
 | `--flat` | do not recreate the source folder structure |
 | `--skip-existing` | skip files already present at matching size |
 | `--paranoid` | read each source file twice and compare (offload only) |
-| `--retries N` | attempts per file on a transient read failure (default 3, 1 disables) |
+| `--retries N` | attempts per failing read on a transient error (default 3, 1 disables) |
 | `--retry-wait SECONDS` | pause before the first retry, backing off after (default 2) |
 | `--no-probe` | skip ffprobe metadata and thumbnails |
 | `--quiet` | suppress progress |
@@ -207,6 +207,46 @@ assumed, now stated for any large data rather than only camera originals. It is
 deliberately not a sync tool — no two-way reconciliation, conflict resolution or
 partial-file updates. See [`ROADMAP.md`](ROADMAP.md).
 
+## Compared with robocopy
+
+robocopy moves bytes fast; Offloader proves the bytes arrived, and gives you
+the paperwork to prove it again later. The overlap is "copy a tree to another
+drive", but each is the wrong tool for the other's job.
+
+What Offloader does that robocopy cannot:
+
+- **Verification.** robocopy has no integrity checking (`/V` is verbose
+  logging, not verification): it trusts the OS write path. Offloader checksums
+  every byte as it is read and, with `--verify full`, evicts the page cache and
+  reads each copy back off the platter. A flaky USB bridge or failing cable
+  that corrupts data in transit passes robocopy and fails Offloader.
+- **Manifests.** CSV, MHL and ASC MHL are written beside every copy, so anyone
+  can re-verify the tree months later without the source. robocopy leaves
+  nothing behind but a log.
+- **One read, many destinations.** `--dest` repeats, so a slow card is read
+  once and fanned out. robocopy reads the source again for every destination.
+- **An answer to the real question.** "Is it safe to erase the source?"
+  robocopy can only say it issued the writes.
+
+What robocopy does that Offloader deliberately will not (these are decisions,
+recorded under "Not planned" in [`ROADMAP.md`](ROADMAP.md)):
+
+- **Mirroring and sync.** `/MIR`, deleting extras from the destination,
+  incremental reconciliation. Offloader is one-way and write-once because that
+  assumption is exactly what makes the "Verified" verdict meaningful, and a
+  tool that can delete from a destination is the wrong shape for one whose
+  verdict authorises erasing the source.
+- **Metadata fidelity beyond timestamps.** NTFS ACLs, alternate data streams,
+  junctions (`/COPYALL`, `/SEC`, backup mode). Camera cards have none of these.
+  Replicating a server share with permissions intact is robocopy's job, and it
+  does it well.
+
+So the rule of thumb: replication or sync on trusted hardware, use robocopy. A
+one-way transfer of data you cannot get back, use Offloader. (Using robocopy
+*inside* Offloader as the copy loop was measured and rejected: it copies faster
+but emits no checksums, so the verified workflow it implies costs two extra
+passes over the data. See [`docs/performance.md`](docs/performance.md).)
+
 ## The desktop app
 
 ```sh
@@ -280,9 +320,10 @@ The short version:
   proves nothing about the device.
 - Empty files, and verifications that may have been served from cache, are
   reported as warnings rather than folded into a "Verified" verdict.
-- Reads that fail for a transient reason are retried, and a file that only
-  succeeded on a later attempt is reported — a card that needs retries today is
-  a card to stop using.
+- Reads that fail for a transient reason are retried at the failing chunk, so
+  one marginal sector costs a re-read of 8 MiB rather than of the whole clip.
+  A file that only succeeded on a later attempt is reported, because a card
+  that needs retries today is a card to stop using.
 - Destinations past Windows' 260-character limit use the extended-length path
   prefix. `offloader info` reports whether your machine needs it.
 
@@ -350,13 +391,13 @@ what makes the report layer testable without moving bytes.
 
 ```sh
 pip install -e ".[dev]"
-pytest                      # 453 tests
+pytest                      # 476 tests
 pytest --fuzz               # same suite, 3000 examples per property (~2 min)
 ruff check src tests
 pytest --cov=offloader --cov-report=term-missing
 ```
 
-453 tests at 86% line coverage. They cover formatting against the reference's
+476 tests at 86% line coverage. They cover formatting against the reference's
 exact strings, checksum vectors and streaming equivalence, copy/verify
 behaviour including simulated destination corruption, pause/resume/cancel
 concurrency, retry discrimination, BRAW container parsing, ffprobe parsing,
