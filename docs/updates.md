@@ -71,16 +71,11 @@ build that Windows then considers older than the one it replaced.
 If either version is unreadable the answer is "not newer". String comparison
 is what makes `1.0.10` look older than `1.0.9`.
 
-**The feed above does not yet carry the prereleases this grammar orders.**
-GitHub documents `/releases/latest` as returning the newest published full
-release and excluding prereleases, so an installed `0.1.0b1` cannot discover
-`0.1.0b2` or `0.1.0rc1` through it, and a repository holding only the betas
-the candidate workflow publishes with `--prerelease` answers with nothing at
-all. The ordering here is right and the endpoint is wrong; reading the
-releases collection instead is the correction pending on
-[#13](https://github.com/owenpkent/offloader/pull/13). Until that lands, take
-the ordering as describing what the updater would do with a release it can
-see, not as evidence that it can see one.
+Because the feed is the releases collection, this ordering is applied to
+releases the updater can actually see: an installed `0.1.0b1` finds `0.1.0b2`
+or `0.1.0rc1` once either is published, and a repository holding only betas
+still answers. The channel comes from the version in the tag, not from GitHub's
+`prerelease` flag, which the updater does not read.
 
 ## What is checked before anything runs
 
@@ -148,7 +143,9 @@ reports its result to somebody cannot use it: "you are the newest release" is
 a claim, and it would be made on the strength of a failed DNS lookup. The app
 uses `check_feed()`, which returns `None` only when the feed answered and had
 nothing newer, and raises `FeedError` otherwise. A check that could not be
-made is reported as a failure.
+made is reported as a failure. `offloader update` on the command line still
+calls `check()`, so there a failed check prints the same "newest release
+available" line as a current one.
 
 "Answered" means it returned the releases collection. An empty collection, or
 one with nothing newer for this install's channel, is up to date. Anything

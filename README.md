@@ -251,14 +251,18 @@ project's certificate thumbprint, its publisher name, and an embedded
 `FileVersion` matching the release. That last check is what stops an older
 but still validly signed installer being re-served under a newer asset name.
 
+The feed is the releases collection (`/releases?per_page=30`), not
+`/releases/latest`, which GitHub documents as excluding prereleases. Drafts are
+ignored, the channel is taken from the version in the tag rather than from
+GitHub's prerelease flag, and the greatest eligible version wins rather than
+whichever is listed first. So an installed beta such as `0.1.0b1` is offered the
+next beta, release candidate or final release, while a stable install is
+offered stable releases only.
+
 One limit, stated because this page is meant to describe the checkout rather
-than the plan: the feed is GitHub's `/releases/latest`, which is documented as
-excluding prereleases. The first packaged release is planned as `0.1.0b1`, so
-an installed beta cannot discover the next one through it, and a repository
-holding only betas answers with nothing at all. The version grammar already
-orders prereleases; it is the endpoint that does not carry them. Reading the
-releases collection instead is the correction pending on
-[#13](https://github.com/owenpkent/offloader/pull/13).
+than the plan: the command line reports a feed it could not reach the same way
+as one with nothing newer, as "the newest release available". The desktop app
+tells the two apart.
 
 **It never closes a running Offloader.** The installer refuses maintenance
 while a transfer is in flight, which is the guarantee rather than a

@@ -124,9 +124,10 @@ credentials, update endpoints, or installation paths.
 - **Updates:** `offloader update` and the desktop app both check for a
   release, verify it, and run the signed installer. Refuse replacement while
   the app or CLI has an active job; never force-kill a copy to install an
-  update. See [updates.md](updates.md). Discovery is not yet a gate that can
-  be signed off: the feed is `/releases/latest`, which excludes prereleases,
-  so a beta cannot find its successor until that is corrected.
+  update. See [updates.md](updates.md). Discovery reads the releases
+  collection, ignores drafts and takes the channel from the tag's version, so
+  a beta can find the next beta. What it still needs is the qualification
+  below: an end-to-end update between two signed published releases.
 - **Scope freeze:** defer new media features, cloud services, notifications
   and a marketing website. Fix integrity and packaging blockers discovered
   during qualification.
