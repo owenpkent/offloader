@@ -319,6 +319,30 @@ def test_a_proxy_beside_the_original_is_found(tmp_path: Path):
     assert companions.find_proxy(original) == proxy
 
 
+def test_originals_filed_under_a_proxy_folder_are_still_clips(tmp_path: Path):
+    """The folder name alone used to decide this, so a card that happens to
+    file its originals under `Proxy` had every one of them treated as a
+    companion of whatever shared its stem."""
+    card = tmp_path / "A001"
+    (card / "Proxy").mkdir(parents=True)
+    original = write_braw(card / "Proxy" / "A001_C001.braw")
+    elsewhere = write_braw(card / "A001_C001.braw")
+
+    assert not companions.in_proxy_directory(original)
+    assert companions.group([original, elsewhere]) == {}
+
+
+def test_a_proxy_container_in_a_proxy_folder_still_links(tmp_path: Path):
+    card = tmp_path / "A001"
+    (card / "Proxy").mkdir(parents=True)
+    original = write_braw(card / "A001_C001.braw")
+    proxy = card / "Proxy" / "A001_C001.mp4"
+    proxy.write_bytes(b"proxy")
+
+    assert companions.in_proxy_directory(proxy)
+    assert companions.group([original, proxy]) == {proxy: original}
+
+
 def test_no_proxy_falls_back_to_the_original(tmp_path: Path):
     original = write_braw(tmp_path / "clip.braw")
     assert companions.find_proxy(original) is None
