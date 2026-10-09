@@ -26,6 +26,7 @@ import os
 import sys
 import tempfile
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -47,7 +48,13 @@ from offloader.gui import drives, theme  # noqa: E402
 from offloader.gui.main_window import MainWindow  # noqa: E402
 from offloader.gui.preset_editor import PresetEditor  # noqa: E402
 from offloader.gui.worker import JobState, QueueItem  # noqa: E402
-from offloader.models import VerificationMode  # noqa: E402
+from offloader.models import (  # noqa: E402
+    Destination,
+    FileEntry,
+    FileStatus,
+    Job,
+    VerificationMode,
+)
 from offloader.presets import PRESET_COLORS, Preset  # noqa: E402
 from offloader.volumes import Volume  # noqa: E402
 
@@ -136,6 +143,40 @@ def seed_config() -> None:
         json.dumps([p.to_dict() for p in PRESETS], indent=2), encoding="utf-8")
 
 
+def finished_job() -> Job:
+    """A completed job, so the file pane has checksums to show.
+
+    The detail pane's whole point is the source and destination hashes beside
+    each other, and a screenshot of it empty would document nothing. Invented
+    clips, but real structure: every checksum here is what the pane will render
+    for a genuine offload, and the pairs match because the job verified.
+    """
+    root = Path("E:\\")
+    destination = Path("D:\\video\\080426\\A002")
+    clips = [
+        ("A002_08041151_C001.braw", 24_411_238_400, "3f2a9c17b48e05d1"),
+        ("A002_08041203_C002.braw", 31_884_902_400, "b71e04c9a3fd2b68"),
+        ("A002_08041219_C003.braw", 28_106_342_400, "0c4d8ba25e91f7a3"),
+        ("A002_08041244_C004.braw", 19_907_481_600, "e58f13d072ac4b96"),
+        ("A002_08041302_C005.braw", 34_022_297_600, "9a2b6e8f14c703de"),
+    ]
+    # A real duration, so the queue's finished row reads "138.33 GB in 0:07:08"
+    # rather than an elapsed time of zero.
+    started = datetime.now() - timedelta(seconds=428)
+    job = Job(name="A002", source_root=root, destination_roots=[destination],
+              verification=VerificationMode.FULL, hash_label="XXHash3-64",
+              started=started, finished=started + timedelta(seconds=428))
+    for name, size, checksum in clips:
+        job.files.append(FileEntry(
+            source=root / name, source_root=root, size=size,
+            created=0.0, modified=0.0, checksum=checksum,
+            destinations=[Destination(
+                root=destination, path=destination / name,
+                status=FileStatus.VERIFIED, checksum=checksum)],
+        ))
+    return job
+
+
 def fill_queue(window: MainWindow) -> None:
     """One job running, one waiting, one done.
 
@@ -159,9 +200,31 @@ def fill_queue(window: MainWindow) -> None:
                   preset=PRESETS[0], state=JobState.DONE, fraction=1.0,
                   stage="verify", bytes_done=int(129.7 * GB),
                   bytes_total=int(129.7 * GB),
-                  started_at=now - 940, finished_at=now - 512),
+                  started_at=now - 940, finished_at=now - 512,
+                  job=finished_job()),
     ]
     controller.itemsChanged.emit()
+    # The finished job, so the picture shows the file pane doing its job rather
+    # than inviting the reader to select something. Scrolled back afterwards:
+    # selecting the last row scrolls it into view, which pushed the running job
+    # — the thing the queue panel is there to show — out of the frame.
+    window.queue.table.selectRow(2)
+    window.queue.table.scrollToTop()
+
+
+def stamp_rate(item, mb_per_sec: float = 594.2, span: float = 2.0) -> None:
+    """Give a hand-built queue item a trailing progress sample.
+
+    The rate and the ETA come from a window of samples measured against the
+    clock, so an item assembled here has neither and the throughput column
+    renders empty. Called immediately before each picture rather than once when
+    the queue is built: a sample older than the window reads as no rate at all,
+    which made the figure come and go with however long Qt took to start.
+    """
+    rate = int(mb_per_sec * 1024 * 1024)
+    item._samples.clear()
+    item._samples.append((time.monotonic() - span,
+                          item.bytes_done - int(rate * span)))
 
 
 def settle(app: QApplication, rounds: int = 12) -> None:
@@ -204,6 +267,11 @@ def main(argv: list[str] | None = None) -> int:
     window._set_mode(0)
     settle(app)
     assert_no_real_volumes(window)
+    stamp_rate(window.controller.items[0])
+    # The column repaints itself, but the running-job line above it is only
+    # rebuilt when the panel ticks — without this the two disagree about
+    # whether there is a rate at all.
+    window.queue._tick()
     shoot(window, out, "app-preset-mode.png")
 
     window._set_mode(1)
@@ -216,6 +284,8 @@ def main(argv: list[str] | None = None) -> int:
     # Checked again: the panel polls every few seconds, so a scan that slipped
     # past the stub would land between the two pictures.
     assert_no_real_volumes(window)
+    stamp_rate(window.controller.items[0])
+    window.queue._tick()
     shoot(window, out, "app-simple-mode.png")
 
     editor = PresetEditor(PRESETS[2])

@@ -94,6 +94,7 @@ select = ["F", "E9", "I", "B", "UP"]
 # Qt's model API is defined with QModelIndex() defaults; matching the framework
 # signature matters more here than the general rule against call-in-default.
 "src/offloader/gui/queue_view.py" = ["B008"]
+"src/offloader/gui/file_list.py" = ["B008"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["offloader"]
