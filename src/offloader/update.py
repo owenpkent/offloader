@@ -45,7 +45,16 @@ from ._version import __version__
 #: Where releases are published. Pinned deliberately: this URL is compiled into
 #: every shipped build, so moving it orphans every install that already exists.
 #: Treat a rename or transfer of the repository as a breaking change.
-FEED_URL = "https://api.github.com/repos/owenpkent/offloader/releases/latest"
+#:
+#: The collection rather than `/releases/latest`. GitHub documents that endpoint
+#: as returning the newest published *full* release and excluding prereleases,
+#: so an installed `0.1.0b1` could never see `0.1.0b2` through it, and a
+#: repository holding only betas — which is what the candidate workflow's
+#: `--prerelease` produces — would answer with nothing at all. Ordering
+#: prereleases is the whole point of the grammar below, so the feed has to be
+#: one that carries them.
+FEED_URL = ("https://api.github.com/repos/owenpkent/offloader/releases"
+            "?per_page=30")
 
 #: The published installer's name. Part of the release contract — the asset has
 #: to be identifiable without trusting anything else in the release.
@@ -85,6 +94,16 @@ _STAGE_ORDER = {"a": 0, "b": 1, "rc": 2, None: 3}
 
 class UpdateError(RuntimeError):
     """An update was found but could not be trusted or applied."""
+
+
+class FeedError(UpdateError):
+    """The feed could not be read, so nothing is known about updates.
+
+    Distinct from "no newer release", and the distinction is the point: a
+    check that never got an answer must not be reported as a confirmation
+    that this is the newest release. That is a claim, and it would be made on
+    the strength of a failed DNS lookup.
+    """
 
 
 @dataclass(frozen=True)
@@ -144,13 +163,56 @@ def _fetch_json(url: str, *, timeout: int = 30) -> Any:
 
 
 def release_from_feed(payload: Any, *, installed: str = __version__) -> Release | None:
-    """The newer release the feed describes, or None.
+    """The best newer release the feed describes, or None.
+
+    Takes the releases collection, or a single release object for a caller that
+    already has one. The network feed is read through `check_feed`, which
+    accepts only the collection and refuses anything else as malformed. The
+    greatest eligible version wins rather than whichever
+    the feed happens to list first: GitHub orders by creation date, and a
+    patched `0.1.0b2` published after `0.1.0rc1` would otherwise be offered as
+    the upgrade from it.
+    """
+    if isinstance(payload, list):
+        candidates = [_release_entry(item, installed=installed) for item in payload]
+        ranked = [(parse_version(found.version), found)
+                  for found in candidates if found is not None]
+        if not ranked:
+            return None
+        return max(ranked, key=lambda pair: pair[0])[1]
+    return _release_entry(payload, installed=installed)
+
+
+def _eligible(version: str, installed: str) -> bool:
+    """Whether an installation on `installed` should be offered `version`.
+
+    Newer, and not a step off the channel this install is already on. A build
+    that is itself a prerelease is testing the prereleases, so it takes the
+    next one; a stable install is not volunteered for a beta it did not ask
+    for. Neither side being readable means no, as everywhere else here.
+    """
+    if not is_newer(version, installed):
+        return False
+    running, offered = parse_version(installed), parse_version(version)
+    if running is None or offered is None:
+        return False
+    stable = _STAGE_ORDER[None]
+    return running[3] != stable or offered[3] == stable
+
+
+def _release_entry(payload: Any, *, installed: str) -> Release | None:
+    """One release from the feed, if it is one this install should be offered.
 
     Reads only what it needs, and requires the asset to be named for the
     version the tag claims: an extra or renamed file in a release cannot then
     be mistaken for the installer.
     """
     if not isinstance(payload, dict):
+        return None
+    if payload.get("draft"):
+        # A draft is visible to anyone who can write to the repository and its
+        # assets are not published. Offering one would hand an installer to the
+        # maintainer's own machine before the release exists for anybody else.
         return None
     tag = payload.get("tag_name")
     if not isinstance(tag, str):
@@ -159,7 +221,7 @@ def release_from_feed(payload: Any, *, installed: str = __version__) -> Release 
     if tag_match is None:
         return None
     version = tag_match.group(1)
-    if parse_version(version) is None or not is_newer(version, installed):
+    if parse_version(version) is None or not _eligible(version, installed):
         return None
 
     expected = ASSET_TEMPLATE.format(version=version)
@@ -178,15 +240,46 @@ def release_from_feed(payload: Any, *, installed: str = __version__) -> Release 
     return None
 
 
+def check_feed(installed: str = __version__, *, url: str = FEED_URL,
+               fetch: Callable[[str], Any] = _fetch_json) -> Release | None:
+    """Ask the feed for a newer release, raising if it could not be asked.
+
+    None here means the feed answered and has nothing newer, including an
+    empty collection: a repository with no releases yet has nothing to offer.
+    A feed that could not be fetched, or that answered with something that is
+    not a releases collection, raises `FeedError` instead, so a caller with
+    somewhere to put the difference can tell "you are up to date" from "I
+    could not find out".
+
+    The feed is the collection, so a single object is malformed here. What
+    GitHub sends as one object from this endpoint is an error body, such as a
+    rate limit notice, and reading that as "nothing newer" is the false
+    confirmation this function exists to prevent.
+    """
+    try:
+        payload = fetch(url)
+    except UpdateError:
+        raise
+    except Exception as exc:
+        raise FeedError(f"could not reach the release feed: {exc}") from exc
+    if not isinstance(payload, list):
+        raise FeedError("the release feed did not return a releases collection")
+    if not all(isinstance(item, dict) for item in payload):
+        raise FeedError("the release feed listed something that is not a release")
+    return release_from_feed(payload, installed=installed)
+
+
 def check(installed: str = __version__, *, url: str = FEED_URL,
           fetch: Callable[[str], Any] = _fetch_json) -> Release | None:
     """Ask the feed for a newer release. Never raises.
 
-    Called on a timer and from a menu item, where the cost of an exception is
-    an interrupted app and the cost of returning None is one missed check.
+    Called where the cost of an exception is an interrupted caller and the
+    cost of returning None is one missed check. A caller that reports the
+    outcome to somebody wants `check_feed`: this one cannot tell a failure
+    from a confirmation, and neither can anyone reading its result.
     """
     try:
-        return release_from_feed(fetch(url), installed=installed)
+        return check_feed(installed, url=url, fetch=fetch)
     except Exception:
         return None
 

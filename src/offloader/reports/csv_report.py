@@ -62,6 +62,9 @@ COLUMNS = [
     "Track Names",
     "Note",
     "Error",
+    # Appended rather than slotted in beside the file columns, so an existing
+    # consumer reading by index is unaffected.
+    "Companion Of",
 ]
 
 
@@ -141,11 +144,13 @@ def write_csv(job: Job, path: Path, *, delimiter: str = ",", **_options) -> Path
                 media.sound.note or media.sound.description or "",
             ]
 
+            belongs_to = entry.companion_of.name if entry.companion_of else ""
+
             if not entry.destinations:
                 writer.writerow(base + ["", "", "", "Skipped",
                                         format_file_datetime(entry.created),
                                         format_file_datetime(entry.modified)]
-                                + tail + [""])
+                                + tail + ["", belongs_to])
                 continue
 
             for number, destination in enumerate(entry.destinations, start=1):
@@ -160,6 +165,6 @@ def write_csv(job: Job, path: Path, *, delimiter: str = ",", **_options) -> Path
                         format_file_datetime(entry.modified),
                     ]
                     + tail
-                    + [destination.error or ""]
+                    + [destination.error or "", belongs_to]
                 )
     return path

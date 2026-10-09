@@ -103,6 +103,19 @@ records interrupted work for recovery. Only inventoried application files
 are removed. Per-user configuration/history and unrelated files are retained.
 An incomplete-installation marker blocks application startup until recovery.
 
+Rollback also takes back the directories promotion created, which it records
+as it makes them, and only while they are still empty. A directory that was
+already there was never the installer's to remove, and neither is one holding
+something that arrived from elsewhere. Without this a rolled-back first
+install left an empty `_internal` behind, which the next attempt read as a
+nonempty unowned target and refused: a transient failure that recovery
+reported as fully resolved could not be retried through the installer.
+
+The manifest write is what commits an update, and it is atomic, so either the
+new inventory landed or the previous one is still in place. Both are recovered
+as "did not commit": the second one rolls back to the old installation rather
+than being treated as a mismatch that no later operation can get past.
+
 Interactive Finish offers to launch Offloader using the non-elevated desktop
 shell user's token and environment. If that identity cannot be obtained, it
 asks the user to launch from Start Menu. There is no elevated fallback or
@@ -219,7 +232,19 @@ feed's tag against the version compiled into the installer.
 It then builds unsigned on `windows-latest`, checks the frozen executables
 carry the right version, confirms the artifacts the release contract names all
 exist, and uploads them as a workflow artifact. Finally it prepares a **draft**
-prerelease pinned to the tagged commit, with notes and no assets.
+pinned to the tagged commit, with notes and no assets.
+
+Whether that draft is marked as a prerelease comes from the version the gate
+just validated, not from an assumption. `v0.1.0b1` is a prerelease and `v1.0.0`
+is not. The flag is not what the updater goes by: it reads the releases
+collection, skips drafts, and takes the channel from the version in the tag
+(see [updates](updates.md)). It is what GitHub goes by. A stable release
+created as a prerelease never becomes the repository's "Latest" release, so
+`/releases/latest` and the releases page keep sending anyone who downloads by
+hand to the release before it, and a beta created as stable would be offered
+to them as the current release. It is set explicitly on both the
+create and the refresh path, so a rerun corrects an existing draft's
+classification rather than inheriting whatever the first run chose.
 
 No assets, on purpose. Signing needs the hardware token, which exists only on
 the release workstation, and the [release plan](release-plan.md) requires every
@@ -242,11 +267,32 @@ gh release upload v0.1.0b1 `
 ```
 
 `workflow_dispatch` runs the same checks without touching releases, for
-rehearsing a tag before it exists. Re-running a tag refreshes the draft's notes
-rather than recreating it, so a signed asset already uploaded is not discarded.
+rehearsing a tag before it exists. The proposed tag is a version to gate, not a
+ref to fetch: the run checks out whatever commit it was started from, so
+entering a `vX.Y.Z` that has no ref yet reaches `check_tag.py` instead of
+failing in checkout. Re-running a tag refreshes the draft's notes rather than
+recreating it, so a signed asset already uploaded is not discarded.
+
+Only a *pushed* tag may touch a release. A dispatch can be started against an
+existing tag, in which case `github.ref` is a tag ref too, so the drafting job
+requires the event as well as the ref. Without that, a rehearsal took the write
+token and edited the release — including passing `--draft` to one that had
+already been published.
+
+The event test does not cover a rerun of the original tag push, which is still
+a push of that tag. So the drafting step reads the release's `isDraft` before
+editing it. A draft is refreshed as above; a release that has since been
+published is left untouched, and the step stops with an error saying so,
+instead of passing `--draft` to the live release and replacing its notes with
+candidate instructions.
 
 `tests/test_release_workflow.py` asserts the negative property this depends on:
-that no job in the workflow attaches what it built to a release.
+that no job in the workflow attaches what it built to a release. It also
+evaluates the drafting job's condition against all three cases — tag push,
+branch dispatch, tag dispatch — with only the first permitted to mutate
+anything.
+It also runs the drafting step's script under bash with `gh` stubbed, and
+asserts that a rerun against a published release issues no `gh release edit`.
 
 ## Check the artifact
 

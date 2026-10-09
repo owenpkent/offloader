@@ -14,6 +14,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6", reason="GUI extra not installed")
 
+from PySide6.QtCore import QDeadlineTimer, QEventLoop  # noqa: E402
 from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
 from offloader.gui import main_window as mw  # noqa: E402
@@ -238,3 +239,85 @@ def test_environment_summary_reports_missing_tools(window, monkeypatch):
     monkeypatch.setattr(mw.thumbs, "ffmpeg_path", lambda: None)
     summary = window._environment_summary()
     assert "ffprobe" in summary and "ffmpeg" in summary
+
+
+# ----------------------------------------------------------------- updates
+
+
+def test_a_manual_check_survives_the_launch_timer(window, qapp):
+    """REGRESSION. The window stamped its announcement intent before asking
+    whether a check had actually started. A manual check requested inside the
+    first 2.5 seconds was still running when the launch timer fired, the
+    timer's silent intent overwrote it, the controller refused the duplicate,
+    and the result the user had asked for was then handled silently."""
+    import threading
+
+    release = threading.Event()
+    window.updates._check = lambda _installed: release.wait(5) or None
+    try:
+        window._check_for_updates(announce=True)
+        deadline = QDeadlineTimer(5000)
+        while not window.updates.busy and not deadline.hasExpired():
+            qapp.processEvents(QEventLoop.AllEvents, 20)
+
+        # The launch timer, firing behind it.
+        window._check_for_updates(announce=False)
+        assert window.updates.announce is True
+    finally:
+        release.set()
+        deadline = QDeadlineTimer(5000)
+        while window.updates.busy and not deadline.hasExpired():
+            qapp.processEvents(QEventLoop.AllEvents, 20)
+
+
+def test_the_download_dialog_cancel_reaches_the_controller(window, qapp,
+                                                           monkeypatch, tmp_path):
+    """REGRESSION. The dialog offered Cancel and nothing was connected to it,
+    so clicking it hid the dialog while the download carried on, and the app
+    then offered to install what the user had just declined."""
+    from offloader.update import Release
+
+    release = Release(version="9.9.9", asset_name="Offloader-Setup-9.9.9.exe",
+                      download_url="https://github.com/a/b/x.exe")
+    cancelled: list[int] = []
+    monkeypatch.setattr(window.updates, "cancel",
+                        lambda: bool(cancelled.append(1)) or True)
+    monkeypatch.setattr(window.updates, "prepare", lambda *a, **k: True)
+    monkeypatch.setattr(mw.QMessageBox, "question",
+                        staticmethod(lambda *a, **k: mw.QMessageBox.Yes))
+    monkeypatch.setattr(window.updates, "_announce", True)
+
+    window._on_update_available(release)
+    assert window._update_progress is not None
+
+    # Emitted rather than calling `cancel()`: the button's `clicked` is wired
+    # to this signal, and the slot of that name does not raise it.
+    window._update_progress.canceled.emit()
+    qapp.processEvents(QEventLoop.AllEvents, 20)
+    assert cancelled, "Cancel was not connected to anything"
+
+
+def test_closing_the_dialog_for_a_result_is_not_a_cancel(window, qapp,
+                                                         monkeypatch, tmp_path):
+    """`QProgressDialog::closeEvent` emits `canceled` itself. Tearing the
+    dialog down because the download finished must not be reported back as the
+    user asking to stop it."""
+    from offloader.update import Release
+
+    release = Release(version="9.9.9", asset_name="Offloader-Setup-9.9.9.exe",
+                      download_url="https://github.com/a/b/x.exe")
+    cancelled: list[int] = []
+    monkeypatch.setattr(window.updates, "cancel",
+                        lambda: bool(cancelled.append(1)) or True)
+    monkeypatch.setattr(window.updates, "prepare", lambda *a, **k: True)
+    monkeypatch.setattr(mw.QMessageBox, "question",
+                        staticmethod(lambda *a, **k: mw.QMessageBox.Yes))
+    monkeypatch.setattr(window.updates, "_announce", True)
+
+    window._on_update_available(release)
+    assert window._update_progress is not None
+
+    window._close_update_progress()
+    qapp.processEvents(QEventLoop.AllEvents, 20)
+    assert cancelled == [], "closing the dialog was reported as a cancel"
+    assert window._update_progress is None
