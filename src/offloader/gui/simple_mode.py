@@ -23,8 +23,9 @@ from ..hashers import ALGORITHMS
 from ..models import Profile, VerificationMode
 from ..presets import Preset
 from ..reports import WRITERS
-from .preset_editor import VERIFICATION_LABELS
-from .widgets import DestinationList, SourceDropZone, button, label, row
+from ..volumes import volume_label
+from .preset_editor import PARANOID_LABEL, PARANOID_TOOLTIP, VERIFICATION_LABELS
+from .widgets import DestinationList, SourceDropZone, button, column, label, row
 
 
 class SimpleModePanel(QWidget):
@@ -34,6 +35,7 @@ class SimpleModePanel(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._queue_busy = False
 
         self.drop_zone = SourceDropZone()
         self.drop_zone.pathChosen.connect(self._on_source_chosen)
@@ -51,14 +53,14 @@ class SimpleModePanel(QWidget):
 
         self._algorithm = QComboBox()
         for key, algorithm in ALGORITHMS.items():
-            self._algorithm.addItem(algorithm.label, key)
+            self._algorithm.addItem(algorithm.picker_label, key)
         self._algorithm.setCurrentIndex(max(0, self._algorithm.findData("xxh3-64")))
 
         self._verification = QComboBox()
         for mode, text in VERIFICATION_LABELS.items():
             self._verification.addItem(text, mode.value)
         self._verification.setCurrentIndex(
-            max(0, self._verification.findData(VerificationMode.SOURCE_ONLY.value)))
+            max(0, self._verification.findData(VerificationMode.FULL.value)))
 
         self._profile = QComboBox()
         self._profile.addItem("Media — camera card", Profile.MEDIA.value)
@@ -91,6 +93,8 @@ class SimpleModePanel(QWidget):
             "the originals are still copying. The report is unaffected: it "
             "always reads in tree order.")
         self._proxies_first.setChecked(True)
+        self._paranoid = QCheckBox(PARANOID_LABEL)
+        self._paranoid.setToolTip(PARANOID_TOOLTIP)
 
         form = QFormLayout()
         form.setSpacing(10)
@@ -101,8 +105,8 @@ class SimpleModePanel(QWidget):
         form.addRow("Verification", self._verification)
         form.addRow("Thumbnails", self._thumbnails)
         form.addRow("Reports", row(*report_row))
-        form.addRow("", self._preserve)
-        form.addRow("", self._proxies_first)
+        form.addRow("Options", column(self._preserve, self._proxies_first,
+                                      self._paranoid))
 
         self._start = button("Start offload", accent=True)
         self._start.clicked.connect(self._start_clicked)
@@ -131,7 +135,25 @@ class SimpleModePanel(QWidget):
 
     def _on_source_chosen(self, path: Path) -> None:
         if not self._name.text().strip():
-            self._name.setPlaceholderText(Path(path).name or "Offload")
+            # Preview what the job will actually be called: folder name, or
+            # for a card offloaded from its root, the volume label ("A003").
+            self._name.setPlaceholderText(self._default_name(path))
+        self._sync()
+
+    @staticmethod
+    def _default_name(source: Path) -> str:
+        source = Path(source)
+        return source.name or volume_label(source) or "Offload"
+
+    def set_queue_busy(self, busy: bool) -> None:
+        """Tell the panel whether the queue is already working. Jobs run one
+        at a time, so while one is running the button cannot start anything —
+        it enqueues. It should say so, rather than promise an immediate
+        offload it cannot deliver."""
+        if busy == self._queue_busy:
+            return
+        self._queue_busy = busy
+        self._start.setText("Add to queue" if busy else "Start offload")
         self._sync()
 
     def _sync(self) -> None:
@@ -150,7 +172,10 @@ class SimpleModePanel(QWidget):
             self._hint.setText("A destination sits inside the source — pick another.")
         else:
             copies = f"{len(destinations)} cop{'ies' if len(destinations) > 1 else 'y'}"
-            self._hint.setText(f"Ready: {source} → {copies}")
+            ready = f"Ready: {source} → {copies}"
+            if self._queue_busy:
+                ready += " — runs after the current job"
+            self._hint.setText(ready)
 
     @staticmethod
     def _overlaps(source: Path, destination: Path) -> bool:
@@ -180,11 +205,12 @@ class SimpleModePanel(QWidget):
             reports=[key for key, box in self._reports.items() if box.isChecked()],
             preserve_structure=self._preserve.isChecked(),
             proxies_first=self._proxies_first.isChecked(),
+            paranoid=self._paranoid.isChecked(),
         )
 
     def _start_clicked(self) -> None:
         source = self.drop_zone.path
         if source is None:
             return
-        name = self._name.text().strip() or (Path(source).name or "Offload")
+        name = self._name.text().strip() or self._default_name(source)
         self.runRequested.emit(source, self.build_preset(), name)
