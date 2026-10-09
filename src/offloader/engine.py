@@ -179,6 +179,11 @@ class ProgressEvent:
     bytes_total: int = 0
     job_bytes_done: int = 0
     job_bytes_total: int = 0
+    #: On a "stalled" event, how long the source has actually supplied nothing.
+    #: Carried because the first such event only fires once the threshold has
+    #: already passed: a consumer timing from its arrival starts at zero and
+    #: stays a whole threshold short of the outage for as long as it lasts.
+    stalled_for: float = 0.0
 
 
 ProgressCallback = Callable[[ProgressEvent], None]
@@ -358,11 +363,29 @@ def _copy_fanout(source: Path, targets: Sequence[Path], algorithm: str,
         try:
             reader = longpath.open_binary(source, "rb")
 
+            stale = False
+
             def read_one() -> bytes:
+                # Recovery happens here rather than in `before_retry` because
+                # `retry.call` invokes that outside the clause that catches
+                # OSError: a reopen that failed would escape the loop with
+                # attempts still unspent, and get wrapped in `Exhausted`, which
+                # closes the whole-file retry too. Inside the operation, a
+                # reader that is slow to come back costs one attempt of the
+                # chunk's own budget, which is what the budget is for.
+                nonlocal reader, stale
+                if stale:
+                    # Reopen rather than seek alone: a reader that dropped off
+                    # the bus needs its handle re-established, which restarting
+                    # the whole file used to get for free.
+                    _close_quietly(reader)
+                    reader = longpath.open_binary(source, "rb")
+                    reader.seek(offset)
+                    stale = False
                 # Assembled from sub-reads so a link that is crawling rather
                 # than hung still marks itself alive on the way. A short read
                 # means end of file; a failure part-way discards the lot,
-                # because `recover` below seeks back to the start of the chunk
+                # because the reopen above seeks back to the start of the chunk
                 # and nothing partial has been hashed or delivered.
                 buffer = bytearray()
                 while len(buffer) < CHUNK_SIZE:
@@ -374,13 +397,8 @@ def _copy_fanout(source: Path, targets: Sequence[Path], algorithm: str,
                 return bytes(buffer)
 
             def recover() -> None:
-                # Reopen rather than seek alone: a reader that dropped off the
-                # bus needs its handle re-established, which restarting the
-                # whole file used to get for free.
-                nonlocal reader
-                _close_quietly(reader)
-                reader = longpath.open_binary(source, "rb")
-                reader.seek(offset)
+                nonlocal stale
+                stale = True
 
             while not stop.is_set():
                 if control is not None:
@@ -722,7 +740,8 @@ def run(source_root: Path, options: OffloadOptions,
                 emit(ProgressEvent(_idx, len(files), _src.name, "stalled",
                                    0, _st.st_size,
                                    counters.job_bytes_done,
-                                   counters.job_bytes_total))
+                                   counters.job_bytes_total,
+                                   stalled_for=idle))
 
             def copy_once(_src=source, _partials=partials, _idx=index,
                           _st=stat) -> _CopyResult:

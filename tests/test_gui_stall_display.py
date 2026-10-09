@@ -82,6 +82,35 @@ def test_the_first_stalled_event_starts_the_clock(qapp, tmp_path):
         controller.shutdown(2000)
 
 
+def test_the_first_displayed_duration_includes_the_threshold(qapp, tmp_path):
+    """REGRESSION. The engine only reports a stall once `stall_after` has
+    already passed. Starting the clock when the event arrived showed "no data
+    for 0s" on a source that had supplied nothing for fifteen seconds, and went
+    on understating the outage by that much for as long as it lasted. It is the
+    number someone uses to decide whether to go and pull the cable."""
+    controller = QueueController()
+    try:
+        item = _running(tmp_path)
+        controller.items = [item]
+        controller._on_progress(item.identifier, 0.5, "stalled",
+                                item.current_file, 1, 2, 15.4)
+        assert item.stalled_for == pytest.approx(15.4, abs=1)
+    finally:
+        controller.shutdown(2000)
+
+
+def test_a_stall_the_engine_did_not_time_still_starts_at_zero(qapp, tmp_path):
+    """The clock is backdated by what was measured, never invented."""
+    controller = QueueController()
+    try:
+        item = _running(tmp_path)
+        controller.items = [item]
+        controller._on_progress(item.identifier, 0.5, "stalled", "f", 1, 2, 0.0)
+        assert item.stalled_for == pytest.approx(0.0, abs=1)
+    finally:
+        controller.shutdown(2000)
+
+
 def test_later_stalled_events_do_not_restart_the_clock(qapp, tmp_path):
     """One event arrives per poll for as long as the stall lasts. Re-stamping
     on each would report the age of the last event — about a second, forever —
