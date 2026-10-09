@@ -23,7 +23,7 @@ def pipeline(tmp_path, monkeypatch):
     artifacts = SimpleNamespace(
         source_identity=lambda _: identity,
         validate_build_record=lambda *args: calls.append("validate"),
-        write_build_record=lambda *args: calls.append("record"),
+        write_build_record=lambda *args: calls.append(("record", args[2:])),
     )
     def build_installer(*args, **kwargs):
         calls.append(("installer", kwargs))
@@ -33,10 +33,19 @@ def pipeline(tmp_path, monkeypatch):
         find_makensis=lambda: calls.append("nsis"),
         build_installer=build_installer,
     )
+    def sign_file(path):
+        calls.append("sign portable" if Path(path).name.endswith("-portable.exe")
+                     else "sign installer")
+
+    def verify_file(path, **kwargs):
+        calls.append(("verify", Path(path).name))
+        return {"verified": True}
+
     sign = SimpleNamespace(
         preflight=lambda: calls.append("preflight"),
-        sign_file=lambda *args: calls.append("sign installer"),
-        verify_file=lambda *args, **kwargs: {"verified": True},
+        inspect_file=lambda path: {"signature_status": "NotSigned"},
+        sign_file=sign_file,
+        verify_file=verify_file,
     )
     for name, value in (("artifacts", artifacts), ("installer", installer), ("sign", sign)):
         monkeypatch.setitem(sys.modules, name, value)
@@ -55,6 +64,7 @@ def test_unsigned_build_never_accesses_signing_key(pipeline):
     assert "preflight" not in calls
     assert "sign bundle" not in calls
     assert "sign installer" not in calls
+    assert "sign portable" not in calls
     assert ("installer", {"sign_command": None}) in calls
     assert "smoke" in calls
     assert not (module.DIST / ".offloader-build-incomplete").exists()
@@ -66,6 +76,25 @@ def test_signed_pipeline_orders_signing_before_assembly(pipeline):
     installer_index = next(i for i, value in enumerate(calls) if isinstance(value, tuple) and value[0] == "installer")
     assert calls.index("sign bundle") < installer_index < calls.index("sign installer")
     assert calls.index("sign installer") < calls.index("smoke")
+
+
+def test_portable_is_signed_verified_and_recorded(pipeline):
+    module, calls, _, _ = pipeline
+    assert module.main([]) == 0
+    portable = module.portable_path("0.1.0")
+    records = [i for i, value in enumerate(calls) if isinstance(value, tuple) and value[0] == "record"]
+    assert all(calls[i] == ("record", (portable,)) for i in records)
+    signed = calls.index("sign portable")
+    assert signed < calls.index(("verify", portable.name)) < records[-1]
+    outputs = next(value for value in calls if isinstance(value, tuple) and value[0] == "outputs")
+    assert outputs[1]["signed"] is True
+
+
+def test_verify_only_checks_portable_signature(pipeline):
+    module, calls, _, _ = pipeline
+    assert module.main(["--verify-only"]) == 0
+    assert ("verify", module.portable_path("0.1.0").name) in calls
+    assert "sign portable" not in calls
 
 
 def test_signing_failure_leaves_candidate_incomplete(pipeline):
@@ -98,7 +127,7 @@ def test_verify_only_does_not_sign_rebuild_or_publish(pipeline):
     assert "validate" in calls
     assert "preflight" not in calls
     assert "freeze" not in calls
-    assert "record" not in calls
+    assert not any(isinstance(value, tuple) and value[0] == "record" for value in calls)
     assert "sign installer" not in calls
 
 
