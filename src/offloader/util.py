@@ -114,13 +114,77 @@ def whole_frame_rate(fps: float) -> int:
     return max(1, int(round(fps)))
 
 
+#: Frames skipped at the top of a dropping minute, by whole frame rate. SMPTE
+#: ST 12-1 5.2.2 defines the numbering for these: two labels per minute at 30,
+#: and the same proportion at the doubled rates.
+_DROPPED_PER_MINUTE = {30: 2, 60: 4, 120: 8}
+
+#: How far a rate may sit from exactly `whole * 1000/1001` and still be that
+#: rate. Wide enough for the 29.97 and 59.94 a file is likely to write out,
+#: narrow enough that a true 30 is nowhere near it.
+_NTSC_TOLERANCE = 0.01
+
+
+def _dropped_per_minute(fps: float, rate: int) -> int | None:
+    """How many labels a minute drops at this rate, or None if it drops none.
+
+    Drop frame corrects the 1000/1001 rates and nothing else: it exists because
+    29.97 frames a second falls behind the clock, and renumbering a true 30
+    would introduce exactly the error it is there to remove. So the flag is
+    honoured against the rate the file actually states, not against the rounded
+    one -- a file claiming DF at 30/1 is malformed, and the plain count is the
+    truthful reading of it.
+    """
+    dropped = _DROPPED_PER_MINUTE.get(rate)
+    if dropped is None:
+        return None
+    if abs(fps - rate * 1000.0 / 1001.0) > _NTSC_TOLERANCE:
+        return None
+    return dropped
+
+
+def _drop_frame_number(frames: int, rate: int, dropped: int) -> int:
+    """An elapsed frame count as the frame *number* drop-frame labels it.
+
+    Drop frame renumbers rather than discarding: no picture is lost, the labels
+    00 and 01 are simply never used at the top of a minute that is not a tenth
+    one, which keeps the running label within a couple of frames of the clock
+    on the wall. So the conversion is to work out how many labels have been
+    skipped before this point and add them back, then format normally.
+    """
+    per_dropping_minute = rate * 60 - dropped
+    per_ten_minutes = rate * 600 - 9 * dropped
+    tens, rest = divmod(frames, per_ten_minutes)
+    skipped = 9 * dropped * tens
+    if rest >= dropped:
+        # The first minute of each ten does not drop, so the frames inside it
+        # are taken off before counting the dropping minutes after it.
+        skipped += dropped * ((rest - dropped) // per_dropping_minute)
+    return frames + skipped
+
+
 def format_timecode(frames: int, fps: float, drop_frame: bool = False) -> str:
-    """Frame count to "HH:MM:SS:FF NDF"/"DF" timecode."""
+    """Frame count to "HH:MM:SS:FF NDF"/"DF" timecode.
+
+    `frames` is elapsed frames, not a frame number. At a 1000/1001 rate those
+    differ: an hour of wall clock is 107,892 frames at 30000/1001, and the
+    whole point of drop frame is that it labels that 01:00:00:00 rather than
+    00:59:56:12. Formatting the count directly and appending "DF" reports the
+    latter with the former's label, which is about 3.6 seconds an hour wrong in
+    the field a sound report is read for.
+    """
     rate = whole_frame_rate(fps)
-    hours, rem = divmod(int(frames), rate * 3600)
+    number = int(frames)
+    dropped = _dropped_per_minute(fps, rate) if drop_frame else None
+    if dropped is not None and number > 0:
+        number = _drop_frame_number(number, rate, dropped)
+    hours, rem = divmod(number, rate * 3600)
     minutes, rem = divmod(rem, rate * 60)
     secs, fr = divmod(rem, rate)
-    tag = "DF" if drop_frame else "NDF"
+    # The tag reports the numbering that was actually applied. A file claiming
+    # DF at a rate that has none is malformed, and labelling the plain count
+    # "DF" would pass its error on as a fact.
+    tag = "DF" if dropped is not None else "NDF"
     return f"{hours:02d}:{minutes:02d}:{secs:02d}:{fr:02d} {tag}"
 
 

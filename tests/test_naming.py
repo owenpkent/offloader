@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import datetime as _dt
+import os
 from pathlib import Path
+
+import pytest
 
 from offloader import naming
 
@@ -52,3 +55,24 @@ def test_volume_label_falls_back_to_folder_name():
     values = naming.context(Path("/Volumes/A001"), volume_label="CARD_A", when=WHEN)
     assert values["volume"] == "CARD_A"
     assert naming.context(Path("/Volumes/A001"), when=WHEN)["volume"] == "A001"
+
+
+def test_card_token_prefers_the_volume_label_for_a_bare_root():
+    """A card offloaded from its root has no folder name; what the operator
+    calls it is the volume label — A003, not a drive letter.
+
+    Uses each platform's own root: "E:/" is only a root on Windows — on POSIX
+    it is a relative path whose *name* is "E:", which is exactly the case the
+    folder name should win."""
+    root = Path("C:/") if os.name == "nt" else Path("/")
+    values = naming.context(root, volume_label="A003")
+    assert values["card"] == "A003"
+    # A real folder name still wins; the label describes the volume, the
+    # folder describes the selection.
+    values = naming.context(root / "DCIM", volume_label="A003")
+    assert values["card"] == "DCIM"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="drive letters are a Windows thing")
+def test_card_token_falls_back_to_the_drive_letter_without_a_label():
+    assert naming.context(Path("E:/"))["card"] == "E"
