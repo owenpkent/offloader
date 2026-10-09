@@ -41,6 +41,13 @@ dependencies = [
 
 [project.optional-dependencies]
 gui = ["PySide6>=6.6"]
+# Reading edit timelines. The adapters live outside OpenTimelineIO's core
+# distribution -- a bare `pip install opentimelineio` reads none of the
+# formats an NLE exports -- so each one is named here explicitly.
+timeline = [
+    "opentimelineio>=0.18",
+    "otio-fcp-adapter>=1.0",
+]
 dev = [
     "pytest>=7.4",
     "pytest-cov>=5.0",
@@ -48,6 +55,8 @@ dev = [
     "hypothesis>=6.100",
     "ruff>=0.4",
     "PySide6>=6.6",
+    "opentimelineio>=0.18",
+    "otio-fcp-adapter>=1.0",
 ]
 
 [project.urls]
