@@ -39,13 +39,15 @@ class Preset:
     name: str
     destinations: list[Path] = field(default_factory=list)
     algorithm: str = "xxh3-64"
-    verification: VerificationMode = VerificationMode.SOURCE_ONLY
+    verification: VerificationMode = VerificationMode.FULL
     profile: Profile = Profile.MEDIA
     thumbnail_count: int = 4
     reports: list[str] = field(default_factory=lambda: ["pdf"])
     preserve_structure: bool = True
     skip_existing: bool = False
     proxies_first: bool = True
+    #: Read every source file twice and compare. For irreplaceable material.
+    paranoid: bool = False
     excludes: list[str] = field(default_factory=list)
     naming_template: str = DEFAULT_TEMPLATE
     retry_attempts: int = 3
@@ -112,6 +114,7 @@ class Preset:
             profile=self.profile,
             retry=RetryPolicy(attempts=max(1, self.retry_attempts),
                               delay=max(0.0, self.retry_wait)),
+            paranoid=self.paranoid,
         )
 
     # ---------------------------------------------------------------- codec
@@ -127,6 +130,7 @@ class Preset:
             "preserve_structure": self.preserve_structure,
             "skip_existing": self.skip_existing,
             "proxies_first": self.proxies_first,
+            "paranoid": self.paranoid,
             "excludes": list(self.excludes),
             "naming_template": self.naming_template,
             "retry_attempts": self.retry_attempts,
@@ -168,9 +172,9 @@ class Preset:
             return list(got) if isinstance(got, (list, tuple)) else []
 
         try:
-            verification = VerificationMode(value("verification", "source-only"))
+            verification = VerificationMode(value("verification", "full"))
         except (ValueError, TypeError):
-            verification = VerificationMode.SOURCE_ONLY
+            verification = VerificationMode.FULL
 
         try:
             profile = Profile(value("profile", "media"))
@@ -198,6 +202,7 @@ class Preset:
             # Presets written before this option existed have no key, and
             # inherit the new default rather than the old behaviour.
             proxies_first=bool(value("proxies_first", True)),
+            paranoid=bool(value("paranoid", False)),
             excludes=[e for e in as_list("excludes") if isinstance(e, str)],
             naming_template=str(value("naming_template", DEFAULT_TEMPLATE)),
             retry_attempts=as_int("retry_attempts", 3),
