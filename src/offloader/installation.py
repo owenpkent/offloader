@@ -331,6 +331,7 @@ def _make_transaction(target: Path, old: Inventory | None, new: Inventory, stage
         "new": _inventory_data(new),
         "moved_old": [],
         "promoted": [],
+        "created_dirs": [],
         "moving_old": None,
         "moving_promoted": None,
         "phase": "mutating",
@@ -360,12 +361,17 @@ def _read_transaction(target: Path) -> tuple[dict[str, Any], Inventory | None, I
     new = _parse_inventory(data.get("new"))
     if data.get("phase") not in ("mutating", "committing", "committed"):
         raise InstallationError("installation recovery marker is invalid")
-    for key in ("moved_old", "promoted"):
+    data.setdefault("created_dirs", [])
+    for key in ("moved_old", "promoted", "created_dirs"):
         values = data.get(key)
         if not isinstance(values, list) or any(not isinstance(value, str) for value in values):
             raise InstallationError("installation recovery marker is invalid")
         if len(values) != len(set(values)):
             raise InstallationError("installation recovery marker is invalid")
+    for value in data["created_dirs"]:
+        # Rejected here rather than at rmdir time: a marker naming `..` or an
+        # absolute path has no business being acted on at all.
+        _safe_relative(value)
     if any(value not in (old.files if old else {}) for value in data["moved_old"]):
         raise InstallationError("installation recovery marker is invalid")
     if any(value not in new.files for value in data["promoted"]):
@@ -413,6 +419,62 @@ def _remove_owned_tree(root: Path, allowed: Iterable[str]) -> None:
         directory.rmdir()
 
 
+def _create_parents(target: Path, destination: Path,
+                    transaction: dict[str, Any]) -> None:
+    """Create ``destination``'s parents under ``target``, recording the new ones.
+
+    A first install of a frozen bundle creates `_internal` on the way to
+    promoting its files. Creating those with ``parents=True`` and forgetting
+    them meant a rolled-back install left the target holding an empty
+    `_internal`, which `_assert_fresh_target` reads as a nonempty unowned
+    directory: a transient failure could not be retried through the installer
+    even though recovery reported no outstanding transaction. Recording them
+    lets rollback take back exactly what it made, and nothing else.
+
+    Recorded before they exist, not after, so a crash in between leaves the
+    marker naming a directory that is not there rather than a directory
+    nothing knows about. Pruning tolerates the first and cannot fix the second.
+    """
+    try:
+        relative = destination.parent.relative_to(target)
+    except ValueError as exc:
+        raise InstallationError("path escapes its installation root") from exc
+    created = transaction["created_dirs"]
+    fresh: list[str] = []
+    current = target
+    for part in relative.parts:
+        current /= part
+        if not _path_exists_or_link(current):
+            value = current.relative_to(target).as_posix()
+            if value not in created:
+                fresh.append(value)
+    if fresh:
+        created.extend(fresh)
+        _save_transaction(target, transaction)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+
+def _prune_created_dirs(target: Path, transaction: dict[str, Any]) -> None:
+    """Remove the directories this transaction created, deepest first.
+
+    Only while still empty, and never the installation root: anything that
+    arrived in one of them belongs to somebody else, and a directory that
+    already existed was never ours to remove.
+    """
+    created = transaction.get("created_dirs") or []
+    for relative in sorted(created, key=lambda value: (-value.count("/"), value)):
+        path = _path_under(target, relative)
+        if _path_exists_or_link(path):
+            _assert_contained_path(target, path)
+            if _is_reparse(path) or not path.is_dir():
+                raise InstallationError(f"unowned path replaced a created directory: {path}")
+            if any(path.iterdir()):
+                continue
+            path.rmdir()
+        transaction["created_dirs"].remove(relative)
+        _save_transaction(target, transaction)
+
+
 def _recover(target: Path) -> None:
     marker = target / MARKER_NAME
     if not marker.exists():
@@ -427,14 +489,20 @@ def _recover(target: Path) -> None:
     _reconcile_install_intents(target, transaction, old, new, stage, backup)
     if transaction["phase"] == "committing":
         manifest = _read_manifest(target)
-        if manifest is None:
-            transaction["phase"] = "mutating"
-            _save_transaction(target, transaction)
-        elif manifest != new:
-            raise InstallationError("installation manifest does not match a committing update")
-        else:
+        if manifest == new:
             transaction["phase"] = "committed"
             _save_transaction(target, transaction)
+        elif manifest is None or (old is not None and manifest == old):
+            # The manifest write is what commits an update, and it is atomic:
+            # either the new inventory landed or the previous one is still
+            # there. Both mean it did not commit, so both roll back. Treating
+            # the surviving old manifest as a mismatch instead wedged the
+            # installation -- every later install or uninstall recovers first,
+            # and recovery raised.
+            transaction["phase"] = "mutating"
+            _save_transaction(target, transaction)
+        else:
+            raise InstallationError("installation manifest does not match a committing update")
     if transaction["phase"] == "committed":
         _validate_owned_files(target, new)
         _remove_owned_tree(stage, new.files)
@@ -472,6 +540,9 @@ def _recover(target: Path) -> None:
             raise InstallationError("cannot safely recover an unexpected manifest")
     _remove_owned_tree(stage, new.files)
     _remove_owned_tree(backup, old.files if old else ())
+    # Last, because restoring an upgrade's old files refills the directories it
+    # promoted into, and those are not empty and not ours to remove.
+    _prune_created_dirs(target, transaction)
     marker.unlink()
 
 
@@ -616,7 +687,7 @@ def install(payload: Path, target: Path) -> None:
                 for relative in new.files:
                     source = _path_under(stage, relative)
                     destination = _path_under(target, relative)
-                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    _create_parents(target, destination, transaction)
                     _assert_contained_path(stage, source)
                     _assert_contained_path(target, destination)
                     transaction["moving_promoted"] = relative

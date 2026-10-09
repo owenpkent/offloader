@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import braw as braw_mod
-from . import companions, integrity, longpath, sysinfo, thumbs
+from . import companions, integrity, longpath, sysinfo, thumbs, volumes
 from . import probe as probe_mod
 from . import retry as retry_mod
 from .hashers import get_algorithm, hash_file, new_hasher
@@ -232,7 +232,8 @@ class FileControl(JobControl):
     STATES = (RUN, PAUSE, CANCEL)
 
     def __init__(self, path: Path, poll: float = 0.5,
-                 on_change: Callable[[str], None] | None = None) -> None:
+                 on_change: Callable[[str], None] | None = None,
+                 clock: Callable[[], float] = time.monotonic) -> None:
         super().__init__()
         self.path = Path(path)
         self.poll = max(0.05, poll)
@@ -240,6 +241,12 @@ class FileControl(JobControl):
         self._state = self.RUN
         self._checked = 0.0
         self._lock = threading.Lock()
+        # Injectable so a test can decide when the rate limiter has elapsed.
+        # `poll` has a 50 ms floor, deliberately: a caller asking for 0 on a
+        # network control path would otherwise stat it sixteen times a second.
+        # That floor also means a small fixture can finish between two reads,
+        # which is a race in the test rather than a behaviour worth having.
+        self._clock = clock
 
     @property
     def state(self) -> str:
@@ -264,14 +271,23 @@ class FileControl(JobControl):
             return self.RUN
         except OSError:
             return None
-        word = text.strip().lower().split()
-        if not word or word[0] not in self.STATES:
+        except UnicodeDecodeError:
+            # Not an OSError, so it escaped the handler above and aborted the
+            # checkpoint. A control file being written underneath us, or one an
+            # editor saved in another encoding, is damaged content: the
+            # documented answer to that is no opinion, not a stopped transfer.
             return None
-        return word[0]
+        # The whole value, not its first token: `cancel pending upload` is
+        # something an editor or a sync left behind, not an instruction to stop
+        # a running offload.
+        word = text.strip().lower()
+        if word not in self.STATES:
+            return None
+        return word
 
     def sync(self, force: bool = False) -> None:
         with self._lock:
-            now = time.monotonic()
+            now = self._clock()
             if not force and now - self._checked < self.poll:
                 return
             self._checked = now
@@ -393,7 +409,11 @@ def assert_selection_is_safe(selection: Sequence[SelectedFile],
 class OffloadOptions:
     destinations: Sequence[Path]
     algorithm: str = "xxh3-64"
-    verification: VerificationMode = VerificationMode.SOURCE_ONLY
+    # FULL by default: the read-back is the only mode that proves what is on
+    # the destination device, and an offload tool's default should be the one
+    # whose "Verified" means the most. The cost is one extra read of each copy
+    # at the destination's own speed; anyone racing a deadline can opt down.
+    verification: VerificationMode = VerificationMode.FULL
     thumbnail_count: int = 4
     excludes: Sequence[str] = DEFAULT_EXCLUDES
     #: Preserve the source tree under each destination root.
@@ -421,6 +441,10 @@ class OffloadOptions:
     #: does not apply either: a selection is transferred in the order given,
     #: which is the only order the selector can be held to.
     selection: Sequence[SelectedFile] | None = None
+    #: Read every source file a second time and compare. Costs a full extra
+    #: pass over the card, and is the only thing that catches a read which
+    #: returned wrong bytes without the operating system noticing.
+    paranoid: bool = False
 
     def __post_init__(self) -> None:
         # The data profile is defined by the absence of media work, so enforce
@@ -453,12 +477,22 @@ def scan(root: Path, excludes: Iterable[str] = DEFAULT_EXCLUDES) -> list[Path]:
     left to chance without this: today it only stops because Windows refuses
     paths past MAX_PATH, and it stops having already returned the same file
     dozens of times.
+
+    Only directories the walk will actually enter are recorded. `os.walk`
+    does not follow a directory symlink, so recording one would mark its
+    target as seen without anything having scanned it: an alias `a -> z`
+    listed before `z` would then hide `z` itself, and neither path's files
+    would be found. A junction is not a symlink to `os.walk`, which does enter
+    it, so a junction still goes through the guard.
     """
     patterns = tuple(excludes)
     found: list[Path] = []
     visited: set[str] = set()
 
     def already_seen(directory: Path) -> bool:
+        if os.path.islink(directory):
+            # Not followed by os.walk, so not a visit. See the docstring.
+            return False
         try:
             real = os.path.normcase(os.path.realpath(directory))
         except OSError:                  # pragma: no cover - unreadable entry
@@ -468,7 +502,8 @@ def scan(root: Path, excludes: Iterable[str] = DEFAULT_EXCLUDES) -> list[Path]:
         visited.add(real)
         return False
 
-    already_seen(Path(root))
+    # The root is always entered, even when it is itself a symlink.
+    visited.add(os.path.normcase(os.path.realpath(root)))
     for dirpath, dirnames, filenames in os.walk(root):
         here = Path(dirpath)
         dirnames[:] = sorted(
@@ -533,12 +568,37 @@ def _destination_for(source: Path, source_root: Path, dest_root: Path,
     return dest_root / source.name
 
 
+def _close_quietly(handle: object | None) -> None:
+    """Close a file handle, swallowing anything it raises.
+
+    Deliberately not just `OSError`. This runs on the way out of a failure and
+    must never *become* the failure: a raise from here would skip the sentinel
+    the reader thread owes its consumer, and the copy would hang rather than
+    report the error that actually happened.
+    """
+    if handle is None:
+        return
+    try:
+        handle.close()
+    except Exception:
+        pass
+
+
+@dataclass
+class _CopyResult:
+    """What one pass of `_copy_fanout` produced."""
+
+    source_checksum: str
+    destination_checksums: list[str]
+    #: (offset, attempts) for every chunk that did not read first time. The copy
+    #: succeeded, but a card that needs these is a card on its way out.
+    recovered_reads: list[tuple[int, int]] = field(default_factory=list)
+
+
 def _copy_fanout(source: Path, targets: Sequence[Path], algorithm: str,
                  on_chunk: Callable[[int], None],
                  control: JobControl | None = None,
-                 retry_policy: retry_mod.RetryPolicy = retry_mod.NO_RETRY,
-                 on_read_retry: Callable[[int, int, BaseException, float], None]
-                 | None = None) -> tuple[str, list[str]]:
+                 retry: retry_mod.RetryPolicy = retry_mod.NO_RETRY) -> _CopyResult:
     """Stream `source` into every target at once.
 
     `targets` are the *in-flight* paths — the caller renames them into place
@@ -546,14 +606,13 @@ def _copy_fanout(source: Path, targets: Sequence[Path], algorithm: str,
     copy that fails or is interrupted cannot damage a good file already sitting
     there.
 
-    A transient source-read failure is retried per `retry_policy` at the failing
-    chunk: the source is reopened and the read resumed from the last chunk that
-    was delivered, so recovering a few bytes on a marginal card does not cost a
-    re-read of the whole clip. `on_read_retry(offset, attempt, exc, pause)` is
-    called before each such retry, on the reader thread.
-
     Returns the source checksum plus one checksum per target, computed from the
     bytes actually handed to each write() call.
+
+    `retry` applies to *source reads only*, chunk by chunk. Writes are left to
+    the caller's whole-file retry: a write that fails part-way leaves the
+    destination at a length nothing here knows, whereas a failed read has
+    produced nothing at all.
     """
     source = Path(source)
     src_hasher = new_hasher(algorithm)
@@ -572,55 +631,78 @@ def _copy_fanout(source: Path, targets: Sequence[Path], algorithm: str,
     chunks: queue.Queue = queue.Queue(maxsize=READ_AHEAD)
     stop = threading.Event()
     failure: list[BaseException] = []
+    recovered: list[tuple[int, int]] = []
 
     def read_ahead() -> None:
         """Keep the queue fed so the next read overlaps the current write.
 
-        Transient read failures are retried here, at the failing chunk. The
-        hashers only ever see chunks that were read successfully, so resuming
-        from the last delivered byte needs no hasher rewind and no re-read of
-        what already landed. The handle is reopened for each retry because
-        after an I/O error its buffered state cannot be trusted.
+        A transient read failure is retried *here*, at the chunk that failed,
+        rather than by restarting the file. Nothing has been hashed yet — the
+        hashers only ever see a chunk once it has been delivered whole — so
+        there is no checksum state to unwind, and recovering a bad sector costs
+        one 8 MiB re-read instead of a re-read of everything before it. On a
+        79 GB clip that is the difference between seconds and a quarter of an
+        hour.
         """
         reader = None
-        offset = 0       # bytes delivered to the queue: the resume point
-        attempt = 1      # attempts spent on the *current* chunk
+        offset = 0
         try:
+            reader = longpath.open_binary(source, "rb")
+
+            stale = False
+
+            def read_one() -> bytes:
+                # Recovery happens here rather than in `before_retry` because
+                # `retry.call` invokes that outside the clause that catches
+                # OSError: a reopen that failed would escape the loop with
+                # attempts still unspent, and get wrapped in `Exhausted`, which
+                # closes the whole-file retry too. Inside the operation, a
+                # reader that is slow to come back costs one attempt of the
+                # chunk's own budget, which is what the budget is for.
+                nonlocal reader, stale
+                if stale:
+                    # Reopen rather than seek alone: a reader that dropped off
+                    # the bus needs its handle re-established, which restarting
+                    # the whole file used to get for free.
+                    _close_quietly(reader)
+                    reader = longpath.open_binary(source, "rb")
+                    reader.seek(offset)
+                    stale = False
+                return reader.read(CHUNK_SIZE)
+
+            def recover() -> None:
+                nonlocal stale
+                stale = True
+
+            def back_off(pause: float) -> None:
+                # Sleep in slices so a pause or cancel is honoured while the
+                # backoff is waited out. A card failing over a stretch can
+                # spend several seconds per chunk here, and a cancel that only
+                # lands once the stretch is over is not much of a cancel.
+                deadline = time.monotonic() + pause
+                while not stop.is_set():
+                    if control is not None:
+                        control.checkpoint()
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        return
+                    time.sleep(min(0.2, remaining))
+
             while not stop.is_set():
                 if control is not None:
                     control.checkpoint()
                 try:
-                    if reader is None:
-                        reader = longpath.open_binary(source, "rb")
-                        if offset:
-                            reader.seek(offset)
-                    chunk = reader.read(CHUNK_SIZE)
+                    chunk, attempts = retry_mod.call(read_one, retry,
+                                                     before_retry=recover,
+                                                     sleep=back_off)
                 except OSError as exc:
-                    if reader is not None:
-                        try:
-                            reader.close()
-                        except OSError:
-                            pass
-                        reader = None
-                    if (not retry_mod.is_transient(exc)
-                            or attempt >= retry_policy.attempts):
-                        raise
-                    attempt += 1
-                    pause = retry_policy.wait_before(attempt)
-                    if on_read_retry is not None:
-                        on_read_retry(offset, attempt, exc, pause)
-                    # Sleep in slices so a pause or cancel is still honoured
-                    # while waiting out the backoff.
-                    deadline = time.monotonic() + pause
-                    while pause and not stop.is_set():
-                        if control is not None:
-                            control.checkpoint()
-                        remaining = deadline - time.monotonic()
-                        if remaining <= 0:
-                            break
-                        time.sleep(min(0.2, remaining))
-                    continue
-                attempt = 1
+                    if retry.enabled and retry_mod.is_transient(exc):
+                        raise retry_mod.Exhausted(
+                            f"read failed at offset {offset} after "
+                            f"{retry.attempts} attempts: {exc}") from exc
+                    raise
+                if attempts > 1:
+                    recovered.append((offset, attempts))
                 if not chunk:
                     break
                 offset += len(chunk)
@@ -634,11 +716,7 @@ def _copy_fanout(source: Path, targets: Sequence[Path], algorithm: str,
         except BaseException as exc:      # re-raised on the calling thread
             failure.append(exc)
         finally:
-            if reader is not None:
-                try:
-                    reader.close()
-                except OSError:
-                    pass
+            _close_quietly(reader)
             # The sentinel must be delivered, not attempted: if the queue
             # happens to be full at EOF a dropped sentinel leaves the consumer
             # blocked on get() forever. Only give up once `stop` is set, which
@@ -691,7 +769,82 @@ def _copy_fanout(source: Path, targets: Sequence[Path], algorithm: str,
         for handle in handles:
             handle.close()
 
-    return src_hasher.hexdigest(), [h.hexdigest() for h in dst_hashers]
+    return _CopyResult(src_hasher.hexdigest(),
+                       [h.hexdigest() for h in dst_hashers],
+                       recovered)
+
+
+def _confirm_source(source: Path, expected: str, algorithm: str) -> bool:
+    """Read `source` a second time and insist it hashes the same.
+
+    The gap this closes: a read that returns wrong bytes *without raising*. The
+    checksum is computed from whatever was read, so a bad read produces a
+    destination that faithfully matches a corrupted source and verifies clean at
+    every level — file hashes, directory hashes, the lot. Nothing but reading
+    twice can see it.
+
+    Raises `UnstableRead` on a disagreement rather than choosing a winner: there
+    is no basis for deciding which of the two reads was the true one.
+
+    Returns whether the page cache was actually dropped first. A second read
+    served out of memory compares the first read against itself, so a caller
+    that cannot evict has to say so rather than claim the guarantee.
+    """
+    evicted = integrity.evict_from_cache(source)
+    again = hash_file(source, algorithm)
+    if again != expected:
+        raise retry_mod.UnstableRead(
+            f"two reads of {source.name} disagreed ({expected} then {again}) — "
+            "the source did not return the same bytes twice"
+        )
+    return evicted
+
+
+def _describe_recovery(recovered: list[tuple[int, int]]) -> str:
+    """What a file's recovered reads amount to, in one line.
+
+    A single bad sector is worth naming exactly; a run of them is worth
+    bounding, because the useful fact stops being *which* byte and becomes how
+    much of the file would not read first time.
+    """
+    if len(recovered) == 1:
+        offset, attempts = recovered[0]
+        return f"recovered a failed read at byte {offset} on attempt {attempts}"
+    offsets = [offset for offset, _ in recovered]
+    worst = max(attempts for _, attempts in recovered)
+    return (f"recovered {len(recovered)} failed reads between byte "
+            f"{min(offsets)} and byte {max(offsets)}, the worst on "
+            f"attempt {worst}")
+
+
+def _invert_companions(belongs_to: dict[Path, Path]) -> dict[Path, list[Path]]:
+    """clip -> its companions, from companion -> its clip."""
+    owns: dict[Path, list[Path]] = {}
+    for companion, clip in belongs_to.items():
+        owns.setdefault(clip, []).append(companion)
+    for paths in owns.values():
+        paths.sort()
+    return owns
+
+
+def _warn_on_split_companions(job: Job) -> None:
+    """A clip and the files that belong to it have to share a fate.
+
+    A graded BRAW delivered without its `.sidecar` has lost the grade, and a
+    per-file table showing one Verified row and one Failed row twenty lines
+    apart is not how anyone finds that out.
+    """
+    by_source = {entry.source: entry for entry in job.files}
+    for entry in job.files:
+        if entry.companion_of is None or entry.status is not FileStatus.FAILED:
+            continue
+        clip = by_source.get(entry.companion_of)
+        if clip is None or clip.status is FileStatus.FAILED:
+            continue
+        job.warnings.append(
+            f"{entry.name} did not copy but {clip.name} did — the clip has "
+            "been separated from a file that belongs with it"
+        )
 
 
 def _discard(targets: Iterable[Path]) -> None:
@@ -761,9 +914,12 @@ def run(source_root: Path, options: OffloadOptions,
     host = sysinfo.collect()
     job = Job(
         # A selection names its job after the timeline it came from, and a
-        # timeline is a file: ".xml" in a report header helps nobody.
-        name=options.job_name or (source_root.stem if source_root.is_file()
-                                  else source_root.name),
+        # timeline is a file: ".xml" in a report header helps nobody. A card
+        # offloaded from its root has no folder name; its volume label is what
+        # the operator calls it.
+        name=(options.job_name
+              or (source_root.stem if source_root.is_file() else source_root.name)
+              or volumes.volume_label(source_root) or "Offload"),
         source_root=source_root,
         destination_roots=dest_roots,
         verification=options.verification,
@@ -773,16 +929,32 @@ def run(source_root: Path, options: OffloadOptions,
         os_version=host.os_version,
         processors=host.processors,
         system_ram=host.system_ram,
+        paranoid=options.paranoid,
     )
 
     thumb_dir = options.thumbnail_dir or (dest_roots[0] / f"{job.name}_Reports" / "thumbs")
 
+    # A sidecar belongs to a *clip*. Under the data profile nothing is a clip,
+    # so stem-matching a dataset would announce that `run_1440.xmp` belongs to
+    # `run_1440.h5` on no evidence beyond a shared name.
+    belongs_to = (companions.group(files) if options.profile.probes_media
+                  else {})
+    owns = _invert_companions(belongs_to)
+
     #: Whether the "cache could not be evicted" limitation has been reported.
+    #: Said once per job, not once per clip: where the platform has no eviction
+    #: call at all (macOS has no posix_fadvise), repeating it per file would
+    #: bury the warnings that are about actual media.
     evict_noted = False
+    reread_noted = False
 
     def emit(event: ProgressEvent) -> None:
         if progress:
             progress(event)
+
+    # One memo per job: the first clip of a suffix this ffmpeg cannot decode
+    # pays the failed extraction, the remaining clips skip it.
+    thumb_memo = thumbs.DecoderMemo()
 
     for index, source in enumerate(transfer):
         # Between files is the cheapest place to honour a pause or cancel.
@@ -802,6 +974,8 @@ def run(source_root: Path, options: OffloadOptions,
             size=stat.st_size,
             created=getattr(stat, "st_birthtime", stat.st_ctime),
             modified=stat.st_mtime,
+            companion_of=belongs_to.get(source),
+            companions=owns.get(source, []),
         )
 
         if relatives is not None:
@@ -852,24 +1026,11 @@ def run(source_root: Path, options: OffloadOptions,
                                    0, _st.st_size,
                                    counters.job_bytes_done, counters.job_bytes_total))
 
-            # Chunk-level retries, recorded by the reader thread and reported
-            # once per file. Only recorded here: progress events keep coming
-            # from this thread's on_chunk, never from the reader.
-            chunk_retries = {"count": 0, "worst": 1}
-
-            def note_read_retry(offset: int, attempt: int, exc: BaseException,
-                                pause: float, _tally=chunk_retries) -> None:
-                _tally["count"] += 1
-                _tally["worst"] = max(_tally["worst"], attempt)
-
-            def rewind(_partials=partials, _mark=bytes_at_start,
-                       _tally=chunk_retries) -> None:
-                # A whole-file retry restarts the file, so discard what the
-                # failed attempt wrote, give back the progress it claimed, and
-                # start the chunk-retry tally over.
+            def rewind(_partials=partials, _mark=bytes_at_start) -> None:
+                # A retry restarts the file, so discard what the failed attempt
+                # wrote and give back the progress it claimed.
                 _discard(_partials)
                 counters.job_bytes_done = _mark
-                _tally.update(count=0, worst=1)
 
             def note_retry(attempt: int, exc: BaseException, pause: float,
                            _idx=index, _src=source, _st=stat) -> None:
@@ -881,31 +1042,53 @@ def run(source_root: Path, options: OffloadOptions,
                     f"{_src.name}: read failed ({exc}); "
                     f"attempt {attempt} of {options.retry.attempts}")
 
-            # Two layers of retry. The reader inside _copy_fanout retries a
-            # transient read at the failing chunk, which is the cheap recovery:
-            # a marginal sector costs a re-read of 8 MiB, not of the whole
-            # clip. This outer call is the fallback for everything the chunk
-            # retry cannot reach (opening a target, a write to a blipping
-            # network destination) and for reads whose chunk retries were
-            # exhausted, where it restarts the file exactly as before.
-            (src_sum, dst_sums), used = retry_mod.call(
-                lambda _src=source, _partials=partials: _copy_fanout(
-                    _src, _partials, options.algorithm, on_chunk, control,
-                    retry_policy=options.retry, on_read_retry=note_read_retry),
-                options.retry, on_retry=note_retry, before_retry=rewind,
+            def copy_once(_src=source, _partials=partials, _idx=index,
+                          _st=stat) -> _CopyResult:
+                nonlocal reread_noted
+                result = _copy_fanout(_src, _partials, options.algorithm,
+                                      on_chunk, control, options.retry)
+                if not options.paranoid:
+                    return result
+                emit(ProgressEvent(_idx, len(files), _src.name, "reread",
+                                   0, _st.st_size,
+                                   counters.job_bytes_done,
+                                   counters.job_bytes_total))
+                # Raises UnstableRead on a disagreement, which the retry around
+                # this call treats as transient: the honest response to a source
+                # that read differently twice is to read it again, not to guess
+                # which of the two was right.
+                evicted = _confirm_source(_src, result.source_checksum,
+                                          options.algorithm)
+                if not evicted and not reread_noted:
+                    reread_noted = True
+                    job.warnings.append(
+                        "could not evict files from the page cache on this "
+                        "platform, so the second read may have come from memory "
+                        "rather than the device — --paranoid proved less than "
+                        "it appears to"
+                    )
+                return result
+
+            result, used = retry_mod.call(
+                copy_once, options.retry,
+                on_retry=note_retry, before_retry=rewind,
             )
+            src_sum, dst_sums = result.source_checksum, result.destination_checksums
             if used > 1:
                 # Not a failure, but a card that needs retries today is a card
                 # to stop using.
                 job.warnings.append(
                     f"{source.name} copied on attempt {used} of "
                     f"{options.retry.attempts} — the source may be failing")
-            if chunk_retries["count"]:
-                plural = "s" if chunk_retries["count"] != 1 else ""
+            if result.recovered_reads:
+                # Recovered without restarting the file, which is why the copy
+                # succeeded at all — but the sectors that needed it are real.
+                # Said once per file: a card failing over a contiguous stretch
+                # produces one of these every 8 MiB, and a warning list that
+                # long is one nobody reads to the end.
                 job.warnings.append(
-                    f"{source.name}: {chunk_retries['count']} chunk read{plural} "
-                    f"recovered on retry, worst attempt {chunk_retries['worst']} "
-                    f"of {options.retry.attempts}; the source may be failing")
+                    f"{source.name}: {_describe_recovery(result.recovered_reads)}"
+                    " — the source may be failing")
             entry.checksum = src_sum or None
         except JobCancelled:
             _discard(partials)
@@ -946,10 +1129,6 @@ def run(source_root: Path, options: OffloadOptions,
                     # Evict first, or the read-back is served from the page
                     # cache and verifies our own memory against itself.
                     if not integrity.evict_from_cache(partial) and not evict_noted:
-                        # Said once per job, not once per clip: where the
-                        # platform has no eviction call at all (macOS has no
-                        # posix_fadvise), repeating it per file would bury the
-                        # warnings that are about actual media.
                         evict_noted = True
                         job.warnings.append(
                             "could not evict files from the page cache on this "
@@ -1057,6 +1236,7 @@ def run(source_root: Path, options: OffloadOptions,
 
                 entry.thumbnails = thumbs.extract(
                     picture, entry.media, thumb_dir, options.thumbnail_count,
+                    memo=thumb_memo,
                 )
 
         job.files.append(entry)
@@ -1077,6 +1257,7 @@ def run(source_root: Path, options: OffloadOptions,
         if not_attempted > 0:
             counters.errors.append(
                 f"cancelled — {not_attempted} file(s) not attempted")
+    _warn_on_split_companions(job)
     job.notes = "; ".join(counters.errors)
     return job
 
@@ -1095,7 +1276,10 @@ def rescan(source_root: Path, destination_roots: Sequence[Path],
     host = sysinfo.collect()
 
     job = Job(
-        name=options.job_name or source_root.name,
+        # A card offloaded from its root has no folder name; its volume
+        # label is what the operator calls it.
+        name=(options.job_name or source_root.name
+              or volumes.volume_label(source_root) or "Offload"),
         source_root=source_root,
         destination_roots=[Path(d) for d in destination_roots] or [source_root],
         verification=options.verification,
@@ -1107,8 +1291,16 @@ def rescan(source_root: Path, destination_roots: Sequence[Path],
         system_ram=host.system_ram,
     )
     thumb_dir = options.thumbnail_dir or (source_root / f"{job.name}_Reports" / "thumbs")
+    thumb_memo = thumbs.DecoderMemo()
     total = sum(p.stat().st_size for p in files)
     done = 0
+
+    # A sidecar belongs to a *clip*. Under the data profile nothing is a clip,
+    # so stem-matching a dataset would announce that `run_1440.xmp` belongs to
+    # `run_1440.h5` on no evidence beyond a shared name.
+    belongs_to = (companions.group(files) if options.profile.probes_media
+                  else {})
+    owns = _invert_companions(belongs_to)
 
     for index, source in enumerate(files):
         stat = source.stat()
@@ -1118,6 +1310,8 @@ def rescan(source_root: Path, destination_roots: Sequence[Path],
             size=stat.st_size,
             created=getattr(stat, "st_birthtime", stat.st_ctime),
             modified=stat.st_mtime,
+            companion_of=belongs_to.get(source),
+            companions=owns.get(source, []),
         )
         if progress:
             progress(ProgressEvent(index, len(files), source.name, "verify",
@@ -1150,7 +1344,8 @@ def rescan(source_root: Path, destination_roots: Sequence[Path],
                 entry.media = probe_mod.probe(source)
                 if options.thumbnail_count > 0 and entry.media.is_video:
                     entry.thumbnails = thumbs.extract(
-                        source, entry.media, thumb_dir, options.thumbnail_count
+                        source, entry.media, thumb_dir, options.thumbnail_count,
+                        memo=thumb_memo,
                     )
             except Exception as exc:            # noqa: BLE001
                 entry.media = MediaInfo()

@@ -63,7 +63,65 @@ def test_job_datetime():
 def test_timecode():
     assert format_timecode(0, 24) == "00:00:00:00 NDF"
     assert format_timecode(6022, 24) == "00:04:10:22 NDF"
-    assert format_timecode(6022, 24, drop_frame=True).endswith("DF")
+
+
+#: Elapsed frames at 30000/1001 for one minute, ten minutes and one hour of
+#: wall clock, and what each is labelled with and without drop frame. Worked
+#: from SMPTE ST 12-1 5.2.2 rather than from this implementation: drop frame
+#: renumbers so the label tracks the clock, so the round hours and tens of
+#: minutes are exact, while non-drop numbering falls behind by about 3.6
+#: seconds an hour, which is the drift drop frame exists to hide.
+NTSC_VECTORS = [
+    (1798, "00:00:59:28 DF", "00:00:59:28 NDF"),
+    (17982, "00:10:00:00 DF", "00:09:59:12 NDF"),
+    (107892, "01:00:00:00 DF", "00:59:56:12 NDF"),
+]
+
+
+@pytest.mark.parametrize("frames,dropped,plain", NTSC_VECTORS)
+def test_drop_frame_labels_track_the_clock(frames: int, dropped: str, plain: str):
+    """REGRESSION. The count was formatted as if the rate were a whole 30 and
+    "DF" appended, so an hour of recording read 00:59:56:12 DF."""
+    rate = 30000 / 1001
+    assert format_timecode(frames, rate, drop_frame=True) == dropped
+    assert format_timecode(frames, rate) == plain
+
+
+def test_drop_frame_skips_the_two_labels_at_a_dropping_minute():
+    """The renumbering itself: 00 and 01 are never used at the top of a minute
+    that is not a tenth one, and a tenth minute does not drop."""
+    rate = 30000 / 1001
+    assert format_timecode(1799, rate, drop_frame=True) == "00:00:59:29 DF"
+    assert format_timecode(1800, rate, drop_frame=True) == "00:01:00:02 DF"
+    assert format_timecode(17981, rate, drop_frame=True) == "00:09:59:29 DF"
+    assert format_timecode(17982, rate, drop_frame=True) == "00:10:00:00 DF"
+
+
+def test_drop_frame_at_the_doubled_rate():
+    assert format_timecode(215784, 60000 / 1001, drop_frame=True) == "01:00:00:00 DF"
+
+
+@pytest.mark.parametrize("fps", [24, 25, 30, 50, 60])
+def test_a_drop_frame_flag_at_a_rate_that_has_none_is_not_claimed(fps: int):
+    """Drop frame corrects the 1000/1001 rates and nothing else. Renumbering a
+    true 30 would introduce the error it exists to remove, and labelling the
+    plain count "DF" would pass a malformed file's claim on as a fact."""
+    assert format_timecode(1500, fps, drop_frame=True).endswith("NDF")
+
+
+def test_the_rate_is_judged_as_written_not_as_rounded():
+    """29.97 and 30 both round to 30, and only one of them drops frames."""
+    assert format_timecode(107892, 29.97, drop_frame=True) == "01:00:00:00 DF"
+    assert format_timecode(107892, 30.0, drop_frame=True) == "00:59:56:12 NDF"
+
+
+def test_every_drop_frame_label_is_distinct_and_ascending():
+    """Two hours of frames, because a renumbering that repeats or goes backwards
+    would still satisfy every fixed vector above."""
+    rate = 30000 / 1001
+    labels = [format_timecode(n, rate, drop_frame=True) for n in range(215785)]
+    assert len(set(labels)) == len(labels)
+    assert labels == sorted(labels)
 
 
 def test_fps_drops_decimals_when_integral():
