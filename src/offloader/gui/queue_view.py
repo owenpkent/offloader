@@ -34,10 +34,18 @@ STAGE_VERBS = {
     "verify": "Verifying",
     "probe": "Reading metadata",
     "thumbs": "Extracting thumbnails",
+    "retry": "Retrying",
+    "stalled": "Stalled on",
 }
+
+#: Stages during which no bytes are moving, so a rate and an ETA computed from
+#: the last few seconds describe a past that has stopped being true.
+_NO_RATE_STAGES = frozenset({"stalled"})
 
 
 def _throughput(item: QueueItem) -> str:
+    if item.state is JobState.RUNNING and item.stage in _NO_RATE_STAGES:
+        return f"no data for {item.stalled_for:.0f}s"
     if item.state is JobState.RUNNING:
         rate = item.rate_bytes_per_sec
         eta = item.eta_seconds

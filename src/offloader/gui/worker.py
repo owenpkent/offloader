@@ -62,6 +62,10 @@ class QueueItem:
     current_file: str = ""
     bytes_done: int = 0
     bytes_total: int = 0
+    #: When the current stall began, or None. Derived from the stage rather
+    #: than carried in the progress signal, which has no field for it and would
+    #: have to grow one on every consumer to say the same thing.
+    stalled_since: float | None = None
     started_at: float | None = None
     finished_at: float | None = None
     job: Job | None = None
@@ -109,6 +113,13 @@ class QueueItem:
         return max(0, self.bytes_done - oldest_bytes) / span
 
     @property
+    def stalled_for(self) -> float:
+        """Seconds since the last byte arrived, or 0 when data is moving."""
+        if self.stalled_since is None:
+            return 0.0
+        return max(0.0, time.monotonic() - self.stalled_since)
+
+    @property
     def eta_seconds(self) -> float | None:
         rate = self.rate_bytes_per_sec
         remaining = self.bytes_total - self.bytes_done
@@ -130,7 +141,7 @@ class QueueItem:
 class _Runner(QThread):
     """Runs a single queue item off the UI thread."""
 
-    progressed = Signal(int, float, str, str, int, int)
+    progressed = Signal(int, float, str, str, int, int, float)
     completed = Signal(int, object, object, object)   # id, Job|None, reports, error
 
     def __init__(self, item: QueueItem, parent: QObject | None = None) -> None:
@@ -150,7 +161,7 @@ class _Runner(QThread):
                     if event.job_bytes_total else 0.0)
         self.progressed.emit(
             self._item.identifier, fraction, event.stage, event.file_name,
-            event.job_bytes_done, event.job_bytes_total,
+            event.job_bytes_done, event.job_bytes_total, event.stalled_for,
         )
 
     def run(self) -> None:  # noqa: D102 - QThread entry point
@@ -338,11 +349,23 @@ class QueueController(QObject):
 
     # ---------------------------------------------------------------- slots
     def _on_progress(self, identifier: int, fraction: float, stage: str,
-                     filename: str, done: int, total: int) -> None:
+                     filename: str, done: int, total: int,
+                     stalled_for: float = 0.0) -> None:
         item = self.find(identifier)
         if item is None:
             return
         item.fraction = fraction
+        # Backdated by the silence the engine had already measured, not timed
+        # from the event's arrival. The first stalled event only fires once
+        # `stall_after` has passed, so starting the clock here showed "no data
+        # for 0s" on a source that had supplied nothing for fifteen seconds,
+        # and stayed a whole threshold short for as long as the outage lasted.
+        # That number is what someone uses to decide whether to pull the cable.
+        if stage == "stalled":
+            if item.stalled_since is None:
+                item.stalled_since = time.monotonic() - max(0.0, stalled_for)
+        else:
+            item.stalled_since = None
         item.stage = stage
         item.current_file = filename
         item.bytes_done = done
