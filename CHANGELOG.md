@@ -314,7 +314,10 @@ project uses [semantic versioning][semver].
   byte-identical whichever way the job ran. Use `--originals-first` (or the
   "Copy proxies before the originals" checkbox in Simple mode and the preset
   editor) for the old order. Presets saved before this option existed inherit
-  the new default.
+  the new default. A proxy is a proxy container (MP4, MOV, M4V or MXF) in a
+  proxy directory, the same rule the report's clip grouping uses, so a BRAW or
+  R3D original filed under a folder called `Proxy` is not hoisted ahead of the
+  other originals.
 
 - **The preset editor is grouped into Preset, Copying and Reports.** Sixteen
   fields in one flat column read as a wall, and the two or three bearing on any

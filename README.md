@@ -308,6 +308,11 @@ offloader offload --source E:\ --dest D:\video\A001 --originals-first
 checkbox. Presets saved before the option existed inherit the new default.
 A card with no proxy directory is unaffected.
 
+A proxy is a proxy container (MP4, MOV, M4V or MXF) in a proxy directory
+(`Proxy`, `Proxies` and their usual spellings), the same rule the report uses
+to group a proxy with its clip. A BRAW or R3D original that a card happens to
+file under a folder called `Proxy` keeps its place among the originals.
+
 ## Sound recorder cards
 
 The `media` profile covers production sound as well as picture. A card of
@@ -594,7 +599,7 @@ ruff check src tests
 pytest --cov=offloader --cov-report=term-missing
 ```
 
-820 tests at 84% line coverage. They cover formatting against the reference's
+824 tests at 84% line coverage. They cover formatting against the reference's
 exact strings, checksum vectors and streaming equivalence, copy/verify
 behaviour including simulated destination corruption, pause/resume/cancel
 concurrency, retry discrimination, BRAW container parsing, ffprobe parsing,
