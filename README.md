@@ -236,6 +236,44 @@ hashes, which is the only check that catches a rename or a moved file — every
 file involved still hashes exactly as recorded. See
 [`docs/ascmhl.md`](docs/ascmhl.md#directory-hashes).
 
+### `update`
+
+```sh
+offloader update              # is there a newer release?
+offloader update --install    # download it, verify it, run the installer
+```
+
+GitHub Releases is the feed, so there is no manifest server and no second
+place a version number is recorded. Before anything runs, the download has to
+be served from an allowlisted host *after* redirects, hash to what was
+computed while streaming, and carry a valid Authenticode signature with this
+project's certificate thumbprint, its publisher name, and an embedded
+`FileVersion` matching the release. That last check is what stops an older
+but still validly signed installer being re-served under a newer asset name.
+
+The feed is the releases collection (`/releases?per_page=30`), not
+`/releases/latest`, which GitHub documents as excluding prereleases. Drafts are
+ignored, the channel is taken from the version in the tag rather than from
+GitHub's prerelease flag, and the greatest eligible version wins rather than
+whichever is listed first. So an installed beta such as `0.1.0b1` is offered the
+next beta, release candidate or final release, while a stable install is
+offered stable releases only.
+
+A feed that could not be read is a failure, not "the newest release
+available": the command line prints an error and exits with status 2 (0 is up
+to date, 1 is a newer release found), and the desktop app reports the check as
+failed.
+
+**It never closes a running Offloader.** The installer refuses maintenance
+while a transfer is in flight, which is the guarantee rather than a
+limitation, so updating means finishing or cancelling the job first. The
+command says so before the elevation prompt appears.
+
+The desktop app does the same thing from **Help, Check for updates now**, and
+checks once on launch unless that is turned off in Options. Full detail,
+including what is deliberately not copied from the reference implementation,
+is in [`docs/updates.md`](docs/updates.md).
+
 ### Verification modes
 
 | Mode | What it does | Catches |
@@ -555,7 +593,8 @@ general-purpose tool reports a filename, a size, and a placeholder icon.
 | --- | --- |
 | [`ROADMAP.md`](ROADMAP.md) | What is next, why, and what this will not become |
 | [`docs/release-plan.md`](docs/release-plan.md) | Windows beta release sequence, packaging, signing, acceptance gates, and recovery |
-| [`docs/build-windows.md`](docs/build-windows.md) | Build, sign, and check Windows desktop bundles and installers |
+| [`docs/build-windows.md`](docs/build-windows.md) | Build, sign, and check Windows desktop bundles and installers; the bill of materials, and tagging a candidate |
+| [`docs/updates.md`](docs/updates.md) | What an update checks before it runs anything, and why it never closes a running transfer |
 | [`docs/data-safety.md`](docs/data-safety.md) | Threat model: what is guaranteed, what is not, and the bugs behind each guarantee |
 | [`docs/report-layout.md`](docs/report-layout.md) | Every coordinate of the PDF, measured off the reference report |
 | [`docs/performance.md`](docs/performance.md) | Why not robocopy, with benchmarks and the confounds that made the first run worthless |

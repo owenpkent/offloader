@@ -71,6 +71,12 @@ build that Windows then considers older than the one it replaced.
 If either version is unreadable the answer is "not newer". String comparison
 is what makes `1.0.10` look older than `1.0.9`.
 
+Because the feed is the releases collection, this ordering is applied to
+releases the updater can actually see: an installed `0.1.0b1` finds `0.1.0b2`
+or `0.1.0rc1` once either is published, and a repository holding only betas
+still answers. The channel comes from the version in the tag, not from GitHub's
+`prerelease` flag, which the updater does not read.
+
 ## What is checked before anything runs
 
 | Check | What it stops |

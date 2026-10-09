@@ -124,8 +124,18 @@ would close it.
 
 - **Email or SMS on completion.** ShotPut Pro has it; a DIT running a long
   offload wants to leave the cart.
-- **Windows installer and code signing**, so it can be handed to someone who
-  does not have Python.
+- **A signed, qualified Windows release.** The packaging is implemented:
+  frozen bundle, NSIS installer, transactional maintenance, signing hooks, a
+  bill of materials for the Python dependency closure, an update client that
+  reads the releases collection, and a tag-triggered candidate workflow.
+  Most of what is left is not code. Signing needs the hardware token, the
+  acceptance matrix needs a clean machine, and Qt's LGPL/GPL terms against
+  Offloader's MIT licence need a redistribution decision, which the notices
+  file flags on every build. One part is: the bill of materials does not cover
+  the CPython runtime or the PyInstaller bootloader, which
+  `build/windows/sbom.py` names as uncovered, and the release plan keeps a
+  complete third-party inventory as a gate. See
+  [`docs/release-plan.md`](docs/release-plan.md).
 - **Per-job report templates and custom branding.**
 
 ## Not planned

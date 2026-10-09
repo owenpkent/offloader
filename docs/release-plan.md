@@ -121,13 +121,21 @@ credentials, update endpoints, or installation paths.
 - **Timeline support:** include and test OpenTimelineIO and the currently
   declared adapter in the desktop bundle if timeline import is advertised for
   that bundle. Otherwise mark that capability source-only for the beta.
-- **Updates:** `offloader update` finds and verifies a release and runs the
-  signed installer; the in-app check remains deferred. Refuse replacement
-  while the app or CLI has an active job; never force-kill a copy to install
-  an update.
-- **Scope freeze:** defer new media features, cloud services, notifications,
-  auto-update, and a marketing website. Fix integrity and packaging blockers
-  discovered during qualification.
+- **Updates:** `offloader update` and the desktop app both check for a
+  release, verify it, and run the signed installer. Refuse replacement while
+  the app or CLI has an active job; never force-kill a copy to install an
+  update. See [updates.md](updates.md). Discovery reads the releases
+  collection, ignores drafts and takes the channel from the tag's version, so
+  a beta can find the next beta. What it still needs is the qualification
+  below: an end-to-end update between two signed published releases.
+- **Scope freeze:** defer new media features, cloud services, notifications
+  and a marketing website. Fix integrity and packaging blockers discovered
+  during qualification.
+
+  Updating is inside the freeze only as far as it goes today: the *check* is
+  automatic, and installing never is. Nothing is downloaded, replaced or
+  restarted without someone asking for it, and a silent background update
+  stays out of scope.
 
 These are working defaults for implementation, not statements that the
 packaging or safeguards already exist.
