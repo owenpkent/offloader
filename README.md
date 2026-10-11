@@ -102,7 +102,7 @@ offloader verify D:\video\080426\A001
 | `--exclude GLOB` | extra filename pattern to skip; repeatable |
 | `--flat` | do not recreate the source folder structure; refused if two files would land on one path |
 | `--skip-existing` | skip files already present at matching size |
-| `--replace-existing` | let a copy replace an existing destination file whose content differs; by default that file is kept and the copy fails (offload only) |
+| `--replace-existing` | let a copy replace an existing destination file whose content differs; by default that file is kept and the copy fails (offload only; in the app, *Replace existing files whose content differs* under Options) |
 | `--paranoid` | read each source file twice and compare (offload only) |
 | `--retries N` | attempts per failing read on a transient error (default 3, 1 disables) |
 | `--retry-wait SECONDS` | pause before the first retry, backing off after (default 2) |

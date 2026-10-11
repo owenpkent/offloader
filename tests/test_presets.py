@@ -121,6 +121,7 @@ def test_to_options_carries_settings_through(tmp_path: Path):
         preserve_structure=False,
         skip_existing=True,
         paranoid=True,
+        replace_existing=True,
     )
     options = preset.to_options(job_name="A001")
 
@@ -132,6 +133,7 @@ def test_to_options_carries_settings_through(tmp_path: Path):
     assert options.preserve_structure is False
     assert options.skip_existing is True
     assert options.paranoid is True
+    assert options.replace_existing is True
     assert "*.tmp" in options.excludes
     assert ".DS_Store" in options.excludes    # defaults still applied
 
@@ -207,3 +209,16 @@ def test_paranoid_survives_a_save_and_reload(tmp_path: Path):
     assert PresetStore(tmp_path / "presets.json").presets[0].paranoid is True
     # And a preset written before the option existed still loads.
     assert Preset.from_dict({"name": "old"}).paranoid is False
+
+
+def test_replace_existing_survives_a_save_and_reload_and_defaults_off(tmp_path: Path):
+    store = PresetStore(tmp_path / "presets.json")
+    store.presets = [Preset(name="Ingest", destinations=[tmp_path / "d"],
+                            replace_existing=True)]
+    store.save()
+
+    assert PresetStore(tmp_path / "presets.json").presets[0].replace_existing is True
+    assert Preset(name="new").replace_existing is False
+    assert Preset(name="new").to_options().replace_existing is False
+    # A preset written before the option existed still loads, refusing.
+    assert Preset.from_dict({"name": "old"}).replace_existing is False

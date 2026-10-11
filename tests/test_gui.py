@@ -315,6 +315,55 @@ def test_the_preset_editor_round_trips_the_second_read(qapp):
     assert editor.result_preset.paranoid is False
 
 
+def test_simple_mode_offers_replace_existing_and_it_reaches_the_engine(qapp):
+    panel = SimpleModePanel()
+    assert panel.build_preset().replace_existing is False
+    assert panel.build_preset().to_options().replace_existing is False
+
+    panel._replace.setChecked(True)
+    assert panel.build_preset().to_options().replace_existing is True
+
+
+def test_the_preset_editor_round_trips_replace_existing(qapp):
+    from offloader.gui.preset_editor import PresetEditor
+
+    assert not PresetEditor(Preset(name="p"))._replace.isChecked()
+
+    editor = PresetEditor(Preset(name="Ingest", replace_existing=True))
+    assert editor._replace.isChecked()
+    assert "content differs" in editor._replace.toolTip()
+    assert "Off by default" in editor._replace.toolTip()
+
+    editor._replace.setChecked(False)
+    editor._accept()
+    assert editor.result_preset.replace_existing is False
+
+    editor = PresetEditor(Preset(name="Ingest"))
+    editor._replace.setChecked(True)
+    editor._accept()
+    assert editor.result_preset.to_options().replace_existing is True
+
+
+def test_the_refusal_names_the_checkbox_as_well_as_the_flag(qapp, tmp_path):
+    """An operator in the app was told to use a CLI flag it cannot pass."""
+    from offloader.gui.preset_editor import REPLACE_EXISTING_LABEL
+
+    relative = "DCIM/IMG_0001.CR3"
+    cards = {}
+    for name, data in (("cardA", b"A" * 2048), ("cardB", b"B" * 2048)):
+        path = tmp_path / name / relative
+        path.parent.mkdir(parents=True)
+        path.write_bytes(data)
+        cards[name] = tmp_path / name
+    preset = Preset(name="p", destinations=[tmp_path / "dst"], thumbnail_count=0)
+
+    assert engine.run(cards["cardA"], preset.to_options()).final_status == "Verified"
+    second = engine.run(cards["cardB"], preset.to_options())
+    error = second.files[0].destinations[0].error
+    assert "--replace-existing" in error
+    assert REPLACE_EXISTING_LABEL in error
+
+
 def test_the_preset_editor_is_grouped_rather_than_one_flat_list(qapp):
     """Sixteen fields in a single column read as a wall. The sections are the
     difference between scanning for a setting and hunting for it."""
@@ -330,7 +379,8 @@ def test_the_preset_editor_is_grouped_rather_than_one_flat_list(qapp):
     # Regrouping a form is exactly the change that silently drops a field.
     for name in ("_name", "_color", "_destinations", "_algorithm",
                  "_verification", "_thumbnails", "_naming", "_excludes",
-                 "_logo", "_footer", "_preserve", "_skip", "_paranoid"):
+                 "_logo", "_footer", "_preserve", "_skip", "_replace",
+                 "_paranoid"):
         assert getattr(editor, name).parent() is not None, f"{name} is orphaned"
 
 

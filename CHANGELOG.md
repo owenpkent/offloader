@@ -162,6 +162,13 @@ project uses [semantic versioning][semver].
 
 ### Added
 
+- **The desktop app can set `replace_existing`.** The engine refuses to replace
+  an existing destination file whose content differs, and its message pointed
+  at `--replace-existing`, a flag the app could not pass. Presets now carry
+  `replace_existing` (saved and reloaded, off for presets written before it),
+  the preset editor and Simple mode have a *Replace existing files whose content
+  differs* checkbox under Options, off by default, and the refusal names both
+  the flag and the checkbox.
 - **"Start offload" says "Add to queue" when that is what it does.** Jobs run
   one at a time; while one is running the button enqueues, and the ready line
   says the job runs after the current one.

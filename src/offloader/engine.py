@@ -1197,7 +1197,9 @@ def _existing_file_refusal(target: Path, partial: Path, source_checksum: str,
     what a re-offload of the same card does. Anything else, or anything that
     cannot be read to find out, is refused.
     """
-    advice = "use --replace-existing to overwrite it"
+    # Engine code stays free of Qt, so the app's checkbox is named literally.
+    advice = ("use --replace-existing, or the app's \"Replace existing files "
+              "whose content differs\" option, to overwrite it")
     try:
         if longpath.stat(target).st_size != longpath.stat(partial).st_size:
             return ("an existing file with different content is already there; "
