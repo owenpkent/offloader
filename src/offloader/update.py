@@ -124,6 +124,16 @@ class UpdateError(RuntimeError):
     """An update was found but could not be trusted or applied."""
 
 
+class FeedError(UpdateError):
+    """The feed could not be read, so nothing is known about updates.
+
+    Distinct from "no newer release", and the distinction is the point: a
+    check that never got an answer must not be reported as a confirmation
+    that this is the newest release. That is a claim, and it would be made on
+    the strength of a failed DNS lookup.
+    """
+
+
 @dataclass(frozen=True)
 class Release:
     """A candidate release, as far as the feed describes it."""
@@ -184,7 +194,9 @@ def release_from_feed(payload: Any, *, installed: str = __version__) -> Release 
     """The best newer release the feed describes, or None.
 
     Takes the releases collection, or a single release object for a caller that
-    already has one. The greatest eligible version wins rather than whichever
+    already has one. The network feed is read through `find_release`, which
+    refuses an error body or any other malformed payload. The
+    greatest eligible version wins rather than whichever
     the feed happens to list first: GitHub orders by creation date, and a
     patched `0.1.0b2` published after `0.1.0rc1` would otherwise be offered as
     the upgrade from it.
@@ -260,32 +272,52 @@ def find_release(installed: str = __version__, *, url: str = FEED_URL,
                  fetch: Callable[[str], Any] = _fetch_json) -> Release | None:
     """Ask the feed for a newer release, raising if the feed cannot be read.
 
-    None means the feed was read and holds nothing newer for this install.
-    Every failure to get that answer (offline, an HTTP error or rate limit, a
-    redirect off the allowlist, a body that is not the expected JSON) raises
-    `UpdateError` instead, because reporting it as "up to date" would let a
-    broken proxy or a network attacker suppress updates without anyone
-    noticing.
+    None means the feed was read and holds nothing newer for this install,
+    including an empty collection: a repository with no releases yet has
+    nothing to offer. Every failure to get that answer (offline, an HTTP error
+    or rate limit, a redirect off the allowlist, a body that is not the
+    expected JSON, an error body) raises `FeedError` instead, because
+    reporting it as "up to date" would let a broken proxy or a network
+    attacker suppress updates without anyone noticing.
+
+    A JSON list is the releases collection, and every item in it must be an
+    object. A JSON object with a `tag_name` is a single release. Any other
+    object is an error body, such as GitHub's `{"message": ...}` rate limit
+    notice, and reading that as "nothing newer" is the false confirmation this
+    function exists to prevent.
     """
     try:
         payload = fetch(url)
+    except FeedError:
+        raise
     except UpdateError as exc:
-        raise UpdateError(f"the release feed was refused: {exc}") from exc
+        raise FeedError(f"the release feed was refused: {exc}") from exc
     except urllib.error.HTTPError as exc:
         hint = (" (GitHub's rate limit for unauthenticated requests may have "
                 "been reached; try again later)"
                 if exc.code in (403, 429) else "")
-        raise UpdateError(
+        raise FeedError(
             f"the release feed answered HTTP {exc.code}{hint}") from exc
     except urllib.error.URLError as exc:
-        raise UpdateError(
+        raise FeedError(
             f"could not reach the release feed: {exc.reason}") from exc
     except (ValueError, UnicodeDecodeError) as exc:
-        raise UpdateError("the release feed was not readable JSON") from exc
+        raise FeedError("the release feed was not readable JSON") from exc
     except (OSError, http.client.HTTPException) as exc:
-        raise UpdateError(f"could not read the release feed: {exc}") from exc
-    if not isinstance(payload, (list, dict)):
-        raise UpdateError("the release feed was not a list of releases")
+        raise FeedError(f"could not reach the release feed: {exc}") from exc
+    except Exception as exc:
+        raise FeedError(f"could not read the release feed: {exc}") from exc
+    if isinstance(payload, list):
+        if not all(isinstance(item, dict) for item in payload):
+            raise FeedError(
+                "the release feed listed something that is not a release")
+    elif isinstance(payload, dict):
+        if "tag_name" not in payload:
+            message = payload.get("message")
+            detail = f": {message}" if isinstance(message, str) and message else ""
+            raise FeedError(f"the release feed returned an error{detail}")
+    else:
+        raise FeedError("the release feed did not return a releases collection")
     return release_from_feed(payload, installed=installed)
 
 

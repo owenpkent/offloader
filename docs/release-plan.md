@@ -57,7 +57,7 @@ tests or builds were run for this documentation task.
 | Dependencies | Minimum versions and optional extras | Recorded build environment and pinned release dependency sets |
 | Media tools | ffmpeg/ffprobe discovered externally; copying works without them | Explicit installer dependency policy and useful missing-tool messaging |
 | Integrity | Detailed guarantees and remaining limits in `data-safety.md` | Release-specific regression evidence and operational validation |
-| Updates | `offloader update` checks GitHub Releases, verifies the signed installer and hands it over; no in-app check or notification | Wire the check into the desktop interface; qualify an end-to-end update against a published release |
+| Updates | `offloader update` and the desktop app both check GitHub Releases, verify the signed installer and hand it over, declining while a job is active | Qualify an end-to-end update against a published signed release on a clean machine |
 
 Sources: [`pyproject.toml`](../pyproject.toml),
 [`CI`](../.github/workflows/ci.yml), [`README`](../README.md),
@@ -207,15 +207,19 @@ an arbitrary install directory that might contain user material.
 user-context relaunch, and safe settings preservation. A generic unattended
 deployment must not launch an app in a missing or unrelated user's session.
 
-The command-line half of the update client is now implemented in
-`src/offloader/update.py` and documented in [updates.md](updates.md). It meets
-the conditions this section set: the signature, publisher and embedded version
-are all verified before elevation, and the `/D=` target is computed from the
-running executable rather than from the uninstall registry key. It does not
-close a running instance, so an update requires the operator to finish first
-and the installer's refusal remains the guarantee. What is still deferred is
-the in-app part: an automatic check, a notification, and a progress surface in
-the desktop interface.
+The update client is now implemented in `src/offloader/update.py`, wrapped for
+the desktop app in `src/offloader/gui/updates.py`, and documented in
+[updates.md](updates.md). It meets the conditions this section set: the
+signature, publisher and embedded version are all verified before elevation,
+and the `/D=` target is computed from the running executable rather than from
+the uninstall registry key.
+
+The app never replaces itself under an active transfer. A running or paused job
+declines the update with a reason, the queue is rechecked immediately before
+the installer is launched, and the app then closes itself deliberately so
+maintenance can proceed. What remains is qualification rather than
+implementation: an end-to-end update from one signed published release to the
+next, on a clean machine, which needs a signed release to exist first.
 
 **Acceptance gates:** exercise first install, custom path, same-version
 reinstall, upgrade, failed upgrade recovery, silent install, and uninstall on

@@ -335,6 +335,81 @@ def test_a_clip_with_dialogue_is_not_counted_twice(capsys):
 
 
 
+def _feed(monkeypatch, result):
+    """Stand in for `update.find_release`: return `result`, or raise it."""
+    from offloader import update
+
+    def find_release(*args, **kwargs):
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+    monkeypatch.setattr(update, "find_release", find_release)
+
+
+def test_update_names_a_newer_release(monkeypatch, capsys):
+    from offloader.update import Release
+
+    _feed(monkeypatch, Release(version="99.0.0",
+                               asset_name="Offloader-Setup-99.0.0.exe",
+                               download_url="https://github.com/x/y.exe"))
+    assert cli.main(["update"]) == 1
+    out = capsys.readouterr().out
+    assert "Offloader 99.0.0 is available" in out
+    assert "newest" not in out
+
+
+def test_update_up_to_date_when_the_feed_has_nothing_newer(monkeypatch, capsys):
+    _feed(monkeypatch, None)
+    assert cli.main(["update"]) == 0
+    assert "is the newest release available" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("error", [
+    "could not reach the release feed: [Errno -2] Name or service not known",
+    "the release feed did not return a releases collection",
+])
+def test_update_failed_fetch_is_an_error_not_a_confirmation(monkeypatch, capsys,
+                                                            error):
+    from offloader.update import FeedError
+
+    _feed(monkeypatch, FeedError(error))
+    assert cli.main(["update"]) == 5
+    captured = capsys.readouterr()
+    assert "newest" not in captured.out + captured.err
+    assert "could not check for updates" in captured.err
+    assert error in captured.err
+
+
+def test_update_failed_fetch_through_the_real_feed_check(monkeypatch, capsys):
+    from offloader import update
+
+    def unreachable(*args, **kwargs):
+        raise OSError("network is unreachable")
+
+    monkeypatch.setattr(update.urllib.request, "urlopen", unreachable)
+    assert cli.main(["update"]) == 5
+    captured = capsys.readouterr()
+    assert "newest" not in captured.out
+    assert "network is unreachable" in captured.err
+
+
+def test_update_reports_the_feed_error_message(monkeypatch, capsys):
+    """GitHub's error body (here a rate limit) must reach the operator on
+    stderr, not just a generic feed failure."""
+    from offloader import update
+
+    message = "API rate limit exceeded for 1.2.3.4"
+    real = update.find_release
+    monkeypatch.setattr(
+        update, "find_release",
+        lambda *a, **k: real(*a, fetch=lambda _url: {"message": message}, **k))
+    assert cli.main(["update"]) == 5
+    captured = capsys.readouterr()
+    assert message in captured.err
+    assert "newest" not in captured.out
+
+
 def test_exit_code_of_a_cancelled_job_is_130_whatever_the_files_say():
     import datetime as _dt
 

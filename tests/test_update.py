@@ -1188,3 +1188,16 @@ def test_find_release_raises_where_check_returns_none():
     with pytest.raises(UpdateError, match="offline"):
         update.find_release("0.1.0", fetch=explode)
     assert update.check("0.1.0", fetch=explode) is None
+
+
+def test_the_feed_error_message_reaches_the_exception():
+    """GitHub's error body names the cause (rate limit, bad credentials). The
+    message must survive into the FeedError so the operator can read it."""
+    message = "API rate limit exceeded for 1.2.3.4"
+
+    def fetch(_url):
+        return {"message": message}
+
+    with pytest.raises(update.FeedError) as caught:
+        update.find_release("0.5.0", fetch=fetch)
+    assert message in str(caught.value)
