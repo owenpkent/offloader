@@ -68,6 +68,13 @@ project uses [semantic versioning][semver].
   trying to escape. The queue is polled, the checkpoint is checked while
   waiting, and a reader still blocked after a second is left behind: it is a
   daemon holding one source handle, which it closes itself.
+- **A cancel during a second destination's reread left the file reading as
+  Verified.** Only the destinations already promoted were recorded, and a
+  file's status is its weakest recorded copy, so the copy that was never made
+  could not lower it. The missing copies are now recorded as cancelled.
+- **`offloader verify` stayed silent when it could not evict the page cache.**
+  The offload warns that a read-back may have come from memory; verify
+  discarded the same result. It now reports the same warning.
 - **Pause and cancel are honoured during rereads.** A cancel issued during the
   `--paranoid` source reread or the full-verification destination reread was
   ignored, and the file was promoted and reported Verified. Both rereads now

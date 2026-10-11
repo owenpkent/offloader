@@ -355,6 +355,8 @@ def cmd_verify(args: argparse.Namespace) -> int:
             print(f"  {verdict.describe()}")
         for verdict in report.directory_failures:
             print(f"  {verdict.describe()}")
+        for warning in report.warnings:
+            print(f"  warning: {warning}")
         for extra in report.unlisted[:20]:
             print(f"  not in manifest: {extra}")
         if len(report.unlisted) > 20:
