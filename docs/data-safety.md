@@ -182,7 +182,7 @@ exists precisely so it can be checked independently.
 | Re-offloading a card already pulled | Fingerprinted by source name plus the listing's names and sizes, warned with the earlier job's name and date. Only successful offloads count. |
 | Card pulled mid-copy | `OSError` fails that file; the partial is deleted; other files are unaffected. |
 | Quit during an offload | Confirmed, then cancelled cleanly, partials removed. |
-| Cancel | Deletes the in-flight partial rather than leaving plausible-looking media. |
+| Cancel | Deletes the in-flight partial rather than leaving plausible-looking media. Pause and cancel are also honoured during the `--paranoid` source reread and the full-verification destination reread, so a cancel there never promotes the file. |
 | Report writer crashing | Caught; a bad PDF never invalidates a good copy. |
 | Corrupt config file | Treated as empty. Config must never stand between someone and their card. |
 | Two source files mapping to one destination path | Refused before a byte moves, naming both sources. See below. |

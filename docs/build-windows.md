@@ -88,6 +88,10 @@ The installer defaults to Program Files/Offloader with administrator approval.
 Desktop and Start Menu shortcuts default on. Silent `/S` installation accepts
 the standard [NSIS `/D=` contract](https://nsis.sourceforge.io/Docs/Chapter3.html):
 the absolute target is last and unquoted, including when it contains spaces.
+An explicit `/D=` wins over a registered install location; without one, an
+existing installation's registered location is reused. A `/D=` equal to the
+default Program Files location cannot be told apart from none, so a registered
+location still wins in that one case.
 
 Every installed GUI and CLI process holds a shared installation lock for its
 whole lifetime. Installation and uninstall require exclusive access and fail

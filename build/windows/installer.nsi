@@ -4,7 +4,6 @@ SetCompressor /SOLID lzma
 SetDatablockOptimize on
 
 !include "MUI2.nsh"
-!include "FileFunc.nsh"
 !include "LogicLib.nsh"
 !include "nsDialogs.nsh"
 !include "WinMessages.nsh"
@@ -14,10 +13,11 @@ SetDatablockOptimize on
 !define PRODUCT_VERSION "@PRODUCT_VERSION@"
 !define BUNDLE_DIR "@BUNDLE_DIR@"
 !define OUTPUT_FILE "@OUTPUT_FILE@"
+!define DEFAULT_INSTDIR "$PROGRAMFILES64\Offloader"
 
 Name "${PRODUCT_NAME} ${PRODUCT_VERSION}"
 OutFile "${OUTPUT_FILE}"
-InstallDir "$PROGRAMFILES64\Offloader"
+InstallDir "${DEFAULT_INSTDIR}"
 BrandingText "Offloader"
 
 VIProductVersion "@WINDOWS_VERSION@"
@@ -65,12 +65,20 @@ Function .onInit
     StrCpy $StartMenuShortcut "1"
     SetShellVarContext all
     SetRegView 64
-    ${GetOptions} $CMDLINE "/D=" $0
-    IfErrors 0 install_directory_done
-    ReadRegStr $0 HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Offloader" "InstallLocation"
-    IfErrors install_directory_done
-    StrCpy $INSTDIR $0
-install_directory_done:
+    ; NSIS consumes /D= before .onInit runs: it sets $INSTDIR from it and
+    ; removes it from $CMDLINE, so the option cannot be read back here
+    ; (https://nsis.sourceforge.io/Docs/Chapter4.html#varother). The only
+    ; observable sign of an explicit target is that $INSTDIR differs from the
+    ; compiled default. Known limit: an explicit /D= equal to the default
+    ; location is indistinguishable from no /D=, so a registered location
+    ; still wins in that case.
+    ${If} $INSTDIR == "${DEFAULT_INSTDIR}"
+        ReadRegStr $0 HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Offloader" "InstallLocation"
+        ${IfNot} ${Errors}
+        ${AndIf} $0 != ""
+            StrCpy $INSTDIR $0
+        ${EndIf}
+    ${EndIf}
     ClearErrors
 FunctionEnd
 
