@@ -17,10 +17,11 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6", reason="GUI extra not installed")
 
 from PySide6.QtCore import QDeadlineTimer, QEventLoop, Qt  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from offloader import engine  # noqa: E402
-from offloader.gui.job_panel import JobPanel  # noqa: E402
+from offloader.gui.job_panel import DEFAULT_OPTIONS, JobPanel  # noqa: E402
 from offloader.gui.queue_view import QueuePanel  # noqa: E402
 from offloader.gui.widgets import DestinationList, SourceDropZone  # noqa: E402
 from offloader.gui.worker import JobState, QueueController  # noqa: E402
@@ -205,6 +206,25 @@ def test_queue_panel_tracks_the_controller(qapp, controller, source_tree, tmp_pa
     assert panel.model.index(0, 4).data(Qt.UserRole) == pytest.approx(1.0)
 
 
+def test_queue_table_is_keyboard_reachable(qapp, controller, source_tree, tmp_path):
+    controller._auto_start = False
+    first = controller.enqueue(source_tree, _preset(tmp_path), "first")
+    second = controller.enqueue(source_tree, _preset(tmp_path), "second")
+    panel = QueuePanel(controller)
+    panel._body.setVisible(True)
+    panel.show()
+    qapp.processEvents()
+
+    assert panel.table.focusPolicy() != Qt.NoFocus
+    panel.table.setFocus()
+    panel.table.selectRow(0)
+    assert panel._selected() is first
+    QTest.keyClick(panel.table, Qt.Key_Down)
+    assert panel.table.selectionModel().selectedRows()[0].row() == 1
+    assert panel._selected() is second
+    panel.close()
+
+
 def test_destination_list_rejects_duplicates(qapp, tmp_path):
     widget = DestinationList()
     assert widget.add_path(tmp_path / "a")
@@ -269,6 +289,21 @@ def test_job_panel_options_round_trip(qapp, tmp_path):
     assert preset.verification is VerificationMode.FULL
     assert preset.profile.value == "data"
     assert preset.excludes == ["*.tmp"]
+
+
+@pytest.mark.parametrize("bad", [None, "invalid"])
+def test_job_panel_invalid_verification_restores_the_default(qapp, bad):
+    panel = JobPanel()
+    panel.apply_options({"verification": bad})
+    assert panel.build_preset().verification is VerificationMode.SOURCE_ONLY
+
+
+def test_job_panel_unknown_algorithm_and_profile_restore_defaults(qapp):
+    panel = JobPanel()
+    panel.apply_options({"algorithm": "nope", "profile": "nope"})
+    options = panel.options()
+    assert options["algorithm"] == "xxh3-64"
+    assert options["profile"] == DEFAULT_OPTIONS["profile"]
 
 
 def test_job_panel_tolerates_garbage_options(qapp, tmp_path):

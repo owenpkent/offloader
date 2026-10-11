@@ -286,12 +286,16 @@ class JobPanel(QWidget):
         """Restore settings; anything missing or malformed keeps its default."""
         merged = {**DEFAULT_OPTIONS, **(values or {})}
 
-        def select(combo: QComboBox, data) -> None:
-            combo.setCurrentIndex(max(0, combo.findData(data)))
+        def select(combo: QComboBox, key: str) -> None:
+            # An unknown saved value restores the default, never entry 0.
+            index = combo.findData(merged[key])
+            if index < 0:
+                index = combo.findData(DEFAULT_OPTIONS[key])
+            combo.setCurrentIndex(max(0, index))
 
-        select(self._algorithm, merged["algorithm"])
-        select(self._verification, merged["verification"])
-        select(self._profile, merged["profile"])
+        select(self._algorithm, "algorithm")
+        select(self._verification, "verification")
+        select(self._profile, "profile")
         try:
             self._thumbnails.setValue(int(merged["thumbnail_count"]))
         except (TypeError, ValueError):
