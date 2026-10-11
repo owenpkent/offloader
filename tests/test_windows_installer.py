@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -41,7 +42,10 @@ def test_render_uses_payload_helper_and_uninstaller_finalizer(tmp_path):
     assert "PreviousInstallLocation" in rendered
     assert 'PreviousInstallLocation == $INSTDIR' in rendered
     assert "InstallDirRegKey" not in rendered
-    assert "${GetOptions} $CMDLINE \"/D=\" $0" in rendered
+    assert "GetOptions" not in rendered
+    assert '!define DEFAULT_INSTDIR "$PROGRAMFILES64\\Offloader"' in rendered
+    assert 'InstallDir "${DEFAULT_INSTDIR}"' in rendered
+    assert '${If} $INSTDIR == "${DEFAULT_INSTDIR}"' in rendered
     assert "ClearErrors\n    SetOutPath" in rendered
     assert "StrCmp $PreviousInstallLocation $INSTDIR 0 uninstall_cleanup_done" in rendered
     assert "@" not in rendered
@@ -121,3 +125,61 @@ def test_nsis_finalizer_nonzero_exit_fails_compilation(tmp_path):
             bundle, tmp_path / "Offloader Setup.exe", "1.2.3",
             sign_command=[sys.executable, str(script)],
         )
+
+
+def _replace_once(text: str, old: str, new: str) -> str:
+    assert text.count(old) == 1, old
+    return text.replace(old, new)
+
+
+@pytest.mark.skipif(sys.platform != "win32" or MAKENSIS is None,
+                    reason="needs Windows and NSIS's makensis")
+def test_silent_explicit_target_wins_over_registered_location(tmp_path):
+    """A real `setup.exe /S /D=<dir>` keeps <dir> even when a location is registered.
+
+    NSIS strips /D= from $CMDLINE and presets $INSTDIR before .onInit, so the
+    script must treat a non-default $INSTDIR as explicit. This builds a probe
+    from the real rendered script with three substitutions: run as the current
+    user, take the "registered" location from a fixed path instead of HKLM, and
+    make .onInit write $INSTDIR to a log and Quit so no section runs and nothing
+    is installed. The probe is then run with and without /D=.
+    """
+    root = tmp_path / "w"
+    root.mkdir()
+    previous = root / "Previous"
+    explicit = root / "Explicit"
+    log = root / "probe.log"
+    exe = root / "probe.exe"
+    rendered = installer._render(_bundle(root), exe, "1.2.3", None)
+
+    registry_read = (
+        r'ReadRegStr $0 HKLM "Software\Microsoft\Windows\CurrentVersion'
+        r'\Uninstall\Offloader" "InstallLocation"'
+    )
+    probe = _replace_once(rendered, "RequestExecutionLevel admin", "RequestExecutionLevel user")
+    probe = _replace_once(probe, registry_read, f'StrCpy $0 "{previous}"')
+    probe = _replace_once(
+        probe,
+        "    ClearErrors\nFunctionEnd\n\nFunction ShortcutsCreate",
+        "    ClearErrors\n"
+        f'    FileOpen $1 "{log}" w\n'
+        "    FileWriteUTF16LE $1 $INSTDIR\n"
+        "    FileClose $1\n"
+        "    Quit\n"
+        "FunctionEnd\n\nFunction ShortcutsCreate",
+    )
+    script = root / "probe.nsi"
+    script.write_text(probe, encoding="utf-8")
+    subprocess.run([str(MAKENSIS), "/V2", str(script)], check=True, timeout=300)
+
+    def run(target: Path | None = None) -> str:
+        log.unlink(missing_ok=True)
+        # A string command line, not a list: /D= must be the last argument
+        # and unquoted even when the path has spaces, and list form would
+        # quote it. Quit makes the probe exit nonzero, hence no check.
+        command = f'"{exe}" /S' + (f" /D={target}" if target else "")
+        subprocess.run(command, timeout=60)
+        return log.read_bytes().decode("utf-16-le")
+
+    assert run(explicit) == str(explicit)
+    assert run() == str(previous)
