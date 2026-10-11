@@ -42,6 +42,16 @@ PARANOID_TOOLTIP = (
     "the one fault no checksum can see, because the checksum is taken from what "
     "the read returned.\n\nCosts a second full pass over the card."
 )
+#: The engine's refusal message names this label, so it is quoted there too:
+#: change both together (a test holds them to each other).
+REPLACE_EXISTING_LABEL = "Replace existing files whose content differs"
+REPLACE_EXISTING_TOOLTIP = (
+    "Lets the job overwrite an existing destination file whose content differs "
+    "from the file being copied.\n\nOff by default: such a file is kept and "
+    "that copy fails, because a second card with the same folder layout would "
+    "otherwise replace the first card's verified copies, and the first card "
+    "may already have been formatted. Identical files are replaced either way."
+)
 
 
 def _form() -> QFormLayout:
@@ -162,6 +172,9 @@ class PresetEditor(QDialog):
             "the originals are still copying. The report is unaffected: it "
             "always reads in tree order.")
         self._proxies_first.setChecked(self._source.proxies_first)
+        self._replace = QCheckBox(REPLACE_EXISTING_LABEL)
+        self._replace.setChecked(self._source.replace_existing)
+        self._replace.setToolTip(REPLACE_EXISTING_TOOLTIP)
         self._paranoid = QCheckBox(PARANOID_LABEL)
         self._paranoid.setChecked(self._source.paranoid)
         self._paranoid.setToolTip(PARANOID_TOOLTIP)
@@ -192,7 +205,8 @@ class PresetEditor(QDialog):
         copying.addRow("Exclude", self._excludes)
         copying.addRow("Options",
                        column(self._preserve, self._skip,
-                              self._proxies_first, self._paranoid))
+                              self._proxies_first, self._replace,
+                              self._paranoid))
 
         paperwork = _form()
         paperwork.addRow("Reports", row(*report_row))
@@ -245,6 +259,7 @@ class PresetEditor(QDialog):
             preserve_structure=self._preserve.isChecked(),
             skip_existing=self._skip.isChecked(),
             proxies_first=self._proxies_first.isChecked(),
+            replace_existing=self._replace.isChecked(),
             paranoid=self._paranoid.isChecked(),
             excludes=excludes,
             logo=Path(logo_text) if logo_text else None,

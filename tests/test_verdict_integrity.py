@@ -21,6 +21,7 @@ import pytest
 
 from offloader import ascmhl, cli, engine, longpath, verify
 from offloader import reports as reports_mod
+from offloader.hashers import get_algorithm, hash_file
 from offloader.models import FileStatus, MediaInfo, VerificationMode
 from offloader.reports.mhl import write_mhl
 
@@ -152,6 +153,195 @@ def test_a_reused_report_dir_gets_a_numbered_manifest(tmp_path, capsys):
     assert (paperwork / "JobReport.mhl").is_file()
     assert (paperwork / "JobReport-2.mhl").is_file()
     assert "JobReport-2.mhl" in capsys.readouterr().err
+
+
+# ------------------------- P2: a later manifest answers an earlier unhashed one
+
+
+def _report_for(reports: list[verify.VerifyReport], manifest: Path) -> verify.VerifyReport:
+    return next(r for r in reports if r.manifest.resolve() == manifest.resolve())
+
+
+@pytest.mark.parametrize("rerun_flags", [[], ["--skip-existing"]])
+def test_a_successful_rerun_supersedes_the_failed_runs_unhashed_entry(
+        tmp_path, monkeypatch, capsys, rerun_flags):
+    """The failed run's manifest kept failing `verify` until the operator
+    deleted it by hand, even after a rerun had copied and verified the file."""
+    card = _card(tmp_path, {"Clips/C001.mov": os.urandom(5000),
+                            "Clips/BAD_C002.mov": os.urandom(6000)})
+    dest = tmp_path / "dst"
+    with monkeypatch.context() as patch:
+        _fail_reads_of(patch, "BAD_C002.mov")
+        assert _offload("--source", str(card), "--dest", str(dest),
+                        "--report", "mhl") == 1
+    rerun = _offload("--source", str(card), "--dest", str(dest),
+                     "--report", "mhl", *rerun_flags)
+    assert rerun == (4 if rerun_flags else 0)
+    capsys.readouterr()
+
+    first = dest / "A001_Reports" / "JobReport.mhl"
+    second = dest / "A001_Reports-2" / "JobReport.mhl"
+    assert cli.main(["verify", str(dest), "--quiet"]) == 0
+    out = capsys.readouterr().out
+    assert "safe to erase the source" in out
+    assert "superseded" in out and "BAD_C002.mov" in out
+    assert f"superseded by {second}" in out
+
+    report = _report_for(verify.verify_tree(dest), first)
+    assert report.passed
+    assert [v.path.name for v in report.superseded] == ["BAD_C002.mov"]
+    assert "with no hash here matched a later manifest" in report.summary()
+
+
+def test_a_corrupted_copy_is_caught_even_when_a_later_manifest_lists_it_unhashed(
+        tmp_path, monkeypatch, capsys):
+    """Supersession runs one way only: a hashed entry is never answered by a
+    later manifest, so a copy corrupted since cannot hide behind a rerun that
+    could not read its source."""
+    card = _card(tmp_path, {"Clips/C001.mov": os.urandom(5000),
+                            "Clips/C002.mov": os.urandom(6000)})
+    dest = tmp_path / "dst"
+    with monkeypatch.context() as patch:
+        _fail_reads_of(patch, "C002.mov")
+        assert _offload("--source", str(card), "--dest", str(dest),
+                        "--report", "mhl") == 1
+    _flip_one_byte(dest / "Clips" / "C001.mov")          # same size, wrong bytes
+    with monkeypatch.context() as patch:
+        _fail_reads_of(patch, "C001.mov")
+        assert _offload("--source", str(card), "--dest", str(dest),
+                        "--report", "mhl") == 1
+    capsys.readouterr()
+
+    assert cli.main(["verify", str(dest), "--quiet"]) == 1
+    out = capsys.readouterr().out
+    assert "do not erase" in out
+    assert "MISMATCH" in out and "C001.mov" in out
+    # The other direction still works in the same tree, so this is the guard
+    # holding rather than supersession being off.
+    assert "superseded" in out and "C002.mov" in out
+
+    reports = verify.verify_tree(dest)
+    first = _report_for(reports, dest / "A001_Reports" / "JobReport.mhl")
+    second = _report_for(reports, dest / "A001_Reports-2" / "JobReport.mhl")
+    assert [(v.path.name, v.result) for v in first.failures] == [
+        ("C001.mov", verify.EntryResult.MISMATCH)]
+    assert [v.path.name for v in first.superseded] == ["C002.mov"]
+    # The rerun's own unhashed entry is not answered by the older hashed one.
+    assert [(v.path.name, v.result) for v in second.failures] == [
+        ("C001.mov", verify.EntryResult.NO_CHECKSUM)]
+    assert not second.superseded
+
+
+def test_a_manifest_for_a_different_destination_root_does_not_supersede(
+        tmp_path, monkeypatch, capsys):
+    card = _card(tmp_path, {"Clips/C001.mov": os.urandom(5000),
+                            "Clips/C002.mov": os.urandom(6000)})
+    dest = tmp_path / "dst"
+    with monkeypatch.context() as patch:
+        _fail_reads_of(patch, "C001.mov")
+        _fail_reads_of(patch, "C002.mov")
+        assert _offload("--source", str(card), "--dest", str(dest),
+                        "--report", "mhl") == 1
+    # A separate job whose root is dst/Clips hashes the same file on disk.
+    other = _card(tmp_path, {"C001.mov": (card / "Clips" / "C001.mov").read_bytes()},
+                  name="B001")
+    assert _offload("--source", str(other), "--dest", str(dest / "Clips"),
+                    "--report", "mhl") == 0
+    # And a rerun of the first job, for the first root, copies only C002.
+    with monkeypatch.context() as patch:
+        _fail_reads_of(patch, "C001.mov")
+        assert _offload("--source", str(card), "--dest", str(dest),
+                        "--report", "mhl") == 1
+    capsys.readouterr()
+
+    first = dest / "A001_Reports" / "JobReport.mhl"
+    elsewhere = dest / "Clips" / "B001_Reports" / "JobReport.mhl"
+    rerun = dest / "A001_Reports-2" / "JobReport.mhl"
+    reports = verify.verify_tree(dest)
+    assert _report_for(reports, elsewhere).passed
+    report = _report_for(reports, first)
+    assert [v.path.name for v in report.failures] == ["C001.mov"]
+    assert [(v.path.name, v.superseded_by) for v in report.superseded] == [
+        ("C002.mov", rerun)]
+
+    assert cli.main(["verify", str(dest), "--quiet"]) == 1
+    out = capsys.readouterr().out
+    assert f"superseded by {elsewhere}" not in out
+    assert f"superseded by {rerun}" in out
+
+
+def _classic_manifest(path: Path, finished: str, entries: dict[str, str | None]) -> Path:
+    """A hand-written MHL 1.1 file, so the timestamps are exactly as given."""
+    tag = get_algorithm("xxh3-64").mhl_tag
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rows = "".join(
+        f"<hash><file>{relative}</file>"
+        + (f"<{tag}>{digest}</{tag}>" if digest else "")
+        + "</hash>"
+        for relative, digest in entries.items())
+    path.write_text(
+        '<?xml version="1.0" encoding="UTF-8"?><hashlist version="1.1">'
+        f"<creatorinfo><startdate>{finished}</startdate>"
+        f"<finishdate>{finished}</finishdate></creatorinfo>{rows}</hashlist>",
+        encoding="utf-8")
+    return path
+
+
+SAME = "2026-10-11T12:00:00+00:00"
+EARLIER = "2026-10-11T11:00:00+00:00"
+
+
+@pytest.mark.parametrize(
+    "first_name, first_at, first_hashed, second_name, second_at, second_hashed, "
+    "passes",
+    [
+        # Equal timestamps: the numbering decides, so -2 is the later run.
+        ("A001_Reports", SAME, False, "A001_Reports-2", SAME, True, True),
+        ("A001_Reports", SAME, True, "A001_Reports-2", SAME, False, False),
+        # Timestamps decide when they differ, whatever the names say.
+        ("A001_Reports", SAME, True, "A001_Reports-2", EARLIER, False, True),
+        ("A001_Reports", EARLIER, True, "A001_Reports-2", SAME, False, False),
+        # Equal timestamps and no shared numbering: nothing is known to be
+        # newer, so the unhashed entry keeps failing.
+        ("A001_Reports", SAME, False, "B001_Reports", SAME, True, False),
+        ("B001_Reports", SAME, True, "A001_Reports", SAME, False, False),
+    ])
+def test_which_manifest_is_newer_comes_from_its_timestamp_then_its_number(
+        tmp_path, capsys, first_name, first_at, first_hashed, second_name,
+        second_at, second_hashed, passes):
+    dest = tmp_path / "dst"
+    clip = dest / "Clips" / "C001.mov"
+    clip.parent.mkdir(parents=True)
+    clip.write_bytes(os.urandom(3000))
+    digest = hash_file(clip, "xxh3-64")
+    relative = "../Clips/C001.mov"
+    _classic_manifest(dest / first_name / "JobReport.mhl", first_at,
+                      {relative: digest if first_hashed else None})
+    _classic_manifest(dest / second_name / "JobReport.mhl", second_at,
+                      {relative: digest if second_hashed else None})
+
+    assert cli.main(["verify", str(dest), "--quiet"]) == (0 if passes else 1)
+    out = capsys.readouterr().out
+    assert ("superseded by" in out) is passes
+
+
+def test_supersession_uses_the_numbered_manifest_name_in_one_folder(tmp_path):
+    """A reused `--report-dir` numbers the file rather than the folder."""
+    dest = tmp_path / "dst"
+    clip = dest / "C001.mov"
+    dest.mkdir()
+    clip.write_bytes(os.urandom(3000))
+    digest = hash_file(clip, "xxh3-64")
+    paperwork = dest / "paperwork_Reports"
+    later = _classic_manifest(paperwork / "JobReport-2.mhl", SAME,
+                              {"../C001.mov": digest})
+    earlier = _classic_manifest(paperwork / "JobReport.mhl", SAME,
+                                {"../C001.mov": None})
+
+    reports = verify.verify_tree(dest)
+    assert all(r.passed for r in reports)
+    (verdict,) = _report_for(reports, earlier).superseded
+    assert verdict.superseded_by == later
 
 
 # --------------------------------------------- P1: unlistable directories fail
