@@ -732,8 +732,8 @@ def run(source_root: Path, options: OffloadOptions,
         # strict: a short dst_sums would silently drop a destination from the
         # report while its file sat on disk unrecorded.
         cancelled_in_verify = False
-        for root, target, partial, dst_sum in zip(dest_roots, targets, partials,
-                                                  dst_sums, strict=True):
+        for position, (root, target, partial, dst_sum) in enumerate(
+                zip(dest_roots, targets, partials, dst_sums, strict=True)):
             destination = Destination(root=root, path=target, checksum=dst_sum or None)
 
             # Mirror source timestamps so the destination reads as an archival
@@ -782,6 +782,18 @@ def run(source_root: Path, options: OffloadOptions,
                         # are gone, so discarding the whole list only
                         # removes this one and the ones not yet reached.
                         _discard(partials)
+                        # Record this copy and every later one as cancelled.
+                        # The entry's status is its weakest copy, and a copy
+                        # that was never made must be the weakest, or the
+                        # file would read as Verified on the strength of the
+                        # destinations that did finish.
+                        for later_root, later_target in zip(
+                                dest_roots[position:], targets[position:],
+                                strict=True):
+                            entry.destinations.append(Destination(
+                                root=later_root, path=later_target,
+                                status=FileStatus.CANCELLED,
+                                error="cancelled before verification"))
                         cancelled_in_verify = True
                         break
                     except OSError as exc:
@@ -828,8 +840,7 @@ def run(source_root: Path, options: OffloadOptions,
 
         if cancelled_in_verify:
             job.cancelled = True
-            if entry.destinations:
-                job.files.append(entry)
+            job.files.append(entry)
             break
 
         if options.extra_probe:
