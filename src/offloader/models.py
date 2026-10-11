@@ -343,6 +343,11 @@ class Job:
     #: manifests can list them unhashed instead of reading as complete, and
     #: counted in the summary of a cancelled job.
     not_attempted: list[Path] = field(default_factory=list)
+    #: For a selection (a timeline offload), each source's path beneath every
+    #: destination root, as the selector laid it out. Empty for a scanned
+    #: card, whose layout is derived from `source_root`. Needed to say where a
+    #: selected file that never arrived would have been.
+    selection_relatives: dict[Path, Path] = field(default_factory=dict)
     #: Whether the source tree was recreated under each destination root.
     #: Needed to say where a file that never arrived *would* have been.
     preserve_structure: bool = True
@@ -424,11 +429,17 @@ class Job:
                                     entry.checksum, True))
 
         for source in self.not_attempted:
-            try:
-                relative = source.relative_to(self.source_root)
-            except ValueError:
-                relative = Path(source.name)
-            path = expected_path(relative, source.name)
+            selected = self.selection_relatives.get(source)
+            if selected is not None:
+                # A selection's layout is the selector's, flat or mirrored,
+                # and cannot be derived from the job's source label.
+                path = root / selected if root is not None else None
+            else:
+                try:
+                    relative = source.relative_to(self.source_root)
+                except ValueError:
+                    relative = Path(source.name)
+                path = expected_path(relative, source.name)
             if path is not None:
                 rows.append(ManifestRow(path, None, None, None, True))
 
