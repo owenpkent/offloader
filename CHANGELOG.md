@@ -75,6 +75,10 @@ project uses [semantic versioning][semver].
 
 ### Fixed
 
+- The stalled stage now clears as soon as bytes resume on a slow link, instead
+  of staying up until the whole 8 MiB chunk has assembled.
+- Time spent paused no longer counts toward the stall watchdog, so resuming a
+  healthy copy no longer reports a stall.
 - **A source on a network share survives its session dropping.** The retry
   machinery reopened a dead handle and resumed from the last delivered chunk
   already; the classifier just did not recognise a dropped SMB session as
@@ -85,7 +89,6 @@ project uses [semantic versioning][semver].
   offloading from a NAS over a VPN link: the path pings clean either side of
   the drop, which is exactly why the retry is worth making. Recovery costs one
   re-read of the chunk in flight.
-
 - **A cancel is noticed while a read is hung.** The consumer blocked on the
   chunk queue without a timeout and teardown then joined the reader thread
   without a deadline, so cancelling a job whose source had stopped responding
@@ -93,7 +96,10 @@ project uses [semantic versioning][semver].
   trying to escape. The queue is polled, the checkpoint is checked while
   waiting, and a reader still blocked after a second is left behind: it is a
   daemon holding one source handle, which it closes itself.
-
+- **Pause and cancel are honoured during rereads.** A cancel issued during the
+  `--paranoid` source reread or the full-verification destination reread was
+  ignored, and the file was promoted and reported Verified. Both rereads now
+  check for pause and cancel at every chunk, and a cancel discards the partials.
 - **A report directory more than one level down failed its own verification.**
   The writer records a relocated report directory as a relative path, so
   `--report-dir` two levels below the destination was recorded as
