@@ -206,10 +206,35 @@ Every file the job scanned is now listed for each destination:
 - Files skipped by `--skip-existing` are **not** listed: nothing re-read them,
   and listing them would certify bytes nobody checked.
 
-An unhashed entry has nothing to pass against, so it keeps failing. After a
-failed run has been resumed, its manifest still lists the files it could not
-read; once the rerun has verified them, retire that manifest by hand. Nothing
-else can say those files were checked.
+An unhashed entry has nothing to pass against, so on its own it keeps failing.
+After a failed run has been resumed, its manifest still lists the files it could
+not read. When `verify` checks a folder, such an entry is **superseded** if a
+newer manifest for the same destination root lists the same path with a hash
+and that file matches it now. The entry is printed as `superseded by
+<manifest>`, not dropped, and the older manifest passes only if nothing else in
+it failed.
+
+Supersession runs one way only:
+
+- Only an entry with no hash can be superseded. A hashed entry is never
+  answered by a later manifest, so a copy corrupted since an earlier run still
+  fails on that run's manifest, whatever a later run recorded.
+- Only a hashed entry that matched can supersede. A later run that could not
+  read the file lists it unhashed, and that entry fails on its own.
+- "Newer" is the manifest's own recorded time (MHL 1.1 `finishdate`, ASC MHL
+  `creationdate`). When those are equal (two runs inside one second) or
+  missing, the numbering decides (`<name>_Reports-2`, `JobReport-2.mhl`), and
+  only between manifests in the same numbered series. File modification times
+  are never used. When neither says which is newer, nothing is superseded.
+- Same destination root means the root `verify` already derives for each
+  manifest: the folder above `<name>_Reports*`, or the folder above `ascmhl/`.
+  A manifest for a subfolder (another job whose destination was
+  `dst/Clips`) does not answer one for `dst`, even about the same file.
+- Directory hash failures are not touched, so the ASC MHL false alarm after a
+  `--skip-existing` rerun (below) still fails.
+
+Verifying a single `.mhl` file checks that file alone, so its unhashed entries
+fail as before.
 
 ### A manifest is never overwritten
 
@@ -223,7 +248,8 @@ Now the job's paperwork folder is chosen before the copy: `<name>_Reports`, or
 part of what is being copied. When a manifest would still land on an existing
 file (a reused `--report-dir`), it is written as `JobReport-2.mhl` and up, and
 the summary says so. `verify` on a folder checks every classic manifest under it,
-so the earlier run's coverage is still checked.
+so the earlier run's coverage is still checked, and a newer manifest can
+supersede an earlier one's unhashed entries as described above.
 
 Re-offloading a previous destination (a shuttle drive holding
 `A001/A001_Reports/`) used to write the new reports over the copied folder,
@@ -244,7 +270,7 @@ folder used.
 | Report writer crashing | Caught; a bad PDF never changes a file's status. Every failure is recorded on the job, which then reads `Verified, reports failed` rather than `Verified`; the GUI lists the failures when the job finishes and the CLI prints them and exits `5`. |
 | A source folder that cannot be listed | The job fails, naming the folder, and the CLI exits `1`. Its manifests carry an unhashed entry for the folder, so `verify` fails too. It used to be dropped silently and the job read Verified. |
 | A file deleted after the scan | That file fails with "source vanished after scan"; the rest of the job carries on and its paperwork is written. |
-| A different card with the same folder layout | A finished copy never replaces an existing destination file whose content differs. The existing file is hashed and compared; identical content is replaced (that changes nothing), different content fails that file with the reason and keeps the existing copy. `--replace-existing` overrides this. |
+| A different card with the same folder layout | A finished copy never replaces an existing destination file whose content differs. The existing file is hashed and compared; identical content is replaced (that changes nothing), different content fails that file with the reason and keeps the existing copy. `--replace-existing` (in the app, *Replace existing files whose content differs*, off by default) overrides this. |
 | A source that already holds `<name>_Reports` | Reports go to `<name>_Reports-2` (or the next free number) with a warning; the copied folder is left as copied. |
 | Same-named clips in different folders | Thumbnail files are named by a hash of each clip's relative path, so one clip's frames never replace another's in the report. |
 | Corrupt config file | Treated as empty. Config must never stand between someone and their card. |
