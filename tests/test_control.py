@@ -136,3 +136,82 @@ def test_control_state_flags():
 
     control.cancel()
     assert control.cancelled
+
+
+# ------------------------------------------- pause and cancel during a reread
+
+
+def _one_file_card(tmp_path: Path, size: int = 300_000) -> Path:
+    card = tmp_path / "card"
+    card.mkdir()
+    (card / "clip.mov").write_bytes(b"\x5a" * size)
+    return card
+
+
+def _assert_nothing_promoted(job, tmp_path: Path) -> None:
+    dest = tmp_path / "dest"
+    assert job.cancelled
+    assert job.final_status != "Verified"
+    assert not (dest / "clip.mov").exists()
+    assert not list(dest.rglob("*.offloader-partial"))
+
+
+def test_cancel_during_paranoid_reread_does_not_promote(tmp_path: Path):
+    """A cancel issued while the source is being reread must stop the job
+    before the file is promoted, not be ignored and reported Verified."""
+    card = _one_file_card(tmp_path)
+    control = engine.JobControl()
+
+    def progress(event: engine.ProgressEvent) -> None:
+        if event.stage == "reread":
+            control.cancel()
+
+    job = engine.run(card, _options(tmp_path, paranoid=True), progress, control)
+
+    _assert_nothing_promoted(job, tmp_path)
+
+
+def test_pause_during_paranoid_reread_blocks_until_resume(
+    tmp_path: Path, monkeypatch
+):
+    card = _one_file_card(tmp_path, size=100_000)
+    control = engine.JobControl()
+    real = engine.hash_file
+    # Small chunks so the reread performs several checkpoints.
+    monkeypatch.setattr(
+        engine, "hash_file",
+        lambda path, key, chunk_size=8 << 20, **kw: real(
+            path, key, 10_000, **kw))
+    paused_once: list[bool] = []
+
+    def progress(event: engine.ProgressEvent) -> None:
+        if event.stage == "reread" and not paused_once:
+            paused_once.append(True)
+            control.pause()
+            threading.Timer(0.3, control.resume).start()
+
+    started = time.monotonic()
+    job = engine.run(card, _options(tmp_path, paranoid=True), progress, control)
+    elapsed = time.monotonic() - started
+
+    assert paused_once
+    assert elapsed >= 0.25
+    assert not job.cancelled
+    assert job.final_status == "Verified"
+
+
+def test_cancel_during_full_verification_reread_does_not_promote(
+    tmp_path: Path,
+):
+    card = _one_file_card(tmp_path)
+    control = engine.JobControl()
+
+    def progress(event: engine.ProgressEvent) -> None:
+        if event.stage == "verify":
+            control.cancel()
+
+    job = engine.run(
+        card, _options(tmp_path, verification=VerificationMode.FULL),
+        progress, control)
+
+    _assert_nothing_promoted(job, tmp_path)
