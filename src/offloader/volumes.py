@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 import shutil
 import string
 from dataclasses import dataclass
@@ -205,15 +206,134 @@ def _posix_volumes() -> list[Volume]:
     return found
 
 
+#: Linux filesystems that are not storage: kernel interfaces, containers, snap
+#: loop images, and per-user FUSE plumbing (gvfs, portals).
+_LINUX_PSEUDO_FS = {
+    "proc", "sysfs", "devtmpfs", "devpts", "tmpfs", "ramfs", "cgroup", "cgroup2",
+    "overlay", "squashfs", "autofs", "securityfs", "debugfs", "tracefs", "fusectl",
+    "configfs", "pstore", "bpf", "mqueue", "hugetlbfs", "binfmt_misc", "rpc_pipefs",
+    "efivarfs", "nsfs", "fuse.gvfsd-fuse", "fuse.portal", "fuse.snapfuse",
+    "fuse.lxcfs", "fuse.gvfs-fuse-daemon",
+}
+_LINUX_NETWORK_FS = {
+    "nfs", "nfs4", "cifs", "smb3", "smbfs", "9p", "ceph", "glusterfs", "afs",
+    "davfs", "fuse.sshfs", "fuse.rclone",
+}
+_LINUX_OPTICAL_FS = {"iso9660", "udf"}
+_MOUNTINFO = "/proc/self/mountinfo"
+
+#: Mounts under these belong to the OS, not to a person plugging something in.
+_LINUX_SYSTEM_PREFIXES = (
+    "/boot", "/snap", "/var/snap", "/var/lib", "/usr", "/etc", "/proc", "/sys",
+    "/dev", "/run",
+)
+#: Where udisks and friends put removable media. Exempt from the list above,
+#: because /run/media sits under /run.
+_LINUX_MEDIA_PREFIXES = ("/media", "/run/media", "/mnt")
+
+
+def _unescape_mountinfo(field: str) -> str:
+    """mountinfo writes space, tab, newline and backslash as octal escapes."""
+    return re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), field)
+
+
+def _under(path: str, prefixes: tuple[str, ...]) -> bool:
+    return any(path == p or path.startswith(p + "/") for p in prefixes)
+
+
+def _linux_device_is_removable(major_minor: str) -> bool:
+    """Whether the block device behind a mount reports itself as removable.
+
+    A partition's `removable` flag lives on its parent disk. Device-mapper
+    devices (LUKS) have none, and read as not removable.
+    """
+    try:
+        device = (Path("/sys/dev/block") / major_minor).resolve()
+    except OSError:
+        return False
+    for candidate in (device, device.parent):
+        try:
+            return (candidate / "removable").read_text().strip() == "1"
+        except OSError:
+            continue
+    return False
+
+
+def _linux_volumes() -> list[Volume]:
+    """Volumes from the kernel's mount table.
+
+    Cards mount at /media/<user>/<LABEL> (or /run/media/<user>/<LABEL>), one
+    level below the directory the macOS-style scan in `_posix_volumes` looks
+    at, so listing children of /media finds the user's directory and never the
+    card. The mount table names the real mount points, and gives the
+    filesystem type as well.
+    """
+    with open(_MOUNTINFO, encoding="utf-8", errors="replace") as handle:
+        lines = handle.read().splitlines()
+
+    found: list[Volume] = []
+    for line in lines:
+        head, separator, tail = line.partition(" - ")
+        left, right = head.split(), tail.split()
+        if not separator or len(left) < 5 or len(right) < 2:
+            continue
+        major_minor, mount_point = left[2], _unescape_mountinfo(left[4])
+        fstype = right[0]
+
+        # The system root is always a candidate, even on overlayfs (containers,
+        # live systems): it is filtered only by the usage check below.
+        if fstype in _LINUX_PSEUDO_FS and mount_point != "/":
+            continue
+        removable_path = _under(mount_point, _LINUX_MEDIA_PREFIXES)
+        if mount_point != "/" and not removable_path and _under(
+                mount_point, _LINUX_SYSTEM_PREFIXES):
+            continue
+
+        root = Path(mount_point)
+        total, free = _usage(root)
+        if total == 0:
+            continue
+
+        if fstype in _LINUX_NETWORK_FS:
+            drive_type = "network"
+        elif fstype in _LINUX_OPTICAL_FS:
+            drive_type = "optical"
+        elif mount_point == "/":
+            drive_type = "fixed"
+        elif removable_path or _linux_device_is_removable(major_minor):
+            drive_type = "removable"
+        else:
+            drive_type = "fixed"
+
+        found.append(Volume(
+            root=root,
+            label=root.name or str(root),
+            filesystem=fstype,
+            total_bytes=total,
+            free_bytes=free,
+            drive_type=drive_type,
+            is_camera_card=detect_camera_card(root, drive_type),
+        ))
+    return found
+
+
 def list_volumes() -> list[Volume]:
     """Every mounted volume, cards first so they are easy to spot.
 
     Deduplicated by resolved root: macOS reaches the boot volume through both
     `/` and `/Volumes/Macintosh HD`, and listing it twice would be noise.
     """
+    system = platform.system()
     try:
-        volumes = (_windows_volumes() if platform.system() == "Windows"
-                   else _posix_volumes())
+        if system == "Windows":
+            volumes = _windows_volumes()
+        elif system == "Linux":
+            try:
+                volumes = _linux_volumes()
+            except OSError:      # no /proc (some containers): scan the usual parents
+                volumes = _posix_volumes()
+        else:
+            volumes = _posix_volumes()
     except Exception:
         volumes = []
 
