@@ -20,6 +20,7 @@ pytest.importorskip("PySide6", reason="GUI extra not installed")
 from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
+from offloader import integrity  # noqa: E402
 from offloader.gui import theme  # noqa: E402
 from offloader.gui.file_list import (  # noqa: E402
     COL_DESTINATION,
@@ -312,7 +313,10 @@ def test_an_engine_source_only_job_is_not_shown_as_read_back(qapp, tmp_path):
     assert "1 of 1" in summary
 
 
-def test_an_engine_full_job_is_shown_as_read_back(qapp, tmp_path):
+def test_an_engine_full_job_is_shown_as_read_back(qapp, tmp_path, monkeypatch):
+    # Eviction always fails on macOS, which is its own case below; this
+    # one is about what a confirmed read-back looks like.
+    monkeypatch.setattr(integrity, "evict_from_cache", lambda p: True)
     job = _engine_job(tmp_path, VerificationMode.FULL)
     assert job.files[0].status is FileStatus.VERIFIED
 
@@ -471,6 +475,8 @@ def test_warnings_are_counted_in_the_header(qapp, tmp_path, monkeypatch):
         return real(path, algorithm, *args, **kwargs)
 
     monkeypatch.setattr(engine, "hash_file", once)
+    # Keep the eviction warning out of the count: it is platform-dependent.
+    monkeypatch.setattr(integrity, "evict_from_cache", lambda p: True)
     job = _run(tmp_path, retry=retry_mod.RetryPolicy(attempts=2, delay=0.0))
     assert job.warnings
 
