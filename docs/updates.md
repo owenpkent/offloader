@@ -218,7 +218,10 @@ rather than enforced.
 
 ## What it deliberately does not do
 
-**It does not close anything.** Offloader's installer refuses maintenance
+**It never closes a running transfer.** The command line closes nothing. The
+desktop app declines the update while a job is running or paused, and
+otherwise closes itself, after asking, once the installer has started.
+Offloader's installer refuses maintenance
 while any Offloader program (the desktop app or a CLI process, busy or idle)
 holds the installation's shared lock, and exits non-zero without changing the
 installation; it never force-kills a running copy. That refusal is a promise

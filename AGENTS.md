@@ -102,8 +102,10 @@ and verification. Do not make a missing media tool block a valid transfer.
   writes and unreadable-config fallback. Tests must use temporary state rather
   than modifying the user's presets or history.
 - Do not represent known gaps as implemented protections: concurrent instances
-  are not coordinated, size-only skip is not a checksum check, and directory
-  structure hashes are not yet rechecked. Consult the current safety document
+  are not coordinated, size-only skip is not a checksum check, the installer
+  update's last hash-to-launch window is not closed, and the SBOM does not
+  cover the bundled CPython, OpenSSL, libffi, VC++/UCRT and bootloader
+  binaries. Consult the current safety document
   for the full list before changing claims.
 
 ## Development and validation

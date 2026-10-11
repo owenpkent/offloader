@@ -29,11 +29,12 @@ they surface, and that decision has not been made here.
 
 Those three files cover the **Python distribution dependencies** and say so in
 their own text. They are not the complete third-party inventory: a frozen
-application also ships the CPython runtime DLL and the PyInstaller bootloader
-compiled into each executable, neither of which has packaging metadata for the
-closure to walk. `sbom.uncovered_in_bundle` reports which of those are present
-in a built bundle, so the gap is measured against the tree rather than
-asserted.
+application also ships the CPython runtime DLL, the PyInstaller bootloader
+compiled into each executable, CPython's OpenSSL and libffi DLLs, and the
+VC++ and UCRT runtimes, none of which has packaging metadata for the closure
+to walk. `sbom.uncovered_in_bundle` reports only the CPython DLL and the
+bootloader executables that are present in a built bundle; the rest are not
+yet reported.
 
 Hardware-key signing, clean-machine interactive installation and alternate
 credential checks, the Qt redistribution decision the notices flag, the
@@ -233,8 +234,11 @@ The update client is now implemented in `src/offloader/update.py`, wrapped for
 the desktop app in `src/offloader/gui/updates.py`, and documented in
 [updates.md](updates.md). It meets the conditions this section set: the
 signature, publisher and embedded version are all verified before elevation,
-and the `/D=` target is computed from the running executable rather than from
-the uninstall registry key.
+and the `/D=` target is computed from the running executable. The installer
+honours an explicit `/D=`, but when it equals the compiled default location it
+cannot tell that from no `/D=` and uses the `InstallLocation` registered under
+HKLM (writable only by an administrator), so in the common case the registry
+value still decides the target; see [updates.md](updates.md).
 
 The app never replaces itself under an active transfer. A running or paused job
 declines the update with a reason, the queue is rechecked immediately before

@@ -255,6 +255,9 @@ destination, including any that failed (recorded with no checksum when none
 could be taken), so a destination missing a clip fails here; every manifest
 under the folder is checked, earlier runs' included. `--allow-cache` skips the
 page-cache eviction: faster, and may verify memory rather than the device.
+Without it, a failed eviction is printed as a warning rather than ignored. On
+macOS eviction is not available, so the warning is expected there and the
+result may reflect memory rather than the device.
 
 For an ASC MHL history it also recomputes the directory content and structure
 hashes, which is the only check that catches a rename or a moved file — every
@@ -270,11 +273,17 @@ offloader update --install    # download it, verify it, run the installer
 
 GitHub Releases is the feed, so there is no manifest server and no second
 place a version number is recorded. Before anything runs, the download has to
-be served from an allowlisted host *after* redirects, hash to what was
-computed while streaming, and carry a valid Authenticode signature with this
-project's certificate thumbprint, its publisher name, and an embedded
-`FileVersion` matching the release. That last check is what stops an older
-but still validly signed installer being re-served under a newer asset name.
+be served from an allowlisted host *after* redirects, and carry a valid
+Authenticode signature with this project's certificate thumbprint, its
+publisher name, and an embedded `FileVersion` matching the release. That last
+check is what stops an older but still validly signed installer being
+re-served under a newer asset name. The SHA-256 taken while streaming is
+compared with a fresh hash of the file on disk before the signature is read,
+after it is read, and immediately before launch; a mismatch refuses and
+nothing runs. One window remains: a process able to write the download
+directory between that last hash and the launch could still swap the file, so
+point `--dir` only at a private location (see the known limits in
+[`docs/updates.md`](docs/updates.md)).
 
 The feed is the releases collection (`/releases?per_page=30`), not
 `/releases/latest`, which GitHub documents as excluding prereleases. Drafts are
@@ -289,10 +298,12 @@ available": the command line prints an error and exits with status 2 (0 is up
 to date, 1 is a newer release found), and the desktop app reports the check as
 failed.
 
-**It never closes a running Offloader.** The installer refuses maintenance
-while a transfer is in flight, which is the guarantee rather than a
-limitation, so updating means finishing or cancelling the job first. The
-command says so before the elevation prompt appears.
+**It never closes a running transfer.** The installer refuses maintenance
+while any Offloader program holds the installation, which is the guarantee
+rather than a limitation, so updating means finishing or cancelling the job
+first. The command line closes nothing and says so before the elevation prompt
+appears. The desktop app declines the update while a job is running or paused,
+and otherwise closes itself, after asking, once the installer has started.
 
 The desktop app does the same thing from **Help, Check for updates now**, and
 checks once on launch unless that is turned off in Options. Full detail,
@@ -577,7 +588,8 @@ The short version:
   was already there and never leaves a plausible-looking filename.
 - `--verify full` evicts each file from the page cache before reading it back,
   because a read straight after a write is otherwise served from memory and
-  proves nothing about the device.
+  proves nothing about the device. If eviction fails, which is always the case
+  on macOS, that is recorded as a warning.
 - Empty files, and verifications that may have been served from cache, are
   reported as warnings rather than folded into a "Verified" verdict.
 - Reads that fail for a transient reason are retried at the failing chunk, so

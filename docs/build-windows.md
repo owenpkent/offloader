@@ -195,17 +195,21 @@ actually moved.
 ### What these three files do not cover
 
 The Python distribution dependencies, and only those. A frozen application also
-ships components that have no packaging metadata for the closure to walk: the
-CPython runtime DLL that bundle validation requires, and the PyInstaller
-bootloader compiled into each of the three executables. All three outputs say
+ships components that have no packaging metadata for the closure to walk,
+including the CPython runtime DLL that bundle validation requires, the
+PyInstaller bootloader compiled into each of the three executables, CPython's
+OpenSSL DLLs and libffi, and the VC++ and UCRT runtime DLLs. All three outputs say
 so in their own text — a scope line in the notices, a `offloader:scope`
 property in the SBOM, a comment in the requirements file — because an inventory
 read as complete while missing the interpreter it ships is worse than one that
 states its boundary.
 
-`sbom.uncovered_in_bundle()` reports which of those are actually present in a
-built bundle, measured against the tree rather than asserted from a list, so
-the gap shrinks as it is closed and cannot be closed by editing a constant.
+`sbom.uncovered_in_bundle()` reports which of the entries in its `UNCOVERED`
+list (currently the CPython DLL and the bootloader executables only) are
+present in a built bundle. It is measured against the tree, but it cannot see
+a component that list does not name, so the OpenSSL, libffi and VC++/UCRT DLLs
+are not reported and the gap is larger than its output. Extend the list before
+treating the inventory as complete.
 The complete third-party inventory remains a gate in
 [release-plan.md](release-plan.md).
 

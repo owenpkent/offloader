@@ -131,10 +131,13 @@ would close it.
   Most of what is left is not code. Signing needs the hardware token, the
   acceptance matrix needs a clean machine, and Qt's LGPL/GPL terms against
   Offloader's MIT licence need a redistribution decision, which the notices
-  file flags on every build. One part is: the bill of materials does not cover
-  the CPython runtime or the PyInstaller bootloader, which
-  `build/windows/sbom.py` names as uncovered, and the release plan keeps a
-  complete third-party inventory as a gate. See
+  file flags on every build. One part is: the bill of materials covers only the
+  Python distribution dependencies. The bundle also ships components with no
+  Python metadata, including the CPython runtime and OpenSSL and libffi DLLs,
+  the VC++ and UCRT runtimes and the PyInstaller bootloader;
+  `build/windows/sbom.py` currently reports only the CPython DLL and the
+  bootloader as uncovered. The release plan keeps a complete third-party
+  inventory as a gate. See
   [`docs/release-plan.md`](docs/release-plan.md).
 - **Per-job report templates and custom branding.**
 
