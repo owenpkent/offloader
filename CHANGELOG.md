@@ -84,7 +84,8 @@ project uses [semantic versioning][semver].
 - **A cancel during a second destination's reread left the file reading as
   Verified.** Only the destinations already promoted were recorded, and a
   file's status is its weakest recorded copy, so the copy that was never made
-  could not lower it. The missing copies are now recorded as cancelled.
+  could not lower it. The missing copies are now recorded as cancelled, and
+  the same applies to a cancel while an existing destination file is compared.
 - **`offloader verify` stayed silent when it could not evict the page cache.**
   The offload warns that a read-back may have come from memory; verify
   discarded the same result. It now reports the same warning.

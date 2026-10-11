@@ -1034,23 +1034,8 @@ def run(source_root: Path, options: OffloadOptions,
                                 "failing")
                         destination.checksum = dst_sum or None
                     except JobCancelled:
-                        # Nothing unpromoted survives. Destinations already
-                        # promoted were verified and stay; their partials
-                        # are gone, so discarding the whole list only
-                        # removes this one and the ones not yet reached.
-                        _discard(partials)
-                        # Record this copy and every later one as cancelled.
-                        # The entry's status is its weakest copy, and a copy
-                        # that was never made must be the weakest, or the
-                        # file would read as Verified on the strength of the
-                        # destinations that did finish.
-                        for later_root, later_target in zip(
-                                dest_roots[position:], targets[position:],
-                                strict=True):
-                            entry.destinations.append(Destination(
-                                root=later_root, path=later_target,
-                                status=FileStatus.CANCELLED,
-                                error="cancelled before verification"))
+                        _cancel_unpromoted(entry, partials, dest_roots,
+                                           targets, position)
                         cancelled_in_verify = True
                         break
                     except OSError as exc:
@@ -1085,7 +1070,11 @@ def run(source_root: Path, options: OffloadOptions,
                     refusal = _existing_file_refusal(
                         target, partial, src_sum, options.algorithm, control)
                 except JobCancelled:
-                    _discard(partials)
+                    # The same as a cancel during the reread: this copy and
+                    # every later one are recorded, or the file reads as
+                    # Verified on the strength of the destinations before it.
+                    _cancel_unpromoted(entry, partials, dest_roots,
+                                       targets, position)
                     cancelled_in_verify = True
                     break
                 if refusal is not None:
@@ -1241,6 +1230,29 @@ def choose_report_folder(name: str, files: Sequence[Path], source_root: Path,
         number += 1
         candidate = f"{base}-{number}"
     return candidate
+
+
+def _cancel_unpromoted(entry: FileEntry, partials: Sequence[Path],
+                       dest_roots: Sequence[Path], targets: Sequence[Path],
+                       position: int) -> None:
+    """Record a cancel that landed before destination `position` was promoted.
+
+    Nothing unpromoted survives. Destinations already promoted were verified
+    and stay; their partials are gone, so discarding the whole list only
+    removes this one and the ones not yet reached.
+
+    This copy and every later one are recorded as cancelled. The entry's
+    status is its weakest copy, and a copy that was never made must be the
+    weakest, or the file would read as Verified on the strength of the
+    destinations that did finish.
+    """
+    _discard(partials)
+    for later_root, later_target in zip(dest_roots[position:], targets[position:],
+                                        strict=True):
+        entry.destinations.append(Destination(
+            root=later_root, path=later_target,
+            status=FileStatus.CANCELLED,
+            error="cancelled before verification"))
 
 
 def _existing_file_refusal(target: Path, partial: Path, source_checksum: str,
