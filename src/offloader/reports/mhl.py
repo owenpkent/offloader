@@ -16,34 +16,18 @@ from xml.etree import ElementTree as ET
 
 from .. import PRODUCT_NAME, __version__
 from ..models import Job
+from ..util import xml_safe
 
 _MHL_VERSION = "1.1"
 
-#: XML 1.0 forbids most C0 control characters outright — they cannot even be
+#: XML 1.0 forbids most C0 control characters outright: they cannot even be
 #: written as character references. ElementTree emits them raw, producing a
 #: document no parser will read. One stray control byte in one filename would
-#: therefore strand the verification of the *entire* delivery, so it is
-#: replaced with U+FFFD rather than passed through.
-#: U+FFFD REPLACEMENT CHARACTER.
-_REPLACEMENT = chr(0xFFFD)
-
-
-def _is_xml_char(code: int) -> bool:
-    """The XML 1.0 Char production."""
-    return (
-        code in (0x09, 0x0A, 0x0D)
-        or 0x20 <= code <= 0xD7FF
-        or 0xE000 <= code <= 0xFFFD
-        or 0x10000 <= code <= 0x10FFFF
-    )
-
-
-def _xml_safe(text: object) -> str:
-    """Text ElementTree can serialise and a parser can read back."""
-    return "".join(
-        character if _is_xml_char(ord(character)) else _REPLACEMENT
-        for character in str(text)
-    )
+#: therefore strand the verification of the *entire* delivery.
+#:
+#: The filter lives in util now, so the ASC MHL writer and the CSV writer get
+#: the same guarantee instead of each having to rediscover it.
+_xml_safe = xml_safe
 
 
 def _iso(value: float | _dt.datetime) -> str:
@@ -59,12 +43,36 @@ def _relative(target: Path, base: Path) -> str:
     typically one level up. `Path.relative_to` cannot express that and would
     silently fall back to an absolute path, which pins the manifest to one
     machine and one drive letter and stops it travelling with the media.
+
+    Computed lexically when both paths are absolute. `os.path.relpath` goes
+    through `abspath`, which on Windows trims a trailing dot or space from a
+    name: `clip.mov.` would be recorded as `clip.mov`, and verify would then
+    check the wrong file.
     """
     try:
-        return Path(os.path.relpath(target, base)).as_posix()
+        return Path(_lexical_relpath(str(target), str(base))).as_posix()
     except ValueError:
         # Different drives on Windows: no relative path exists.
         return Path(target).as_posix()
+
+
+def _lexical_relpath(target: str, base: str) -> str:
+    if not (os.path.isabs(target) and os.path.isabs(base)):
+        return os.path.relpath(target, base)
+    target, base = os.path.normpath(target), os.path.normpath(base)
+    target_drive, target_rest = os.path.splitdrive(target)
+    base_drive, base_rest = os.path.splitdrive(base)
+    if os.path.normcase(target_drive) != os.path.normcase(base_drive):
+        raise ValueError("paths are on different drives")
+    target_parts = [part for part in target_rest.split(os.sep) if part]
+    base_parts = [part for part in base_rest.split(os.sep) if part]
+    common = 0
+    while (common < min(len(target_parts), len(base_parts))
+           and os.path.normcase(target_parts[common])
+           == os.path.normcase(base_parts[common])):
+        common += 1
+    parts = [os.pardir] * (len(base_parts) - common) + target_parts[common:]
+    return os.path.join(*parts) if parts else os.curdir
 
 
 def write_mhl(job: Job, path: Path, *, destination_index: int = 0, **_options) -> Path:
@@ -89,25 +97,43 @@ def write_mhl(job: Job, path: Path, *, destination_index: int = 0, **_options) -
     ET.SubElement(info, "startdate").text = _iso(job.started)
     ET.SubElement(info, "finishdate").text = _iso(job.finished or job.started)
 
-    for entry in job.files:
-        if destination_index < len(entry.destinations):
-            destination = entry.destinations[destination_index]
-            file_path, checksum = destination.path, destination.checksum or entry.checksum
-        else:
-            file_path, checksum = entry.source, entry.checksum
-        if not checksum:
-            continue
-
+    # Every file the job scanned for this destination is listed, including the
+    # ones that failed: a manifest that omits a failed copy reads as complete,
+    # and `verify` would then pass a destination that is missing a clip. An
+    # entry with no checksum element is how this file says "nothing to check
+    # against", and `verify` fails it rather than counting it as a match.
+    for row in job.manifest_rows(destination_index):
         node = ET.SubElement(root, "hash")
-        ET.SubElement(node, "file").text = _xml_safe(_relative(file_path, base))
-        ET.SubElement(node, "size").text = str(entry.size)
-        ET.SubElement(node, "lastmodificationdate").text = _iso(entry.modified)
-        ET.SubElement(node, tag).text = _xml_safe(checksum)
-        ET.SubElement(node, "hashdate").text = _iso(job.finished or job.started)
+        ET.SubElement(node, "file").text = _xml_safe(_relative(row.path, base))
+        if row.size is not None:
+            ET.SubElement(node, "size").text = str(row.size)
+        if row.modified is not None:
+            ET.SubElement(node, "lastmodificationdate").text = _iso(row.modified)
+        if row.checksum:
+            ET.SubElement(node, tag).text = _xml_safe(row.checksum)
+            ET.SubElement(node, "hashdate").text = _iso(job.finished or job.started)
 
     ET.indent(root, space="  ")
     ET.ElementTree(root).write(path, encoding="UTF-8", xml_declaration=True)
     return path
+
+
+def next_free_path(path: Path) -> Path:
+    """`path`, or `JobReport-2.mhl`, `-3` and so on: the first that is free.
+
+    A manifest is the record of what one run checked. Overwriting it with a
+    later run's, which may cover fewer files (a `--skip-existing` rerun lists
+    only what it copied), would discard the only evidence for the rest.
+    """
+    path = Path(path)
+    if not path.exists():
+        return path
+    number = 2
+    while True:
+        candidate = path.with_name(f"{path.stem}-{number}{path.suffix}")
+        if not candidate.exists():
+            return candidate
+        number += 1
 
 
 def _resolve_tag(hash_label: str) -> str:

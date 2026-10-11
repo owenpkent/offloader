@@ -215,11 +215,16 @@ def test_mhl_is_valid_and_relative(sample_job: Job, tmp_path: Path):
     assert first.findtext("xxh64") == "cd4990759f33f032"
 
 
-def test_mhl_omits_files_without_a_checksum(sample_job: Job, tmp_path: Path):
+def test_mhl_lists_a_file_without_a_checksum_unhashed(sample_job: Job, tmp_path: Path):
+    """It used to be omitted, which made the manifest read as complete. Listed
+    with no checksum element, `verify` reports it as unhashed and fails."""
     sample_job.files[1].checksum = None
     sample_job.files[1].destinations[0].checksum = None
     root = ET.parse(write_mhl(sample_job, tmp_path / "j.mhl")).getroot()
-    assert len(root.findall("hash")) == 1
+    hashes = root.findall("hash")
+    assert len(hashes) == 2
+    assert hashes[1].findtext("xxh64") is None
+    assert hashes[1].findtext("size") is not None
 
 
 # ------------------------------------------------------------------ HTML

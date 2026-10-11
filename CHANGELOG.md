@@ -27,10 +27,65 @@ project uses [semantic versioning][semver].
 
 ### Fixed
 
+- **`verify` passed a destination whose offload had failed a file.** The
+  manifest listed only the files that copied, so a clip that failed was simply
+  absent and `verify` said "VERIFIED - safe to erase the source". MHL and ASC
+  MHL now list every scanned file for each destination: a failed copy with the
+  source checksum (verify finds it missing or different), and anything with no
+  checksum at all (an unreadable source, a file a cancel never reached, a folder
+  that could not be listed) as an unhashed entry, which verify fails.
+- **A `--skip-existing` rerun overwrote the manifest that covered the skipped
+  files.** A same-size corrupt copy the size check skipped then verified clean.
+  A manifest is never overwritten now: a rerun's paperwork goes to
+  `<name>_Reports-2` when `<name>_Reports` already exists, a reused
+  `--report-dir` gets `JobReport-2.mhl`, and `verify` checks every manifest
+  under the folder.
+- **A source folder that could not be listed was silently left out.** The job
+  read Verified without the files under it. Listing errors are now recorded,
+  the job fails naming the folder, the CLI exits `1`, and the manifests carry an
+  unhashed entry so `verify` fails as well.
+- **Names Windows rewrites were read as a different file.** `clip.mov.` opened
+  `clip.mov`, so the wrong bytes were copied and certified, and `NUL` read as an
+  empty device. Such names now take the extended-length prefix everywhere (scan,
+  copy, stat, rename, eviction, manifest paths, verify) and copy as themselves.
+- **A junction listed before its target claimed the real folder.** The real
+  folder was skipped and its files landed under the alias. Directory symlinks
+  and junctions are no longer entered at all, and each one skipped is named in
+  a warning.
+- **Reports overwrote copied files when the source held `<name>_Reports`.**
+  Re-offloading a previous destination replaced the shuttle's own manifest
+  after certifying it. Reports now go to the next free `<name>_Reports-N` with
+  a warning.
+- **Report failures disappeared into a Verified verdict.** The GUI swallowed
+  them and the CLI exited `0`. Failures are recorded on the job
+  (`report_failures`), the status reads `Verified, reports failed`, the GUI
+  lists them on completion and the CLI exits `5`.
+- **A different card with the same folder layout replaced verified files.** A
+  finished copy no longer replaces an existing file whose content differs: that
+  file fails with the reason and the existing copy is kept. Identical content is
+  still replaced. `--replace-existing` (`OffloadOptions.replace_existing`)
+  restores the old behaviour.
+- **With `--report-dir` inside the second destination, its only manifest
+  described the first.** Every destination now gets its own manifest inside it;
+  `--report-dir` moves the PDF, CSV and HTML and holds a manifest only for the
+  destination it sits in.
+- **`offload` exited `0` for an Incomplete job.** An empty source or a
+  `--skip-existing` rerun now exits `4`; the exit codes are documented in the
+  README.
+- **`verify` did not report unlisted files beside a one-file manifest.** The
+  scan now starts at the root the manifest belongs to.
+- **A file deleted after the scan aborted the whole offload.** It now fails
+  alone with "source vanished after scan" and the job carries on.
+- **Same-named clips in different folders shared thumbnail files.** One clip's
+  frames replaced the other's in the report; thumbnails are now named by a hash
+  of the relative path.
+- **An uppercase hex digest in a previous ASC MHL generation was recorded as
+  `failed`.** The comparison is now case-insensitive for hex and exact for C4.
 - **A cancel during a second destination's reread left the file reading as
   Verified.** Only the destinations already promoted were recorded, and a
   file's status is its weakest recorded copy, so the copy that was never made
-  could not lower it. The missing copies are now recorded as cancelled.
+  could not lower it. The missing copies are now recorded as cancelled, and
+  the same applies to a cancel while an existing destination file is compared.
 - **`offloader verify` stayed silent when it could not evict the page cache.**
   The offload warns that a read-back may have come from memory; verify
   discarded the same result. It now reports the same warning.
@@ -192,6 +247,93 @@ project uses [semantic versioning][semver].
   by the first and the last, because there it is not.
 
 ### Fixed
+
+Found by fuzzing the edges: `tests/test_fuzz_edges.py` for what a card can
+contain, `tests/test_edge_cases.py` for the layers between the bytes and the
+paperwork. Each fix has the reproduction that found it.
+
+- **Flattening could silently destroy a file and certify it.** With
+  `--flat` (and the desktop app's "Recreate the source folder structure"
+  unticked), every source mapped to `destination / name`, and nothing checked
+  two sources for one target. Two clips of the same name in different card
+  folders left one file on disk and *both* rows reading VERIFIED, because each
+  was verified as it landed, before the next overwrote it. Full verification
+  passed them too. The collision is now detected against the scan, before a
+  byte moves, and the job refuses with both paths named. Paths compare through
+  `os.path.normcase`, so on Windows this also catches two names differing only
+  in case: distinct on the case-sensitive volume they came from, one file on
+  the volume they are going to.
+- **One malformed clip aborted the whole offload.** `engine.run` called
+  `probe()` with no guard, and `probe()` did not guard its own parsers, so a
+  BRAW whose atom headers lied, or an ordinary clip whose audio stream ffprobe
+  described as `"N/A"`, raised out of the middle of a job. The clips after it
+  were never copied and no report was written. Metadata is now contained: the
+  bytes are already copied and verified by that point, so an unreadable
+  container costs its own metadata and a line in the report, not the rest of
+  the card.
+- **The BRAW parser trusted the file's own size fields.** `_read_timing`
+  indexed and unpacked at offsets derived from an atom's *declared* size
+  without checking the buffer reached that far; `_descend` recursed once per
+  nested container with no depth limit, so a 16 KB file exhausted the stack;
+  and `_find_moov` issued a read for whatever size the header claimed, up to
+  2^64. Offsets are now bounded by each atom's real end, depth is capped, and
+  the read is clamped to the bytes actually present.
+- **A filename could stop the paperwork.** `write_csv` wrote to a strict UTF-8
+  stream with no filtering, so a name carrying a lone surrogate (what
+  `os.listdir` returns for any POSIX name that is not valid UTF-8, and what
+  NTFS accepts outright) raised mid-row after the copy had succeeded. ASC MHL
+  had the same gap in a worse place: control characters produced a manifest
+  that would not reparse, and `read_manifest_hashes` answers a parse failure
+  with an empty dict, so the file left the chain of custody with nothing to
+  show for it. The XML 1.0 character filter that `reports/mhl.py` always had
+  now lives in `util` and covers all three writers.
+- **Verify called good footage corrupt.** Digests were compared with a plain
+  case-sensitive `==`, so a manifest from a tool that emits uppercase hex
+  reported every byte-identical file as a mismatch. Comparison is now per
+  algorithm: case-folded for hex, exact for C4, whose base58 alphabet uses
+  case to carry information. ASC MHL directory hashes are compared the same
+  way.
+- **A directory junction sent the scanner round in circles.** `scan` was a bare
+  `os.walk` with no cycle guard, and `Path.is_symlink()` is False for a
+  junction, so the usual check would not have helped. It terminated only
+  because Windows refuses paths past MAX_PATH, having by then returned the same
+  file dozens of times. Directories are now visited at most once each.
+- **That cycle guard could hide a real directory behind a symlink to it.** It
+  recorded every directory's resolved path, including directory symlinks that
+  `os.walk` never enters. With `a -> z` listed before `z`, the guard marked `z`
+  as seen, dropped the real `z`, and the walk skipped `a` as a link, so `z`'s
+  files were never copied and the job still reported VERIFIED. Only directories
+  the walk actually enters are recorded now; junctions keep the guard.
+- **A corrupt history blocked offloading**, which is precisely what it exists
+  not to do. `History()` mapped `from_dict` over the file with no guard, and
+  `from_dict` did bare `int()`/`list()` conversions, so a hand-edited or
+  half-written `history.json` raised out of the constructor. A record that will
+  not parse is now dropped. `read_json` also treats a file that is not valid
+  UTF-8 as unreadable rather than letting `UnicodeDecodeError`, which is a
+  ValueError and not an OSError, escape.
+- **Job names could collide after 999.** `naming.build`'s two exhaustion
+  fallbacks returned a name without checking it was free, so two jobs would
+  share one report folder: the exact outcome the deduplication exists to
+  prevent. Both searches are now bounded by the number of taken names, and the
+  suffix search always produces one more candidate than there are names to
+  avoid.
+- **Byte counts printed a mantissa of 1000** at every decade boundary
+  (`999_999` rendered as `1000.0 KB`), and negative counts never promoted out
+  of bytes at all, because the unit test came before the rounding and ignored
+  the sign. `nan` rendered as `nan TB`.
+- **A frame rate of `inf` crashed the report.** `_parse_rate` accepted `"inf"`
+  and `"nan"` because `float()` does, and every fps formatter then called
+  `round()` on the result, which does not. The parser now rejects a rate that
+  is not finite and positive, and the formatters degrade instead of raising.
+- **Smaller ones, same sweep.** `hash_file` accepted a `chunk_size` of 0 and
+  returned the empty-file digest for a file that was not empty. `RetryPolicy`
+  validated nothing, so a hand-edited negative delay reached `time.sleep`,
+  which raises on one. `naming.render` substituted into values it had already
+  placed, so a card folder genuinely named `{index}` had its name overwritten
+  by the sequence number. `history.fingerprint` hashed the file listing and
+  nothing else, so every empty source shared one digest. `config_file` joined
+  with pathlib's `/`, which discards the left operand when the right is
+  absolute.
 
 Found by adding CI on Linux and macOS — the suite had only ever run on Windows.
 

@@ -11,7 +11,7 @@ import datetime as _dt
 import fnmatch
 import os
 import queue
-import shutil
+import stat as stat_mod
 import threading
 import time
 from collections.abc import Callable, Iterable, Sequence
@@ -28,7 +28,9 @@ from .models import (
     FileEntry,
     FileStatus,
     Job,
+    MediaInfo,
     Profile,
+    ScanProblem,
     VerificationMode,
 )
 
@@ -103,6 +105,45 @@ def assert_safe_destinations(source_root: Path, destinations: Sequence[Path]) ->
                 "directory"
             )
         seen[resolved] = Path(destination)
+
+
+def assert_no_destination_collisions(
+    sources: Sequence[Path], source_root: Path,
+    destination_roots: Sequence[Path], preserve_structure: bool,
+) -> None:
+    """Refuse a layout that maps two source files onto one destination path.
+
+    Flattening a tree is a lossy operation whenever two cards, or two folders
+    on one card, hold a clip of the same name. Copying both leaves one file on
+    disk, and because each is verified as it lands, before the next one
+    overwrites it, both are reported VERIFIED. A report that attests to a file
+    which is not at the destination is worse than no report, so this is caught
+    up front, before a single byte moves.
+
+    Paths are compared with `os.path.normcase`, so on Windows this also
+    catches two names differing only in case: distinct on the case-sensitive
+    volume they came from, one file on the volume they are going to.
+    """
+    claimed: dict[str, Path] = {}
+    collisions: list[tuple[Path, Path, Path]] = []
+
+    for source in sources:
+        for root in destination_roots:
+            target = _destination_for(source, source_root, root, preserve_structure)
+            key = os.path.normcase(str(target))
+            if key in claimed:
+                collisions.append((claimed[key], source, target))
+            else:
+                claimed[key] = source
+
+    if collisions:
+        first, second, target = collisions[0]
+        extra = (f" (and {len(collisions) - 1} more)" if len(collisions) > 1 else "")
+        raise UnsafeDestination(
+            f"{first} and {second} would both be copied to {target}{extra}; "
+            "one would silently overwrite the other. Keep the source folder "
+            "structure, or offload the colliding folders separately."
+        )
 
 
 class JobControl:
@@ -193,6 +234,13 @@ class OffloadOptions:
     #: pass over the card, and is the only thing that catches a read which
     #: returned wrong bytes without the operating system noticing.
     paranoid: bool = False
+    #: Let a finished copy replace a file already at the destination whose
+    #: content differs. Off by default: a second card with the same folder
+    #: layout would otherwise silently replace the first card's verified
+    #: copies, and the first card may already have been formatted on the
+    #: strength of them. An existing file with identical content is replaced
+    #: either way, since that changes nothing.
+    replace_existing: bool = False
 
     def __post_init__(self) -> None:
         # The data profile is defined by the absence of media work, so enforce
@@ -216,13 +264,104 @@ def is_excluded(path: Path, patterns: Iterable[str]) -> bool:
     return any(fnmatch.fnmatch(name, pattern) for pattern in patterns)
 
 
-def scan(root: Path, excludes: Iterable[str] = DEFAULT_EXCLUDES) -> list[Path]:
-    """Every file under `root`, sorted, with junk filtered out."""
+#: `FILE_ATTRIBUTE_REPARSE_POINT`, and the reparse-tag bit Microsoft sets on
+#: tags that redirect to another name (symlinks, junctions, mount points).
+_REPARSE_POINT = 0x400
+_NAME_SURROGATE = 0x20000000
+
+
+def _is_directory_link(path: str) -> bool:
+    """A symlink or junction: a directory entry that is really another name.
+
+    Judged from `lstat`, so the link itself is examined rather than its
+    target. On Windows that means the reparse-point attribute, because
+    `os.path.islink` is False for a junction. Only name-surrogate reparse
+    points count: a cloud-storage placeholder is also a reparse point, but it
+    is the real folder, and skipping it would drop real data.
+    """
+    try:
+        info = os.lstat(path)
+    except OSError:
+        # Not ours to judge: the walk will try to list it and report the
+        # failure through `onerror` if it cannot.
+        return False
+    attributes = getattr(info, "st_file_attributes", 0)
+    if attributes & _REPARSE_POINT:
+        tag = getattr(info, "st_reparse_tag", 0)
+        return bool(tag & _NAME_SURROGATE) if tag else True
+    return stat_mod.S_ISLNK(info.st_mode)
+
+
+def scan(root: Path, excludes: Iterable[str] = DEFAULT_EXCLUDES, *,
+         errors: list[ScanProblem] | None = None,
+         links: list[Path] | None = None) -> list[Path]:
+    """Every file under `root`, sorted, with junk filtered out.
+
+    A directory that cannot be listed is appended to `errors` rather than
+    dropped. `os.walk` swallows listing errors by default, and the files under
+    such a directory would then be absent from the job, its byte total and its
+    manifests, with the job reading Verified. A caller that passes no list
+    gets the old silent behaviour, so `run()` always passes one.
+
+    Directory symlinks and junctions are never entered, and each one skipped
+    is appended to `links` so the caller can say so. Following them is how a
+    junction pointing at its own parent walks forever, and how an alias
+    listed before its target (`A_alias -> Z_real`) used to claim the real
+    directory under the alias name. Not entering any of them means the real
+    directory is always scanned under its real name. The root is entered even
+    when it is itself a link: that is the folder the operator chose.
+
+    The walk runs on the extended-length form of the root (see `longpath`),
+    so a directory whose name Win32 would trim, or one past MAX_PATH, is
+    listed as itself. The paths returned are in the form `root` was given in.
+    """
     patterns = tuple(excludes)
     found: list[Path] = []
-    for dirpath, dirnames, filenames in os.walk(root):
-        here = Path(dirpath)
-        dirnames[:] = sorted(d for d in dirnames if not is_excluded(here / d, patterns))
+    visited: set[str] = set()
+    root = Path(root)
+    walk_root = longpath.literal(root)
+
+    def plain(walked: str) -> Path:
+        # os.walk joins names onto the top it was given, so every path it
+        # reports starts with `walk_root`.
+        if walked.startswith(walk_root):
+            tail = walked[len(walk_root):].lstrip("\\/")
+            return root / tail if tail else root
+        return Path(longpath.shorten_for_display(walked))
+
+    def already_seen(walked: str) -> bool:
+        try:
+            real = os.path.normcase(os.path.realpath(walked))
+        except OSError:
+            # Enter it: if it really cannot be read, onerror records that.
+            return False
+        if real in visited:
+            return True
+        visited.add(real)
+        return False
+
+    def onerror(exc: OSError) -> None:
+        if errors is None:
+            return
+        where = plain(str(exc.filename)) if exc.filename else root
+        errors.append(ScanProblem(where, exc.strerror or str(exc)))
+
+    visited.add(os.path.normcase(os.path.realpath(walk_root)))
+    for dirpath, dirnames, filenames in os.walk(walk_root, onerror=onerror):
+        here = plain(dirpath)
+        keep: list[str] = []
+        for name in sorted(dirnames):
+            if is_excluded(here / name, patterns):
+                continue
+            walked = os.path.join(dirpath, name)
+            if _is_directory_link(walked):
+                if links is not None:
+                    links.append(here / name)
+                continue
+            if already_seen(walked):
+                continue
+            keep.append(name)
+        dirnames[:] = keep
         for filename in sorted(filenames):
             candidate = here / filename
             if not is_excluded(candidate, patterns):
@@ -295,7 +434,10 @@ def _copy_fanout(source: Path, targets: Sequence[Path], algorithm: str,
         # target that *is* the source would destroy the original before a byte
         # of it was read. assert_safe_destinations should have caught this long
         # before now; refuse anyway rather than trust that it did.
-        if Path(target).resolve() == source.resolve():
+        # Resolved in extended form, so a name Win32 would rewrite is compared
+        # as itself and not as whatever its trimmed namesake resolves to.
+        if (Path(longpath.extended(target)).resolve()
+                == Path(longpath.extended(source)).resolve()):
             raise UnsafeDestination(
                 f"refusing to write {target}: it is the source file")
         longpath.makedirs(target.parent)
@@ -554,8 +696,12 @@ def run(source_root: Path, options: OffloadOptions,
         raise ValueError("at least one destination is required")
     assert_safe_destinations(source_root, dest_roots)
 
-    files = scan(source_root, options.excludes)
-    counters = _Counters(job_bytes_total=sum(p.stat().st_size for p in files))
+    scan_errors: list[ScanProblem] = []
+    links: list[Path] = []
+    files = scan(source_root, options.excludes, errors=scan_errors, links=links)
+    assert_no_destination_collisions(files, source_root, dest_roots,
+                                     options.preserve_structure)
+    counters = _Counters(job_bytes_total=sum(_size_or_zero(p) for p in files))
 
     host = sysinfo.collect()
     job = Job(
@@ -573,9 +719,27 @@ def run(source_root: Path, options: OffloadOptions,
         processors=host.processors,
         system_ram=host.system_ram,
         paranoid=options.paranoid,
+        scan_errors=scan_errors,
+        preserve_structure=options.preserve_structure,
     )
 
-    thumb_dir = options.thumbnail_dir or (dest_roots[0] / f"{job.name}_Reports" / "thumbs")
+    for problem in scan_errors:
+        counters.errors.append(problem.describe())
+    for link in links:
+        job.warnings.append(
+            f"{link} is a symbolic link or junction and was not followed, so "
+            "nothing under it was copied; offload its target directly if it "
+            "is needed")
+
+    job.report_dir_name = choose_report_folder(
+        job.name, files, source_root, dest_roots, options.preserve_structure)
+    if job.report_dir_name != f"{job.name}_Reports":
+        job.warnings.append(
+            f"{job.name}_Reports already exists at a destination or is part of "
+            f"the source, so this job's reports are in {job.report_dir_name} "
+            "instead; nothing already there was overwritten")
+
+    thumb_dir = options.thumbnail_dir or (job.report_dir_for(dest_roots[0]) / "thumbs")
 
     # A sidecar belongs to a *clip*. Under the data profile nothing is a clip,
     # so stem-matching a dataset would announce that `run_1440.xmp` belongs to
@@ -608,7 +772,32 @@ def run(source_root: Path, options: OffloadOptions,
                 job.cancelled = True
                 break
 
-        stat = source.stat()
+        targets = [
+            _destination_for(source, source_root, root, options.preserve_structure)
+            for root in dest_roots
+        ]
+
+        try:
+            stat = longpath.stat(source)
+        except OSError as exc:
+            # Deleted, renamed or dropped by the card since the scan. One
+            # file's disappearance costs that file, recorded as such, not the
+            # rest of the card and the paperwork for what did copy.
+            reason = ("source vanished after scan"
+                      if isinstance(exc, FileNotFoundError)
+                      else f"source could not be read: {exc}")
+            entry = FileEntry(source=source, source_root=source_root, size=0,
+                              created=0.0, modified=0.0,
+                              companion_of=belongs_to.get(source),
+                              companions=owns.get(source, []))
+            counters.errors.append(f"{source}: {reason}")
+            for root, target in zip(dest_roots, targets, strict=True):
+                entry.destinations.append(
+                    Destination(root=root, path=target,
+                                status=FileStatus.FAILED, error=reason))
+            job.files.append(entry)
+            continue
+
         entry = FileEntry(
             source=source,
             source_root=source_root,
@@ -619,17 +808,12 @@ def run(source_root: Path, options: OffloadOptions,
             companions=owns.get(source, []),
         )
 
-        targets = [
-            _destination_for(source, source_root, root, options.preserve_structure)
-            for root in dest_roots
-        ]
-
         emit(ProgressEvent(index, len(files), source.name, "copy",
                            0, stat.st_size,
                            counters.job_bytes_done, counters.job_bytes_total))
 
         if options.skip_existing and all(
-            t.exists() and t.stat().st_size == stat.st_size for t in targets
+            _size_or_none(t) == stat.st_size for t in targets
         ):
             entry.checksum = None
             for root, target in zip(dest_roots, targets, strict=True):
@@ -755,7 +939,7 @@ def run(source_root: Path, options: OffloadOptions,
             # Mirror source timestamps so the destination reads as an archival
             # copy, not a fresh file.
             try:
-                shutil.copystat(source, partial)
+                longpath.copystat(source, partial)
             except OSError:
                 pass
 
@@ -793,23 +977,8 @@ def run(source_root: Path, options: OffloadOptions,
                                 "failing")
                         destination.checksum = dst_sum or None
                     except JobCancelled:
-                        # Nothing unpromoted survives. Destinations already
-                        # promoted were verified and stay; their partials
-                        # are gone, so discarding the whole list only
-                        # removes this one and the ones not yet reached.
-                        _discard(partials)
-                        # Record this copy and every later one as cancelled.
-                        # The entry's status is its weakest copy, and a copy
-                        # that was never made must be the weakest, or the
-                        # file would read as Verified on the strength of the
-                        # destinations that did finish.
-                        for later_root, later_target in zip(
-                                dest_roots[position:], targets[position:],
-                                strict=True):
-                            entry.destinations.append(Destination(
-                                root=later_root, path=later_target,
-                                status=FileStatus.CANCELLED,
-                                error="cancelled before verification"))
+                        _cancel_unpromoted(entry, partials, dest_roots,
+                                           targets, position)
                         cancelled_in_verify = True
                         break
                     except OSError as exc:
@@ -820,7 +989,7 @@ def run(source_root: Path, options: OffloadOptions,
                         entry.destinations.append(destination)
                         continue
 
-                size_ok = partial.exists() and partial.stat().st_size == stat.st_size
+                size_ok = _size_or_none(partial) == stat.st_size
                 sum_ok = (src_sum == dst_sum) if src_sum else True
                 if size_ok and sum_ok:
                     destination.status = FileStatus.VERIFIED
@@ -835,6 +1004,30 @@ def run(source_root: Path, options: OffloadOptions,
                 entry.destinations.append(destination)
                 continue
 
+            if not options.replace_existing and longpath.exists(target):
+                # Staging protects an existing file from a copy that fails. This
+                # protects it from one that succeeds: a different card with the
+                # same folder layout would otherwise replace the first card's
+                # verified copy, and that card may already be formatted.
+                try:
+                    refusal = _existing_file_refusal(
+                        target, partial, src_sum, options.algorithm, control)
+                except JobCancelled:
+                    # The same as a cancel during the reread: this copy and
+                    # every later one are recorded, or the file reads as
+                    # Verified on the strength of the destinations before it.
+                    _cancel_unpromoted(entry, partials, dest_roots,
+                                       targets, position)
+                    cancelled_in_verify = True
+                    break
+                if refusal is not None:
+                    destination.status = FileStatus.FAILED
+                    destination.error = refusal
+                    counters.errors.append(f"{target}: {refusal}")
+                    _discard([partial])
+                    entry.destinations.append(destination)
+                    continue
+
             try:
                 longpath.replace(partial, target)   # atomic within a filesystem
             except OSError as exc:
@@ -846,7 +1039,7 @@ def run(source_root: Path, options: OffloadOptions,
                 continue
 
             try:
-                dst_stat = target.stat()
+                dst_stat = longpath.stat(target)
                 destination.created = getattr(dst_stat, "st_birthtime", dst_stat.st_ctime)
                 destination.modified = dst_stat.st_mtime
             except OSError:
@@ -863,15 +1056,24 @@ def run(source_root: Path, options: OffloadOptions,
             emit(ProgressEvent(index, len(files), source.name, "probe",
                                0, stat.st_size,
                                counters.job_bytes_done, counters.job_bytes_total))
-            entry.media = probe_mod.probe(source)
+            # Everything from here down is metadata: nice to have, and not
+            # worth a transfer. The bytes are already copied and verified by
+            # this point, so a clip whose container will not parse costs its
+            # own metadata and a line in the report, not the rest of the card.
+            try:
+                entry.media = probe_mod.probe(source)
 
-            if braw_mod.is_braw(source):
-                # A clip whose recording was interrupted has no moov atom. It
-                # copies and verifies perfectly and will not play, so the time
-                # to notice is now, while the card is still in hand.
-                check = braw_mod.check_container(source)
-                if check.is_fatal:
-                    job.warnings.append(f"{source.name}: {check.detail}")
+                if braw_mod.is_braw(source):
+                    # A clip whose recording was interrupted has no moov atom.
+                    # It copies and verifies perfectly and will not play, so
+                    # the time to notice is now, while the card is in hand.
+                    check = braw_mod.check_container(source)
+                    if check.is_fatal:
+                        job.warnings.append(f"{source.name}: {check.detail}")
+            except Exception as exc:            # noqa: BLE001 - see above
+                entry.media = MediaInfo()
+                job.warnings.append(
+                    f"{source.name}: metadata could not be read ({exc})")
 
             if options.thumbnail_count > 0 and entry.media.is_video:
                 emit(ProgressEvent(index, len(files), source.name, "thumbs",
@@ -898,13 +1100,17 @@ def run(source_root: Path, options: OffloadOptions,
 
                 entry.thumbnails = thumbs.extract(
                     picture, entry.media, thumb_dir, options.thumbnail_count,
-                    memo=thumb_memo,
+                    memo=thumb_memo, key=entry.relative.as_posix(),
                 )
 
         job.files.append(entry)
 
     job.finished = _dt.datetime.now()
     if job.cancelled:
+        attempted = {entry.source for entry in job.files}
+        # Kept so the manifests can list them unhashed: a cancelled job's
+        # manifest must not read as covering the whole card.
+        job.not_attempted = [path for path in files if path not in attempted]
         not_attempted = len(files) - len(job.files)
         if not_attempted > 0:
             counters.errors.append(
@@ -912,6 +1118,117 @@ def run(source_root: Path, options: OffloadOptions,
     _warn_on_split_companions(job)
     job.notes = "; ".join(counters.errors)
     return job
+
+
+def _size_or_none(path: Path) -> int | None:
+    """The size of whatever is at `path`, or None when nothing readable is."""
+    try:
+        return longpath.stat(path).st_size
+    except (OSError, ValueError):
+        return None
+
+
+def _size_or_zero(path: Path) -> int:
+    """For the up-front byte total only. A file that cannot be sized here is
+    failed, with its reason, when the copy loop reaches it."""
+    return _size_or_none(path) or 0
+
+
+def choose_report_folder(name: str, files: Sequence[Path], source_root: Path,
+                         dest_roots: Sequence[Path], preserve_structure: bool) -> str:
+    """`<name>_Reports`, or `<name>_Reports-2` and up when that is taken.
+
+    Taken means it already exists in any destination root, or something being
+    copied lands on it. Re-offloading a previous destination (a shuttle drive
+    holding `A001/A001_Reports/`) copies that folder, and writing new reports
+    over it would replace files this job had just certified, the shuttle's own
+    manifest among them. An existing folder from an earlier run is left alone
+    for the same reason: its manifest covers files a rerun may skip.
+    """
+    claimed: set[str] = set()
+    for source in files:
+        if preserve_structure:
+            try:
+                first = source.relative_to(source_root).parts[0]
+            except (ValueError, IndexError):
+                first = source.name
+        else:
+            first = source.name
+        claimed.add(os.path.normcase(first))
+
+    base = f"{name}_Reports"
+    candidate, number = base, 1
+    while (os.path.normcase(candidate) in claimed
+           or any(longpath.exists(Path(root) / candidate) for root in dest_roots)):
+        number += 1
+        candidate = f"{base}-{number}"
+    return candidate
+
+
+def _cancel_unpromoted(entry: FileEntry, partials: Sequence[Path],
+                       dest_roots: Sequence[Path], targets: Sequence[Path],
+                       position: int) -> None:
+    """Record a cancel that landed before destination `position` was promoted.
+
+    Nothing unpromoted survives. Destinations already promoted were verified
+    and stay; their partials are gone, so discarding the whole list only
+    removes this one and the ones not yet reached.
+
+    This copy and every later one are recorded as cancelled. The entry's
+    status is its weakest copy, and a copy that was never made must be the
+    weakest, or the file would read as Verified on the strength of the
+    destinations that did finish.
+    """
+    _discard(partials)
+    for later_root, later_target in zip(dest_roots[position:], targets[position:],
+                                        strict=True):
+        entry.destinations.append(Destination(
+            root=later_root, path=later_target,
+            status=FileStatus.CANCELLED,
+            error="cancelled before verification"))
+
+
+def _existing_file_refusal(target: Path, partial: Path, source_checksum: str,
+                           algorithm: str,
+                           control: JobControl | None) -> str | None:
+    """Why the finished copy at `partial` must not replace `target`, or None.
+
+    Identical content may be replaced: that changes nothing on disk, and it is
+    what a re-offload of the same card does. Anything else, or anything that
+    cannot be read to find out, is refused.
+    """
+    advice = "use --replace-existing to overwrite it"
+    try:
+        if longpath.stat(target).st_size != longpath.stat(partial).st_size:
+            return ("an existing file with different content is already there; "
+                    + advice)
+        checker = get_algorithm(algorithm)
+        checkpoint = control.checkpoint if control else None
+        if source_checksum and checker.factory is not None:
+            existing = hash_file(target, algorithm, checkpoint=checkpoint)
+            same = checker.digests_match(existing, source_checksum)
+        else:
+            same = _same_bytes(target, partial, checkpoint)
+    except OSError as exc:
+        return (f"an existing file is already there and could not be read to "
+                f"compare ({exc}); {advice}")
+    if same:
+        return None
+    return "an existing file with different content is already there; " + advice
+
+
+def _same_bytes(left: Path, right: Path,
+                checkpoint: Callable[[], None] | None) -> bool:
+    """Byte-for-byte comparison, for when there is no checksum to compare."""
+    with longpath.open_binary(left, "rb") as one, longpath.open_binary(right, "rb") as two:
+        while True:
+            if checkpoint is not None:
+                checkpoint()
+            a, b = one.read(CHUNK_SIZE), two.read(CHUNK_SIZE)
+            if a != b:
+                return False
+            if not a:
+                return True
 
 
 def rescan(source_root: Path, destination_roots: Sequence[Path],
@@ -923,7 +1240,9 @@ def rescan(source_root: Path, destination_roots: Sequence[Path],
     a report can be regenerated (or a delivery audited) after the fact.
     """
     source_root = Path(source_root)
-    files = scan(source_root, options.excludes)
+    scan_errors: list[ScanProblem] = []
+    links: list[Path] = []
+    files = scan(source_root, options.excludes, errors=scan_errors, links=links)
     algorithm = get_algorithm(options.algorithm)
     host = sysinfo.collect()
 
@@ -941,10 +1260,15 @@ def rescan(source_root: Path, destination_roots: Sequence[Path],
         os_version=host.os_version,
         processors=host.processors,
         system_ram=host.system_ram,
+        scan_errors=scan_errors,
+        preserve_structure=options.preserve_structure,
     )
+    job.warnings.extend(
+        f"{link} is a symbolic link or junction and was not followed"
+        for link in links)
     thumb_dir = options.thumbnail_dir or (source_root / f"{job.name}_Reports" / "thumbs")
     thumb_memo = thumbs.DecoderMemo()
-    total = sum(p.stat().st_size for p in files)
+    total = sum(_size_or_zero(p) for p in files)
     done = 0
 
     # A sidecar belongs to a *clip*. Under the data profile nothing is a clip,
@@ -955,7 +1279,7 @@ def rescan(source_root: Path, destination_roots: Sequence[Path],
     owns = _invert_companions(belongs_to)
 
     for index, source in enumerate(files):
-        stat = source.stat()
+        stat = longpath.stat(source)
         entry = FileEntry(
             source=source,
             source_root=source_root,
@@ -977,7 +1301,7 @@ def rescan(source_root: Path, destination_roots: Sequence[Path],
 
         for root in job.destination_roots:
             target = _destination_for(source, source_root, root, options.preserve_structure)
-            exists = target.exists()
+            exists = longpath.exists(target)
             entry.destinations.append(
                 Destination(
                     root=root,
@@ -990,12 +1314,19 @@ def rescan(source_root: Path, destination_roots: Sequence[Path],
             )
 
         if options.extra_probe:
-            entry.media = probe_mod.probe(source)
-            if options.thumbnail_count > 0 and entry.media.is_video:
-                entry.thumbnails = thumbs.extract(
-                    source, entry.media, thumb_dir, options.thumbnail_count,
-                    memo=thumb_memo,
-                )
+            # Same reasoning as in run(): a rescan exists to regenerate
+            # paperwork, and one unparseable clip must not stop it.
+            try:
+                entry.media = probe_mod.probe(source)
+                if options.thumbnail_count > 0 and entry.media.is_video:
+                    entry.thumbnails = thumbs.extract(
+                        source, entry.media, thumb_dir, options.thumbnail_count,
+                        memo=thumb_memo, key=entry.relative.as_posix(),
+                    )
+            except Exception as exc:            # noqa: BLE001
+                entry.media = MediaInfo()
+                job.warnings.append(
+                    f"{source.name}: metadata could not be read ({exc})")
         job.files.append(entry)
 
     job.finished = _dt.datetime.now()

@@ -94,22 +94,34 @@ offloader verify D:\video\080426\A001
 | `--profile P` | `media` (default: ffprobe, thumbnails, BRAW) or `data` (generic transfer, no media probing) |
 | `--generic` | shorthand for `--profile data` |
 | `--report FMT[,FMT]` | `pdf` (default), `csv`, `mhl`, `ascmhl`, `html` |
-| `--report-dir PATH` | override the report location |
+| `--report-dir PATH` | move the PDF, CSV and HTML; each destination still gets its own MHL inside it (the folder holds one only for the destination it sits in) |
 | `--thumbs N` | frames per clip, 0 to disable (default 4) |
 | `--name NAME` | job name; defaults to the source folder name, or the volume label for a card offloaded from its root |
 | `--logo PATH` | image for the PDF header |
 | `--footer TEXT` | footer line for the PDF |
 | `--exclude GLOB` | extra filename pattern to skip; repeatable |
-| `--flat` | do not recreate the source folder structure |
+| `--flat` | do not recreate the source folder structure; refused if two files would land on one path |
 | `--skip-existing` | skip files already present at matching size |
+| `--replace-existing` | let a copy replace an existing destination file whose content differs; by default that file is kept and the copy fails (offload only) |
 | `--paranoid` | read each source file twice and compare (offload only) |
 | `--retries N` | attempts per failing read on a transient error (default 3, 1 disables) |
 | `--retry-wait SECONDS` | pause before the first retry, backing off after (default 2) |
 | `--no-probe` | skip ffprobe metadata and thumbnails |
 | `--quiet` | suppress progress |
 
-Exit status is `0` on success, `1` if any file failed verification, `2` on a
-usage or I/O error, `3` if a destination was refused as unsafe.
+Exit status for `offload`:
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Verified (or Copied under `--verify none`), and every report was written |
+| `1` | a file failed, or a source folder could not be listed |
+| `2` | usage or I/O error; nothing was attempted |
+| `3` | a destination was refused as unsafe; nothing was copied |
+| `4` | nothing failed, but the job is not Verified: an empty source, files skipped by `--skip-existing` (checked by size only), or a cancel |
+| `5` | the copies verified but a report or manifest could not be written |
+| `130` | interrupted |
+
+`report` exits `5` when a report could not be written and `0` otherwise.
 
 ### `verify`
 
@@ -119,8 +131,11 @@ offloader verify PATH [--allow-cache] [--quiet]
 
 `PATH` is an `.mhl` file or a folder to search for them. Re-hashes everything the
 manifest lists and exits non-zero if anything is off, so a format script can gate
-on it. `--allow-cache` skips the page-cache eviction — faster, and may verify
-memory rather than the device.
+on it. An offload's manifest lists every file it scanned for that
+destination, including any that failed (recorded with no checksum when none
+could be taken), so a destination missing a clip fails here; every manifest
+under the folder is checked, earlier runs' included. `--allow-cache` skips the
+page-cache eviction: faster, and may verify memory rather than the device.
 
 For an ASC MHL history it also recomputes the directory content and structure
 hashes, which is the only check that catches a rename or a moved file — every
@@ -289,10 +304,11 @@ destination file rather than leaving something that looks complete.
 
 Two guards run before anything is queued:
 
-- **Duplicate offload protection.** The source's file listing — names and sizes,
-  never contents — is fingerprinted and checked against past offloads. Re-pulling
-  a card you already have gets a warning naming the earlier job and when it ran.
-  Only successful offloads count; a cancelled attempt is a reason to run again.
+- **Duplicate offload protection.** The source's name and its file listing (names
+  and sizes, never contents) are fingerprinted and checked against past offloads.
+  Re-pulling a card you already have gets a warning naming the earlier job and
+  when it ran. Only successful offloads count; a cancelled attempt is a reason to
+  run again.
 - **Space and containment checks.** A destination inside the source is refused
   outright; one without room prompts before queueing.
 
@@ -329,7 +345,9 @@ The short version:
 
 `offloader verify` catches a single flipped bit in a file whose size never
 changed. Run it before erasing a card, and again on the archive months later to
-catch bit rot.
+catch bit rot. It reads manifests other tools wrote, and compares digests per
+algorithm: hex case-insensitively, C4 exactly. Another tool's choice of casing
+is not corruption, and saying it is would be a costly thing to get wrong.
 
 ## Blackmagic RAW
 
@@ -391,13 +409,13 @@ what makes the report layer testable without moving bytes.
 
 ```sh
 pip install -e ".[dev]"
-pytest                      # 476 tests
-pytest --fuzz               # same suite, 3000 examples per property (~2 min)
+pytest                      # 575 tests, ~20s
+pytest --fuzz               # same suite, 3000 examples per property (~3 min)
 ruff check src tests
 pytest --cov=offloader --cov-report=term-missing
 ```
 
-479 tests at 86% line coverage. They cover formatting against the reference's
+575 tests at 87% line coverage. They cover formatting against the reference's
 exact strings, checksum vectors and streaming equivalence, copy/verify
 behaviour including simulated destination corruption, pause/resume/cancel
 concurrency, retry discrimination, BRAW container parsing, ffprobe parsing,
@@ -415,11 +433,20 @@ real camera file when one is present.
 
 ### Property-based testing
 
-`tests/test_fuzz.py` uses [Hypothesis][hyp] to assert invariants over generated
-input rather than over a handful of fixtures. Filenames come off camera cards,
-which in practice means any Unicode at all — accented takes, CJK slates, emoji
-from a naming macro, and the occasional control character from a corrupt
-directory entry.
+Three modules use [Hypothesis][hyp] to assert invariants over generated input
+rather than over a handful of fixtures, each aimed at a different layer:
+
+- **`tests/test_fuzz.py`: what a filename can contain.** Names come off camera
+  cards, which in practice means any Unicode at all: accented takes, CJK
+  slates, emoji from a naming macro, and the occasional control character from
+  a corrupt directory entry.
+- **`tests/test_fuzz_edges.py`: what a card can contain.** A BRAW clip whose
+  atom headers lie, a tree that maps two sources onto one destination, a
+  directory junction pointing at its own parent, a retry policy someone
+  hand-edited into a preset.
+- **`tests/test_edge_cases.py`: the layers between the bytes and the
+  paperwork.** What ffprobe hands back, what a number formats to, what a digest
+  compares equal to, what a name renders to.
 
 The properties worth knowing about:
 
@@ -430,14 +457,22 @@ The properties worth knowing about:
 - Chunked hashing equals whole-buffer hashing for every algorithm at arbitrary
   chunk boundaries — the engine's boundaries fall wherever a read lands.
 - `sanitize()` always returns a legal filename, and `build()` never collides
-  with a name already taken.
+  with a name already taken, including once the numeric space is exhausted.
 - Presets survive a JSON round trip, and load from arbitrary garbage without
   raising — a hand-edited or version-skewed config must not brick the app.
+- No input makes an offload lose a file without saying so, no single malformed
+  file aborts a job, and a parser fed hostile bytes may return nothing but may
+  not raise something its caller has no reason to catch.
 
-This found a real bug: XML 1.0 cannot represent most C0 control characters even
-as character references, so a control byte in one filename produced an MHL that
-no parser would read — stranding verification of the entire delivery, not just
-that file. Names are now sanitised into the XML character range.
+These have earned their keep. The first found that XML 1.0 cannot represent
+most C0 control characters even as character references, so a control byte in
+one filename produced an MHL no parser would read, stranding verification of
+the entire delivery rather than one file. The later two found 24 more, the
+worst of which certified a file it had just overwritten: flattening a tree
+mapped two clips onto one destination path, and each was verified as it landed,
+before the next replaced it. Both were reported `Verified`. That check now runs
+against the scan, before a byte moves. Every one of those 24 has a test here
+that fails against the code as it was.
 
 [hyp]: https://hypothesis.readthedocs.io/
 

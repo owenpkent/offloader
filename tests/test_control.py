@@ -248,3 +248,40 @@ def test_cancel_during_the_second_destination_reread_records_the_missing_copy(
     assert (first / "clip.mov").exists()
     assert not (second / "clip.mov").exists()
     assert not list(tmp_path.rglob("*.offloader-partial"))
+
+
+def test_cancel_during_the_existing_file_check_records_the_missing_copy(
+    tmp_path: Path, monkeypatch,
+):
+    """A cancel while a differing file already at destination two is being
+    compared must not leave the file reading as Verified on the strength of
+    destination one, and must not touch the file that was already there."""
+    card = _one_file_card(tmp_path)
+    first, second = tmp_path / "d1", tmp_path / "d2"
+    second.mkdir()
+    existing = second / "clip.mov"
+    original = b"\x00" * 300_000           # same size, different content
+    existing.write_bytes(original)
+    control = engine.JobControl()
+    real_hash_file = engine.hash_file
+
+    def hash_file(path, *args, **kwargs):
+        if Path(path) == existing:
+            control.cancel()
+        return real_hash_file(path, *args, **kwargs)
+
+    monkeypatch.setattr(engine, "hash_file", hash_file)
+
+    job = engine.run(card, _options(tmp_path, destinations=[first, second]),
+                     control=control)
+
+    assert job.cancelled
+    assert job.final_status != "Verified"
+    (entry,) = job.files
+    assert [d.status for d in entry.destinations] == [
+        FileStatus.VERIFIED, FileStatus.CANCELLED]
+    assert entry.destinations[1].error == "cancelled before verification"
+    assert entry.status is FileStatus.CANCELLED
+    assert (first / "clip.mov").exists()
+    assert existing.read_bytes() == original
+    assert not list(tmp_path.rglob("*.offloader-partial"))

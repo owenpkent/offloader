@@ -25,10 +25,11 @@ from enum import Enum
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
+from . import longpath
 from .ascmhl import ASCMHL_DIRNAME
 from .ascmhl import NAMESPACE as ASCMHL_NAMESPACE
 from .ascmhl import directory_hashes as ascmhl_directory_hashes
-from .hashers import ALGORITHMS, hash_file
+from .hashers import ALGORITHMS, get_algorithm, hash_file
 from .integrity import evict_from_cache
 
 #: Where this tool files its own paperwork, as a pattern. Only used to read
@@ -327,7 +328,7 @@ def verify_manifest(
             # reason. Deliberately not noted either way.
             report.verdicts.append(FileVerdict(path, EntryResult.NO_CHECKSUM))
             continue
-        if not path.exists():
+        if not longpath.exists(path):
             note(path, None)
             report.verdicts.append(
                 FileVerdict(path, EntryResult.MISSING, expected=expected,
@@ -335,7 +336,7 @@ def verify_manifest(
             continue
 
         try:
-            actual_size = path.stat().st_size
+            actual_size = longpath.stat(path).st_size
             if bypass_cache:
                 _evict(path)
             actual = hash_file(path, algorithm_key)
@@ -346,7 +347,10 @@ def verify_manifest(
                             detail=str(exc)))
             continue
 
-        matched = actual == expected
+        # Case-folded for hex, exact for C4. An MHL is an interchange format,
+        # and plenty of tools write their hex uppercase: comparing those with
+        # `==` calls every byte-identical file a mismatch.
+        matched = get_algorithm(algorithm_key).digests_match(actual, expected)
         relative = note(path, actual)
         if not matched and relative is not None:
             unsound.add(relative)
@@ -370,6 +374,11 @@ def verify_manifest(
         # the absence of any recorded pattern but the history's own folder, so
         # it stops applying the moment a manifest describes its own layout.
         legacy_paperwork = not [p for p in patterns if p != ASCMHL_DIRNAME]
+        # A classic manifest now scans from the root it describes, which also
+        # holds the tool's paperwork. A PDF is not a file the manifest forgot.
+        paperwork = ([] if ascmhl_root is not None
+                     else [REPORT_DIRECTORY_GLOB, REPORT_DIRECTORY_GLOB + "-[0-9]*"])
+        own_folder = manifest.parent.resolve()
 
         for candidate in scan_root.rglob("*"):
             if not candidate.is_file() or candidate.suffix.lower() == ".mhl":
@@ -377,10 +386,14 @@ def verify_manifest(
             # The history's own bookkeeping is not managed data.
             if ASCMHL_DIRNAME in candidate.parts:
                 continue
-            if candidate.resolve() in listed:
+            resolved = candidate.resolve()
+            if resolved in listed:
                 continue
             relative = candidate.relative_to(scan_root).as_posix()
             if _ignored(relative, patterns):
+                continue
+            if paperwork and (resolved.parent == own_folder
+                              or _ignored(relative, paperwork)):
                 continue
 
             if find_unlisted:
@@ -505,6 +518,9 @@ def _directory_verdicts(base: Path, recorded: dict[str, tuple[str, str]],
         [(Path(relative), digest) for relative, digest in on_disk.items()],
         algorithm_key)
 
+    # The same per-algorithm comparison the file hashes get: a directory hash
+    # another tool wrote in uppercase hex describes the same tree.
+    same = get_algorithm(algorithm_key).digests_match
     verdicts: list[DirectoryVerdict] = []
     for relative in sorted(recorded):
         expected_content, expected_structure = recorded[relative]
@@ -527,9 +543,9 @@ def _directory_verdicts(base: Path, recorded: dict[str, tuple[str, str]],
             continue
 
         actual_content, actual_structure = found
-        if actual_content != expected_content:
+        if not same(actual_content, expected_content):
             result = DirectoryResult.CHANGED
-        elif actual_structure != expected_structure:
+        elif not same(actual_structure, expected_structure):
             result = DirectoryResult.RENAMED
         else:
             result = DirectoryResult.OK
@@ -573,18 +589,34 @@ def _ascmhl_entries(manifest: Path, root: ET.Element):
 
 
 def _described_root(manifest: Path, listed: set[Path]) -> Path:
-    """The directory a manifest actually describes.
+    """The managed root a classic manifest belongs to.
 
-    Reports live in `<name>_Reports/` while the media sits alongside, so
-    scanning the manifest's own folder would find nothing. Use the common
-    ancestor of the files it lists instead.
+    This tool files a manifest in `<name>_Reports/` (or `-2` and up) inside
+    the destination, so the root is the folder holding that one; a manifest
+    anywhere else describes its own folder. That root is used whenever every
+    listed file is inside it.
+
+    It used to be the common ancestor of the listed files, which is the file
+    itself for a one-entry manifest (and a file has nothing under it to scan)
+    and only a subfolder when every entry shares one, so files beside them
+    were never reported as missing from the manifest. Failing the root test
+    (an old manifest written to a separate report folder), the common
+    ancestor of the listed files' *folders* is the fallback.
     """
+    folder = manifest.parent
+    root = (folder.parent
+            if fnmatch.fnmatch(folder.name, REPORT_DIRECTORY_GLOB)
+            or fnmatch.fnmatch(folder.name, REPORT_DIRECTORY_GLOB + "-[0-9]*")
+            else folder)
     if not listed:
-        return manifest.parent
+        return root
     try:
-        return Path(os.path.commonpath([str(p) for p in listed]))
-    except ValueError:
-        return manifest.parent
+        resolved_root = root.resolve()
+        if all(path.is_relative_to(resolved_root) for path in listed):
+            return root
+        return Path(os.path.commonpath([str(p.parent) for p in listed]))
+    except (OSError, ValueError):
+        return folder
 
 
 def verify_tree(root: Path, **options) -> list[VerifyReport]:

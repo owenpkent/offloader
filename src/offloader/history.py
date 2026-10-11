@@ -31,6 +31,11 @@ def fingerprint(paths: Sequence[Path], root: Path) -> str:
     """
     digest = hashlib.sha1()
     root = Path(root)
+    # Seed with the source's own name. Without it the listing is the only
+    # input, so every empty card hashes to the SHA-1 of nothing and two
+    # unrelated blank volumes look like the same prior offload.
+    digest.update(root.name.encode("utf-8", "replace"))
+    digest.update(b"\n")
     entries = []
     for path in paths:
         try:
@@ -74,19 +79,49 @@ class HistoryEntry:
                 f"({self.status})")
 
     def to_dict(self) -> dict:
-        return self.__dict__.copy()
+        payload = self.__dict__.copy()
+        # __dict__ is a shallow copy, so without this the caller's dict shares
+        # the entry's own destinations list.
+        payload["destinations"] = list(self.destinations)
+        return payload
 
     @classmethod
     def from_dict(cls, data: dict) -> HistoryEntry:
+        """Build an entry from whatever is in the file.
+
+        Every field is coerced rather than trusted. history.json is a
+        hand-editable file that a version skew or a half-finished write can
+        leave in any shape at all, and the module's whole premise is that a
+        damaged history never stops someone offloading a card.
+        """
+        if not isinstance(data, dict):
+            data = {}
+
+        def text(key: str) -> str:
+            value = data.get(key, "")
+            return value if isinstance(value, str) else str(value)
+
+        def count(key: str) -> int:
+            try:
+                return int(data.get(key, 0))
+            except (TypeError, ValueError):
+                return 0
+
+        # A JSON string here would otherwise be exploded character by
+        # character by list(), which is silent corruption rather than a crash.
+        destinations = data.get("destinations", [])
+        if isinstance(destinations, str) or not isinstance(destinations, Iterable):
+            destinations = []
+
         return cls(
-            fingerprint=data.get("fingerprint", ""),
-            job_name=data.get("job_name", ""),
-            source=data.get("source", ""),
-            destinations=list(data.get("destinations", [])),
-            file_count=int(data.get("file_count", 0)),
-            total_bytes=int(data.get("total_bytes", 0)),
-            status=data.get("status", ""),
-            finished=data.get("finished", ""),
+            fingerprint=text("fingerprint"),
+            job_name=text("job_name"),
+            source=text("source"),
+            destinations=[str(d) for d in destinations],
+            file_count=count("file_count"),
+            total_bytes=count("total_bytes"),
+            status=text("status"),
+            finished=text("finished"),
         )
 
 
@@ -95,9 +130,26 @@ class History:
 
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or config_file(HISTORY_FILE)
-        self.entries: list[HistoryEntry] = [
-            HistoryEntry.from_dict(item) for item in read_json(self.path, [])
-        ]
+        self.entries: list[HistoryEntry] = self._load()
+
+    def _load(self) -> list[HistoryEntry]:
+        """Every entry the file can still yield, and nothing that raises.
+
+        A damaged history is worth less than an offload, so a record that will
+        not parse is dropped rather than allowed to stop construction. The
+        top-level value has to be a list: a bare number is not iterable, and a
+        bare object iterates its keys as strings.
+        """
+        payload = read_json(self.path, [])
+        if not isinstance(payload, list):
+            return []
+        entries = []
+        for item in payload:
+            try:
+                entries.append(HistoryEntry.from_dict(item))
+            except Exception:            # noqa: BLE001 - see the docstring
+                continue
+        return entries
 
     def save(self) -> None:
         write_json(self.path, [entry.to_dict() for entry in self.entries[:MAX_ENTRIES]])
