@@ -594,3 +594,18 @@ def test_offload_from_a_timeline_copies_only_the_gap(tmp_path: Path,
     assert landed[0].read_bytes() == b"not on the drive"
     # The file already under the search root is not copied again.
     assert not list(dest.rglob("A001_C001.mp4"))
+
+
+def test_control_file_that_is_a_selected_media_file_is_refused(tmp_path: Path):
+    """The selection is drawn from several trees, none of them the job root."""
+    one = _write(tmp_path / "treeA" / "clips" / "A.mov", b"a" * 500)
+    selection = [engine.SelectedFile(one, Path("treeA", "clips", "A.mov"),
+                                     tmp_path)]
+    cut = _write(tmp_path / "cuts" / "edit.xml", b"<xmeml/>")
+
+    with pytest.raises(engine.UnsafeControlFile):
+        engine.run(cut, _options(tmp_path, selection=selection),
+                   control=engine.FileControl(one))
+
+    assert one.read_bytes() == b"a" * 500
+    assert not (tmp_path / "dest").exists()

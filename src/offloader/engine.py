@@ -67,6 +67,10 @@ class UnsafeDestination(ValueError):
     """A destination that could destroy the source it is copying."""
 
 
+class UnsafeControlFile(ValueError):
+    """A control-file path that would overwrite something that is not one."""
+
+
 def assert_safe_destinations(source_root: Path, destinations: Sequence[Path]) -> None:
     """Refuse destinations that can eat the source.
 
@@ -230,6 +234,8 @@ class FileControl(JobControl):
     PAUSE = "pause"
     CANCEL = "cancel"
     STATES = (RUN, PAUSE, CANCEL)
+    #: Largest existing file `claim` will overwrite; a control word is shorter.
+    MAX_BYTES = 64
 
     def __init__(self, path: Path, poll: float = 0.5,
                  on_change: Callable[[str], None] | None = None,
@@ -258,9 +264,73 @@ class FileControl(JobControl):
         A control file left saying `pause` by a previous job would otherwise
         stop the next one before it copied a byte, and the reason would not be
         obvious to anyone watching. A job starts by saying what it is doing.
+
+        Claiming must never truncate a file that is not a control file. The
+        path comes from a command line, and a mistyped one can name a source
+        clip or a good copy; overwriting it with `run` would destroy it before
+        anything is hashed, and the job would then verify the replacement. So
+        an existing path is only overwritten when it is empty or holds one of
+        the control words, and a missing one is created exclusively.
         """
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(self.RUN + "\n", encoding="utf-8")
+        target = Path(os.path.realpath(self.path))
+        data = (self.RUN + "\n").encode("utf-8")
+        # Before the exclusive create: Windows reports an existing directory
+        # there as PermissionError rather than FileExistsError.
+        if target.is_dir():
+            raise UnsafeControlFile(f"control file {self.path} is a directory")
+        try:
+            fd = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
+        except FileExistsError:
+            pass
+        else:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(data)
+            return
+
+        size = target.stat().st_size
+        if size > self.MAX_BYTES:
+            raise UnsafeControlFile(
+                f"control file {self.path} is {size} bytes and is not a "
+                "control file; refusing to overwrite it")
+        try:
+            content = target.read_bytes().decode("utf-8").strip().lower()
+        except UnicodeDecodeError:
+            content = None
+        if content is None or (content and content not in self.STATES):
+            raise UnsafeControlFile(
+                f"control file {self.path} holds data that is not a control "
+                "word; refusing to overwrite it")
+        with open(target, "wb") as handle:
+            handle.write(data)
+
+    def guard(self, source_root: Path,
+              selection: Iterable[Path] | None = None,
+              destinations: Iterable[Path] = ()) -> None:
+        """Refuse a control path that aliases data this job reads or writes.
+
+        The job rewrites the control path (`claim`) and later promotes copies
+        over final names, so the path must not be: inside the source tree (or
+        the source itself, which for a timeline job is the timeline file), one
+        of the selected media files, or a destination root. Symlinks are
+        followed on every side, so a link to a clip is the clip. A control
+        file *inside* a destination root is fine and is the documented usage.
+        """
+        control = Path(os.path.realpath(self.path))
+        source = Path(os.path.realpath(source_root))
+        if control == source or source in control.parents:
+            raise UnsafeControlFile(
+                f"control file {self.path} is inside the source {source_root}; "
+                "choose a path outside it")
+        for media in selection or ():
+            if control == Path(os.path.realpath(media)):
+                raise UnsafeControlFile(
+                    f"control file {self.path} is the selected media file "
+                    f"{media}")
+        for destination in destinations:
+            if control == Path(os.path.realpath(destination)):
+                raise UnsafeControlFile(
+                    f"control file {self.path} is the destination {destination}")
 
     def read(self) -> str | None:
         """The word in the file, or None for "no opinion"."""
@@ -870,6 +940,26 @@ def _discard(targets: Iterable[Path]) -> None:
             pass
 
 
+def _assert_control_not_a_target(
+    control: FileControl, files: Sequence[Path], source_root: Path,
+    destination_roots: Sequence[Path], preserve_structure: bool,
+    relatives: dict[Path, Path] | None,
+) -> None:
+    """Refuse a job whose promotion would replace the control file."""
+    path = Path(os.path.realpath(control.path))
+    for source in files:
+        for root in destination_roots:
+            target = (root / relatives[source] if relatives is not None
+                      else _destination_for(source, source_root, root,
+                                            preserve_structure))
+            for candidate in (target,
+                              target.with_name(target.name + PARTIAL_SUFFIX)):
+                if Path(os.path.realpath(candidate)) == path:
+                    raise UnsafeControlFile(
+                        f"control file {control.path} is where {source} would "
+                        "be copied; choose another control path")
+
+
 def run(source_root: Path, options: OffloadOptions,
         progress: ProgressCallback | None = None,
         control: JobControl | None = None) -> Job:
@@ -893,6 +983,14 @@ def run(source_root: Path, options: OffloadOptions,
     if not dest_roots:
         raise ValueError("at least one destination is required")
 
+    if isinstance(control, FileControl):
+        control.guard(
+            source_root,
+            [Path(e.source) for e in options.selection]
+            if options.selection is not None else None,
+            dest_roots,
+        )
+
     #: Per-file destination-relative paths, for a selection. None for a card,
     #: where the destination is derived from the source root as it always was.
     relatives: dict[Path, Path] | None = None
@@ -911,6 +1009,9 @@ def run(source_root: Path, options: OffloadOptions,
         roots = {}
 
     assert_no_destination_collisions(files, source_root, dest_roots,
+                                     options.preserve_structure, relatives)
+    if isinstance(control, FileControl):
+        _assert_control_not_a_target(control, files, source_root, dest_roots,
                                      options.preserve_structure, relatives)
     counters = _Counters(job_bytes_total=sum(p.stat().st_size for p in files))
 

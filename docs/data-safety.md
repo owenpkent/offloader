@@ -183,6 +183,7 @@ exists precisely so it can be checked independently.
 | Card pulled mid-copy | `OSError` fails that file; the partial is deleted; other files are unaffected. |
 | Quit during an offload | Confirmed, then cancelled cleanly, partials removed. |
 | Cancel | Deletes the in-flight partial rather than leaving plausible-looking media. Pause and cancel are also honoured during the `--paranoid` source reread and the full-verification destination reread, so a cancel there never promotes the file. |
+| `--control-file` pointing at real data | The control path is validated before anything is written. It may not be inside the source, alias selected timeline media or a destination root, be where a copy would land, or point (symlinks followed) at an existing file that is not empty or one of `run`, `pause`, `cancel`. A control file inside a destination root is allowed. Claiming never truncates anything that is not a control file; the job is refused with `UnsafeControlFile`. |
 | Report writer crashing | Caught; a bad PDF never invalidates a good copy. |
 | Corrupt config file | Treated as empty. Config must never stand between someone and their card. |
 | Two source files mapping to one destination path | Refused before a byte moves, naming both sources. See below. |

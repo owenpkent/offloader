@@ -164,7 +164,11 @@ a job polling between chunks can never read a half-written instruction.
 
 Starting a job also *claims* the path by writing `run` to it. A control file
 left saying `pause` by a previous job would otherwise stop the next one before
-it copied a byte, with nothing on screen to explain why.
+it copied a byte, with nothing on screen to explain why. The path is validated
+first and claiming never truncates anything that is not a control file: a path
+inside the source, on a selected media file, on a destination root, or naming an
+existing file that is not empty or a control word is refused before anything is
+written.
 
 Why a file rather than a signal or a keypress: Windows has almost no signal
 support beyond SIGINT, a detached job has no console to press a key in, and a

@@ -27,6 +27,14 @@ project uses [semantic versioning][semver].
 
 ### Fixed
 
+- **`--control-file` could overwrite a source or destination file.** Starting a
+  job wrote `run` to the control path before anything was validated, so a path
+  that named a source clip (or a good copy) truncated it to five bytes, and the
+  job then copied and reported the replacement as Verified. The path is now
+  checked first: it may not be inside the source, be a selected timeline file,
+  be a destination root, or be where a copy would land, and an existing file is
+  only overwritten if it is empty or holds `run`, `pause` or `cancel`.
+
 - **Pause and cancel are honoured during rereads.** A cancel issued during the
   `--paranoid` source reread or the full-verification destination reread was
   ignored, and the file was promoted and reported Verified. Both rereads now

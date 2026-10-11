@@ -484,6 +484,14 @@ def cmd_offload(args: argparse.Namespace) -> int:
             print(f"\n[{state}] {args.control_file}", file=sys.stderr, flush=True)
 
         control = engine.FileControl(args.control_file, on_change=announce)
+        # Validate before claim() writes anything: the path is user input and
+        # may alias a source clip or a good copy.
+        control.guard(
+            source,
+            [Path(e.source) for e in options.selection]
+            if options.selection is not None else None,
+            options.destinations,
+        )
         control.claim()
         if not args.quiet:
             print(f"pausable: offloader control \"{args.control_file}\" --pause",
@@ -621,7 +629,7 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("\ninterrupted", file=sys.stderr)
         return 130
-    except engine.UnsafeDestination as exc:
+    except (engine.UnsafeDestination, engine.UnsafeControlFile) as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return 3
     except timeline_mod.TimelineSupportMissing as exc:
