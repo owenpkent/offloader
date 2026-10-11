@@ -23,7 +23,7 @@ from xml.etree import ElementTree as ET
 
 from . import PRODUCT_NAME, __version__
 from .hashers import ALGORITHMS, c4_of_bytes, get_algorithm, new_hasher
-from .models import FileStatus, Job
+from .models import Job
 from .util import xml_safe
 
 ASCMHL_DIRNAME = "ascmhl"
@@ -183,13 +183,15 @@ def _default_ignores(job: Job, root: Path, report_dir: Path | None) -> list[str]
     it just wrote as a change to the tree.
 
     Two entries rather than one because they can differ: `--report-dir` moves
-    the PDF and CSV, while thumbnails always land in `<name>_Reports`. A report
+    the PDF and CSV, while thumbnails always land in the job's own folder in
+    the first copy (`<name>_Reports`, or `-2` and up when that name was taken
+    or is part of the data being copied, in which case it is data). A report
     directory outside this copy needs no pattern, and one that *is* the copy
     cannot have one — ignoring `.` would ignore everything.
     """
     root = Path(root)
     patterns = [ASCMHL_DIRNAME]
-    for candidate in (report_dir, root / f"{job.name}_Reports"):
+    for candidate in (report_dir, job.report_dir_for(root)):
         if candidate is None:
             continue
         try:
@@ -329,17 +331,20 @@ def write_manifest(job: Job, root: Path, *, destination_index: int = 0,
     tag = algorithm.mhl_tag or "xxh64"
 
     previous = _previous_hashes(root)
-    entries: list[tuple[Path, str, int, float, str]] = []   # rel, digest, size, mtime, action
+    # rel, digest ("" when none was taken), size, mtime, action
+    entries: list[tuple[Path, str, int | None, float | None, str]] = []
 
-    for entry in job.files:
-        if destination_index >= len(entry.destinations):
-            continue
-        destination = entry.destinations[destination_index]
-        digest = destination.checksum or entry.checksum
-        if not digest:
-            continue
+    compare = algorithm.digests_match
+    # Every file the job scanned for this copy is recorded, failures included:
+    # a history that omits a failed copy reads as complete, and `verify` would
+    # pass a destination missing a clip. A failed copy keeps the source digest
+    # but is labelled `failed`, which verify will not accept as a reference;
+    # one with no digest at all is written as a bare path, which verify
+    # reports as having no checksum. Both fail.
+    for row in job.manifest_rows(destination_index):
+        digest = row.checksum or ""
         try:
-            relative = Path(destination.path).relative_to(root)
+            relative = Path(row.path).relative_to(root)
         except ValueError:
             continue
         # Filter here, where a filesystem name first enters the manifest, so
@@ -349,14 +354,18 @@ def write_manifest(job: Job, root: Path, *, destination_index: int = 0,
         relative = Path(xml_safe(relative.as_posix()))
 
         key = relative.as_posix()
-        if destination.status is FileStatus.FAILED:
+        if row.failed or not digest:
             action = ACTION_FAILED
         elif key in previous:
-            action = (ACTION_VERIFIED if previous[key].get(tag) == digest
+            # Case-folded for hex, exact for C4: another tool's uppercase hex
+            # describes the same bytes, and calling it a mismatch would write
+            # a false failure permanently into the chain of custody.
+            earlier = previous[key].get(tag)
+            action = (ACTION_VERIFIED if earlier is not None and compare(earlier, digest)
                       else ACTION_FAILED)
         else:
             action = ACTION_ORIGINAL
-        entries.append((relative, digest, entry.size, entry.modified, action))
+        entries.append((relative, digest, row.size, row.modified, action))
 
     manifest = ET.Element("hashlist", {"version": VERSION, "xmlns": NAMESPACE})
 
@@ -440,10 +449,16 @@ def _emit(parent: ET.Element, node: _Node, prefix: Path,
         relative = (Path(name) if prefix == Path(".") else prefix / name).as_posix()
         digest, size, modified, action = lookup[relative]
         element = ET.SubElement(parent, "hash")
-        ET.SubElement(element, "path", {
-            "size": str(size),
-            "lastmodificationdate": _iso(modified),
-        }).text = relative
+        attributes = {}
+        if size is not None:
+            attributes["size"] = str(size)
+        if modified is not None:
+            attributes["lastmodificationdate"] = _iso(modified)
+        ET.SubElement(element, "path", attributes).text = relative
+        if not digest:
+            # Nothing was ever hashed: a path with no hash is the record that
+            # this file belongs here and was not certified.
+            continue
         ET.SubElement(element, tag, {
             "action": action,
             "hashdate": _iso(moment),

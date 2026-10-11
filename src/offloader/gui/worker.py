@@ -18,20 +18,14 @@ from PySide6.QtCore import QObject, QThread, Signal
 from .. import engine, history, naming
 from ..models import Job
 from ..presets import Preset
-from ..reports import WRITERS
+from ..reports import paperwork
 from ..volumes import volume_label
 
 #: Trailing window over which throughput is measured. Long enough to smooth
 #: per-chunk jitter, short enough that a stall shows up within seconds.
 RATE_WINDOW_SEC = 5.0
 
-REPORT_FILENAMES = {
-    "pdf": "JobReport.pdf",
-    "csv": "JobReport.csv",
-    "mhl": "JobReport.mhl",
-    "ascmhl": "ascmhl",
-    "html": "JobReport.html",
-}
+REPORT_FILENAMES = paperwork.REPORT_FILENAMES
 
 
 class JobState(str, Enum):
@@ -166,41 +160,12 @@ class _Runner(QThread):
     def _write_reports(self, job: Job, preset: Preset) -> list[Path]:
         if job.cancelled or not preset.reports or not job.destination_roots:
             return []
-        out_dir = job.destination_roots[0] / f"{job.name}_Reports"
-        written: list[Path] = []
-        for key in preset.reports:
-            writer = WRITERS.get(key)
-            if writer is None:
-                continue
-            try:
-                written.append(writer(job, out_dir / REPORT_FILENAMES[key],
-                                      logo=preset.logo, footer=preset.footer))
-            except Exception:
-                # A report that fails to render must not invalidate a good copy.
-                continue
-
-        if "ascmhl" in preset.reports:
-            from ..ascmhl import write_manifest
-            for index, root in enumerate(job.destination_roots[1:], start=1):
-                try:
-                    written.append(write_manifest(job, root,
-                                                  destination_index=index))
-                except Exception:
-                    continue
-
-        if "mhl" in preset.reports:
-            # Each copy needs its own manifest, or the second destination has
-            # nothing to re-verify itself against.
-            for index, root in enumerate(job.destination_roots[1:], start=1):
-                target = root / f"{job.name}_Reports" / REPORT_FILENAMES["mhl"]
-                if target.parent == out_dir:
-                    continue
-                try:
-                    written.append(WRITERS["mhl"](job, target,
-                                                  destination_index=index))
-                except Exception:
-                    continue
-        return written
+        # The shared writer: one manifest inside every destination, never
+        # over an existing one, and every failure recorded on the job so the
+        # queue row and the completion summary show it. A report that fails
+        # to render still never changes a file's status.
+        return paperwork.write_reports(job, list(preset.reports),
+                                       logo=preset.logo, footer=preset.footer)
 
 
 class QueueController(QObject):

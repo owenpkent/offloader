@@ -27,6 +27,67 @@ project uses [semantic versioning][semver].
 
 ### Fixed
 
+- **`verify` passed a destination whose offload had failed a file.** The
+  manifest listed only the files that copied, so a clip that failed was simply
+  absent and `verify` said "VERIFIED - safe to erase the source". MHL and ASC
+  MHL now list every scanned file for each destination: a failed copy with the
+  source checksum (verify finds it missing or different), and anything with no
+  checksum at all (an unreadable source, a file a cancel never reached, a folder
+  that could not be listed) as an unhashed entry, which verify fails.
+- **A `--skip-existing` rerun overwrote the manifest that covered the skipped
+  files.** A same-size corrupt copy the size check skipped then verified clean.
+  A manifest is never overwritten now: a rerun's paperwork goes to
+  `<name>_Reports-2` when `<name>_Reports` already exists, a reused
+  `--report-dir` gets `JobReport-2.mhl`, and `verify` checks every manifest
+  under the folder.
+- **A source folder that could not be listed was silently left out.** The job
+  read Verified without the files under it. Listing errors are now recorded,
+  the job fails naming the folder, the CLI exits `1`, and the manifests carry an
+  unhashed entry so `verify` fails as well.
+- **Names Windows rewrites were read as a different file.** `clip.mov.` opened
+  `clip.mov`, so the wrong bytes were copied and certified, and `NUL` read as an
+  empty device. Such names now take the extended-length prefix everywhere (scan,
+  copy, stat, rename, eviction, manifest paths, verify) and copy as themselves.
+- **A junction listed before its target claimed the real folder.** The real
+  folder was skipped and its files landed under the alias. Directory symlinks
+  and junctions are no longer entered at all, and each one skipped is named in
+  a warning.
+- **Reports overwrote copied files when the source held `<name>_Reports`.**
+  Re-offloading a previous destination replaced the shuttle's own manifest
+  after certifying it. Reports now go to the next free `<name>_Reports-N` with
+  a warning.
+- **Report failures disappeared into a Verified verdict.** The GUI swallowed
+  them and the CLI exited `0`. Failures are recorded on the job
+  (`report_failures`), the status reads `Verified, reports failed`, the GUI
+  lists them on completion and the CLI exits `5`.
+- **A different card with the same folder layout replaced verified files.** A
+  finished copy no longer replaces an existing file whose content differs: that
+  file fails with the reason and the existing copy is kept. Identical content is
+  still replaced. `--replace-existing` (`OffloadOptions.replace_existing`)
+  restores the old behaviour.
+- **With `--report-dir` inside the second destination, its only manifest
+  described the first.** Every destination now gets its own manifest inside it;
+  `--report-dir` moves the PDF, CSV and HTML and holds a manifest only for the
+  destination it sits in.
+- **`offload` exited `0` for an Incomplete job.** An empty source or a
+  `--skip-existing` rerun now exits `4`; the exit codes are documented in the
+  README.
+- **`verify` did not report unlisted files beside a one-file manifest.** The
+  scan now starts at the root the manifest belongs to.
+- **A file deleted after the scan aborted the whole offload.** It now fails
+  alone with "source vanished after scan" and the job carries on.
+- **Same-named clips in different folders shared thumbnail files.** One clip's
+  frames replaced the other's in the report; thumbnails are now named by a hash
+  of the relative path.
+- **An uppercase hex digest in a previous ASC MHL generation was recorded as
+  `failed`.** The comparison is now case-insensitive for hex and exact for C4.
+- **A cancel during a second destination's reread left the file reading as
+  Verified.** Only the destinations already promoted were recorded, and a
+  file's status is its weakest recorded copy, so the copy that was never made
+  could not lower it. The missing copies are now recorded as cancelled.
+- **`offloader verify` stayed silent when it could not evict the page cache.**
+  The offload warns that a read-back may have come from memory; verify
+  discarded the same result. It now reports the same warning.
 - **Pause and cancel are honoured during rereads.** A cancel issued during the
   `--paranoid` source reread or the full-verification destination reread was
   ignored, and the file was promoted and reported Verified. Both rereads now

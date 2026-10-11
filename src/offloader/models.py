@@ -275,6 +275,32 @@ class FileEntry:
 
 
 @dataclass
+class ScanProblem:
+    """A directory under the source that the scan could not list."""
+
+    path: Path
+    error: str
+
+    def describe(self) -> str:
+        return f"could not list {self.path}: {self.error}"
+
+
+@dataclass
+class ManifestRow:
+    """One line of a manifest for one destination. See `Job.manifest_rows`."""
+
+    #: Where the file is, or should be, at that destination.
+    path: Path
+    size: int | None
+    modified: float | None
+    #: The checksum to verify against. None means there is nothing to verify
+    #: against, which a verifier must treat as a failure, never as a pass.
+    checksum: str | None
+    #: This destination did not receive a good copy.
+    failed: bool
+
+
+@dataclass
 class Job:
     """A complete offload, ready to render."""
 
@@ -302,6 +328,113 @@ class Job:
     #: erasing a card — empty files, verifications that may have been served
     #: from cache.
     warnings: list[str] = field(default_factory=list)
+    #: Directories under the source that could not be listed. Every file in
+    #: one is unknown, so the job cannot be Verified: it reads Failed, and the
+    #: manifests carry an unhashed entry for each so `verify` fails as well.
+    scan_errors: list[ScanProblem] = field(default_factory=list)
+    #: Source files the scan found but the job never reached, because it was
+    #: cancelled first. Recorded so the manifests can list them unhashed
+    #: instead of reading as complete.
+    not_attempted: list[Path] = field(default_factory=list)
+    #: Whether the source tree was recreated under each destination root.
+    #: Needed to say where a file that never arrived *would* have been.
+    preserve_structure: bool = True
+    #: The folder, inside each destination root, that holds this job's
+    #: paperwork. Empty means the conventional `<name>_Reports`; the engine
+    #: picks `<name>_Reports-2` and up when that one already exists or is
+    #: part of what is being copied.
+    report_dir_name: str = ""
+    #: Every report or manifest that could not be written, one line each.
+    #: Never changes a file's status, since the copies are what they are, but
+    #: it keeps the job from reading as a plain "Verified": a later `verify`
+    #: depends on the manifest that is missing.
+    report_failures: list[str] = field(default_factory=list)
+
+    @property
+    def reports_folder(self) -> str:
+        """The paperwork folder's name inside a destination root."""
+        return self.report_dir_name or f"{self.name}_Reports"
+
+    def report_dir_for(self, root: Path) -> Path:
+        return Path(root) / self.reports_folder
+
+    def manifest_rows(self, destination_index: int = 0) -> list[ManifestRow]:
+        """What a manifest for one destination has to say, file by file.
+
+        Every scanned file the job touched is listed for that destination,
+        not only the ones that arrived: a manifest that leaves out a failed
+        copy reads as complete, and `verify` then passes a destination that
+        is missing a clip. A failed copy is listed with the *source* checksum
+        when one was taken (so verify finds it missing or different), and
+        unhashed otherwise (so verify reports it as having no checksum, which
+        fails). Files the job never reached and directories it could not list
+        are listed unhashed for the same reason.
+
+        Skipped files are left out. They were not checksummed this run, so a
+        manifest entry would certify a file nobody read; an earlier manifest
+        that did read them is never overwritten.
+        """
+        rows: list[ManifestRow] = []
+        roots = self.destination_roots
+        root = roots[destination_index] if destination_index < len(roots) else None
+
+        def expected_path(relative: Path, name: str) -> Path | None:
+            if root is None:
+                return None
+            return root / relative if self.preserve_structure else root / name
+
+        for entry in self.files:
+            if destination_index < len(entry.destinations):
+                destination = entry.destinations[destination_index]
+                if destination.status is FileStatus.SKIPPED:
+                    continue
+                if destination.status in (FileStatus.FAILED, FileStatus.CANCELLED):
+                    # Never the destination's own checksum here: for a failed
+                    # verification that is the hash of the bad bytes.
+                    rows.append(ManifestRow(destination.path, entry.size,
+                                            entry.modified, entry.checksum, True))
+                else:
+                    rows.append(ManifestRow(destination.path, entry.size,
+                                            entry.modified,
+                                            destination.checksum or entry.checksum,
+                                            False))
+                continue
+            if not entry.destinations or root is None:
+                # A job assembled without destination records (a library
+                # caller, a test) describes the source itself, as it always has.
+                if entry.checksum:
+                    rows.append(ManifestRow(entry.source, entry.size,
+                                            entry.modified, entry.checksum, False))
+                continue
+            # Records for other destinations but not this one: a cancel landed
+            # before it was reached, so the file is not there.
+            first = entry.destinations[0]
+            try:
+                relative = Path(first.path).relative_to(first.root)
+            except ValueError:
+                relative = entry.relative
+            rows.append(ManifestRow(root / relative, entry.size, entry.modified,
+                                    entry.checksum, True))
+
+        for source in self.not_attempted:
+            try:
+                relative = source.relative_to(self.source_root)
+            except ValueError:
+                relative = Path(source.name)
+            path = expected_path(relative, source.name)
+            if path is not None:
+                rows.append(ManifestRow(path, None, None, None, True))
+
+        for problem in self.scan_errors:
+            try:
+                relative = problem.path.relative_to(self.source_root)
+            except ValueError:
+                relative = Path(problem.path.name)
+            # Recorded under the destination layout even when flattening, as a
+            # marker: nothing from inside it reached any destination.
+            if root is not None:
+                rows.append(ManifestRow(root / relative, None, None, None, True))
+        return rows
 
     @property
     def total_bytes(self) -> int:
@@ -335,8 +468,9 @@ class Job:
         return (self.finished - self.started).total_seconds()
 
     @property
-    def final_status(self) -> str:
-        if any(f.status is FileStatus.FAILED for f in self.files):
+    def copy_status(self) -> str:
+        """The verdict on the copies alone, before any paperwork."""
+        if self.scan_errors or any(f.status is FileStatus.FAILED for f in self.files):
             return "Failed"
         if self.cancelled:
             return "Cancelled"
@@ -345,6 +479,15 @@ class Job:
         if all(f.status is FileStatus.VERIFIED for f in self.files) and self.files:
             return "Verified"
         return "Incomplete"
+
+    @property
+    def final_status(self) -> str:
+        status = self.copy_status
+        if self.report_failures and status in ("Verified", "Copied"):
+            # The copies are good, but the manifest a later `verify` needs may
+            # be the thing that is missing. Not a plain success.
+            return f"{status}, reports failed"
+        return status
 
     @property
     def verification_label(self) -> str:

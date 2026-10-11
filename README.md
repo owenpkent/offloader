@@ -107,7 +107,7 @@ offloader verify D:\video\080426\A001
 | `--profile P` | `media` (default: ffprobe, thumbnails, BRAW) or `data` (generic transfer, no media probing) |
 | `--generic` | shorthand for `--profile data` |
 | `--report FMT[,FMT]` | `pdf` (default), `csv`, `mhl`, `ascmhl`, `html` |
-| `--report-dir PATH` | override the report location |
+| `--report-dir PATH` | move the PDF, CSV and HTML; each destination still gets its own MHL inside it (the folder holds one only for the destination it sits in) |
 | `--thumbs N` | frames per clip, 0 to disable (default 4) |
 | `--name NAME` | job name; defaults to the source folder name, or the volume label for a card offloaded from its root |
 | `--logo PATH` | image for the PDF header |
@@ -117,14 +117,26 @@ offloader verify D:\video\080426\A001
 | `--skip-existing` | skip files already present at matching size |
 | `--proxies-first` | copy the camera's proxy folders before the originals (default) |
 | `--originals-first` | copy in plain tree order instead |
+| `--replace-existing` | let a copy replace an existing destination file whose content differs; by default that file is kept and the copy fails (offload only) |
 | `--paranoid` | read each source file twice and compare (offload only) |
 | `--retries N` | attempts per failing read on a transient error (default 3, 1 disables) |
 | `--retry-wait SECONDS` | pause before the first retry, backing off after (default 2) |
 | `--no-probe` | skip ffprobe metadata and thumbnails |
 | `--quiet` | suppress progress |
 
-Exit status is `0` on success, `1` if any file failed verification, `2` on a
-usage or I/O error, `3` if a destination was refused as unsafe.
+Exit status for `offload`:
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Verified (or Copied under `--verify none`), and every report was written |
+| `1` | a file failed, or a source folder could not be listed |
+| `2` | usage or I/O error; nothing was attempted |
+| `3` | a destination was refused as unsafe; nothing was copied |
+| `4` | nothing failed, but the job is not Verified: an empty source, files skipped by `--skip-existing` (checked by size only), or a cancel |
+| `5` | the copies verified but a report or manifest could not be written |
+| `130` | interrupted |
+
+`report` exits `5` when a report could not be written and `0` otherwise.
 
 ### `verify`
 
@@ -134,8 +146,11 @@ offloader verify PATH [--allow-cache] [--quiet]
 
 `PATH` is an `.mhl` file or a folder to search for them. Re-hashes everything the
 manifest lists and exits non-zero if anything is off, so a format script can gate
-on it. `--allow-cache` skips the page-cache eviction — faster, and may verify
-memory rather than the device.
+on it. An offload's manifest lists every file it scanned for that
+destination, including any that failed (recorded with no checksum when none
+could be taken), so a destination missing a clip fails here; every manifest
+under the folder is checked, earlier runs' included. `--allow-cache` skips the
+page-cache eviction: faster, and may verify memory rather than the device.
 
 For an ASC MHL history it also recomputes the directory content and structure
 hashes, which is the only check that catches a rename or a moved file — every

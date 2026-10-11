@@ -129,7 +129,14 @@ A single flipped bit, with the file size unchanged, is caught. Nothing but a
 checksum finds that.
 
 It also reports files present on disk that the manifest does not list, and it
-evicts each file before reading so a freshly written tree is read off the device.
+evicts each file before reading so a freshly written tree is read off the device,
+and warns when the eviction failed, since the verdicts then say nothing about
+the device. The unlisted-file scan starts at the root the manifest belongs to (the folder
+holding `<name>_Reports`), not at the common folder of the files it lists, which
+for a one-file manifest was the file itself and found nothing.
+
+Unlisted files are a diagnostic, not a failure. What makes a missing clip fail is
+that the manifest lists it; see "A manifest lists what did not arrive" below.
 
 Where the manifest is an ASC MHL history, the directory hashes are recomputed
 too, and they catch the one class of change no checksum can. Rename a clip and
@@ -165,13 +172,64 @@ eviction, not the reading.
 An MHL that records absolute paths is useless the moment the drive gets a
 different letter or the tree moves. This was broken here: reports live in
 `<name>_Reports/` while the media sits one level up, so `Path.relative_to`
-failed and silently fell back to absolute paths. Now `os.path.relpath` is used,
-so entries look like `../Clips/A001_C001.mov` and the manifest works wherever the
-tree is mounted.
+failed and silently fell back to absolute paths. Entries are now relative, like
+`../Clips/A001_C001.mov`, so the manifest works wherever the tree is mounted. The
+relative path is computed lexically: `os.path.relpath` goes through Windows'
+path normalisation, which would record `clip.mov.` as `clip.mov`.
 
-A manifest is also written **per destination**. One that lives only with the
-first copy cannot re-verify the second — and the second copy is the one that
-exists precisely so it can be checked independently.
+A manifest is also written **per destination**, always inside that destination
+(`<dest>/<name>_Reports/JobReport.mhl`), so each copy can be verified on its own.
+One that lives only with the first copy cannot re-verify the second, and the
+second copy is the one that exists precisely so it can be checked independently.
+`--report-dir` moves the PDF, CSV and HTML. It receives a manifest only for the
+destination it sits inside, if any. It used to receive destination 1's manifest
+even when it sat inside destination 2, which then skipped its own: `verify` on
+destination 2 re-hashed destination 1's copy and passed while its own copy was
+corrupt.
+
+### A manifest lists what did not arrive
+
+A manifest used to list only the files that copied. A clip that failed was
+simply absent, so `verify` on that destination checked everything it was told
+about and said `VERIFIED`, and a format script gated on it would have erased a
+card holding a clip that was never copied.
+
+Every file the job scanned is now listed for each destination:
+
+- A copy that failed is listed with the *source* checksum when one was taken,
+  so `verify` reports it missing or mismatched. When none was (the source could
+  not be read), it is listed with no checksum, which `verify` reports as
+  `no hash` and fails. In ASC MHL the entry is labelled `failed`, or is a bare
+  path with no hash.
+- Files a cancelled job never reached, and folders the scan could not list, are
+  listed with no checksum for the same reason.
+- Files skipped by `--skip-existing` are **not** listed: nothing re-read them,
+  and listing them would certify bytes nobody checked.
+
+An unhashed entry has nothing to pass against, so it keeps failing. After a
+failed run has been resumed, its manifest still lists the files it could not
+read; once the rerun has verified them, retire that manifest by hand. Nothing
+else can say those files were checked.
+
+### A manifest is never overwritten
+
+A rerun used to overwrite `JobReport.mhl`. With `--skip-existing` the new one
+listed only what that run copied, so the only record of the skipped files was
+gone, and a same-size corrupt copy that the size check skipped then verified
+clean.
+
+Now the job's paperwork folder is chosen before the copy: `<name>_Reports`, or
+`<name>_Reports-2` and up when that name already exists in any destination or is
+part of what is being copied. When a manifest would still land on an existing
+file (a reused `--report-dir`), it is written as `JobReport-2.mhl` and up, and
+the summary says so. `verify` on a folder checks every classic manifest under it,
+so the earlier run's coverage is still checked.
+
+Re-offloading a previous destination (a shuttle drive holding
+`A001/A001_Reports/`) used to write the new reports over the copied folder,
+replacing files the job had just certified, the shuttle's own manifest among
+them. The folder choice above covers that case too, with a warning naming the
+folder used.
 
 ## Other things that are guarded
 
@@ -183,11 +241,16 @@ exists precisely so it can be checked independently.
 | Card pulled mid-copy | `OSError` fails that file; the partial is deleted; other files are unaffected. |
 | Quit during an offload | Confirmed, then cancelled cleanly, partials removed. |
 | Cancel | Deletes the in-flight partial rather than leaving plausible-looking media. Pause and cancel are also honoured during the `--paranoid` source reread and the full-verification destination reread, so a cancel there never promotes the file. |
-| Report writer crashing | Caught; a bad PDF never invalidates a good copy. |
+| Report writer crashing | Caught; a bad PDF never changes a file's status. Every failure is recorded on the job, which then reads `Verified, reports failed` rather than `Verified`; the GUI lists the failures when the job finishes and the CLI prints them and exits `5`. |
+| A source folder that cannot be listed | The job fails, naming the folder, and the CLI exits `1`. Its manifests carry an unhashed entry for the folder, so `verify` fails too. It used to be dropped silently and the job read Verified. |
+| A file deleted after the scan | That file fails with "source vanished after scan"; the rest of the job carries on and its paperwork is written. |
+| A different card with the same folder layout | A finished copy never replaces an existing destination file whose content differs. The existing file is hashed and compared; identical content is replaced (that changes nothing), different content fails that file with the reason and keeps the existing copy. `--replace-existing` overrides this. |
+| A source that already holds `<name>_Reports` | Reports go to `<name>_Reports-2` (or the next free number) with a warning; the copied folder is left as copied. |
+| Same-named clips in different folders | Thumbnail files are named by a hash of each clip's relative path, so one clip's frames never replace another's in the report. |
 | Corrupt config file | Treated as empty. Config must never stand between someone and their card. |
 | Two source files mapping to one destination path | Refused before a byte moves, naming both sources. See below. |
 | Metadata that will not parse | The file still copies and verifies; only its metadata is lost, and the job carries a warning. |
-| A directory junction pointing at its own parent | Each directory is visited at most once, so the scan cannot loop. |
+| A directory symlink or junction in the source | Never entered, and each one skipped is named in a warning. A junction pointing at its own parent cannot loop, and an alias listed before its target (`A_alias -> Z_real`) can no longer claim the real folder: the real folder is always scanned under its real name. Cloud-storage placeholder folders are reparse points too but are real folders, so only links (name-surrogate reparse points) are skipped. |
 | A manifest whose digests are uppercase | Compared case-insensitively for hex formats, exactly for C4. Another tool's casing is not corruption. |
 | A filename XML or UTF-8 cannot carry | Filtered to U+FFFD in manifests and CSV, so one bad name cannot strand a delivery's paperwork. |
 | A malformed chunk in a broadcast WAV | The walk advances on every step and is bounded, so a truncated file cannot hang it; the payload is capped, so a corrupt size field is not an allocation. The file still copies and verifies. |
@@ -222,6 +285,11 @@ known.
   source twice" below.
 - **`skip_existing` compares size, not checksum.** It is a speed option, not a
   safety one, and should not be used on a tree whose integrity is in question.
+  Skipped files are left out of the rerun's manifest and the job reads
+  `Incomplete` (CLI exit `4`). An earlier classic manifest that covered them is
+  kept and still checked; an ASC MHL history checks only its newest
+  generation, which omits them, so its directory hashes fail `verify` after such
+  a rerun (a false alarm, in the safe direction).
 - **Concurrent instances.** One app instance serialises its queue. Two instances
   pointed at the same destination are not coordinated.
 - **Case-only filename collisions on a case-insensitive destination, off
@@ -338,6 +406,14 @@ the limit. The prefix disables path normalisation, so paths are made absolute
 and normalised first, and UNC paths take the `UNC\server\share` form rather than
 a doubled prefix.
 
+Short paths take the prefix too when a name in them is one Windows would
+rewrite: a trailing dot or space, or a reserved device name such as `NUL`,
+`CON` or `COM1`. A card written by macOS or Linux can hold `clip.mov.` beside
+`clip.mov`. Without the prefix, opening the first opens the second, so the
+wrong bytes were read and certified, and `NUL` read as an empty device. The
+scan, every source and destination open, stat and rename, cache eviction and
+`verify` now address such names literally, so each copies as itself.
+
 **Caveat on the evidence.** The development machine has `LongPathsEnabled = 1`
 in the registry, so Windows accepts long paths there natively and *the original
 failure could not be reproduced on it* — a 315-character destination worked
@@ -357,6 +433,12 @@ The tool cannot enforce this, but it is what the tool is built to support:
 4. Keep the MHLs. Re-run `offloader verify` on the archive periodically.
 
 Do not erase the card until step 3 has passed on more than one copy.
+
+A script can key off `offload`'s exit status: `0` Verified (or Copied under
+`--verify none`) with every report written, `1` a file or source folder failed,
+`2` could not run, `3` destination refused, `4` nothing failed but not
+everything was verified (an empty source, a `--skip-existing` rerun, a cancel),
+`5` the copies verified but a report or manifest could not be written.
 
 ## Sources
 
