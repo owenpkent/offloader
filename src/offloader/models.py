@@ -328,14 +328,26 @@ class Job:
     #: erasing a card — empty files, verifications that may have been served
     #: from cache.
     warnings: list[str] = field(default_factory=list)
+    #: Media the job was asked to supply and did not: for a timeline offload,
+    #: every reference that is missing, ambiguous, offline, unsupported, a
+    #: non-file URL, or a proxy standing in without proof. One line each,
+    #: written into every report. Any entry makes the job "Incomplete", so
+    #: copying the reachable part of a cut never reads as the whole of it.
+    unresolved: list[str] = field(default_factory=list)
     #: Directories under the source that could not be listed. Every file in
     #: one is unknown, so the job cannot be Verified: it reads Failed, and the
     #: manifests carry an unhashed entry for each so `verify` fails as well.
     scan_errors: list[ScanProblem] = field(default_factory=list)
-    #: Source files the scan found but the job never reached, because it was
-    #: cancelled first. Recorded so the manifests can list them unhashed
-    #: instead of reading as complete.
+    #: Source files in the job's file set (scanned, or selected) that the job
+    #: never reached, because it was cancelled first. Recorded so the
+    #: manifests can list them unhashed instead of reading as complete, and
+    #: counted in the summary of a cancelled job.
     not_attempted: list[Path] = field(default_factory=list)
+    #: For a selection (a timeline offload), each source's path beneath every
+    #: destination root, as the selector laid it out. Empty for a scanned
+    #: card, whose layout is derived from `source_root`. Needed to say where a
+    #: selected file that never arrived would have been.
+    selection_relatives: dict[Path, Path] = field(default_factory=dict)
     #: Whether the source tree was recreated under each destination root.
     #: Needed to say where a file that never arrived *would* have been.
     preserve_structure: bool = True
@@ -417,11 +429,17 @@ class Job:
                                     entry.checksum, True))
 
         for source in self.not_attempted:
-            try:
-                relative = source.relative_to(self.source_root)
-            except ValueError:
-                relative = Path(source.name)
-            path = expected_path(relative, source.name)
+            selected = self.selection_relatives.get(source)
+            if selected is not None:
+                # A selection's layout is the selector's, flat or mirrored,
+                # and cannot be derived from the job's source label.
+                path = root / selected if root is not None else None
+            else:
+                try:
+                    relative = source.relative_to(self.source_root)
+                except ValueError:
+                    relative = Path(source.name)
+                path = expected_path(relative, source.name)
             if path is not None:
                 rows.append(ManifestRow(path, None, None, None, True))
 
@@ -474,6 +492,8 @@ class Job:
             return "Failed"
         if self.cancelled:
             return "Cancelled"
+        if self.unresolved:
+            return "Incomplete"
         if self.verification is VerificationMode.NONE:
             return "Copied"
         if all(f.status is FileStatus.VERIFIED for f in self.files) and self.files:

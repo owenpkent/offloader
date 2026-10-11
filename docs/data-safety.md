@@ -266,7 +266,9 @@ folder used.
 | Re-offloading a card already pulled | Fingerprinted by source name plus the listing's names and sizes, warned with the earlier job's name and date. Only successful offloads count. |
 | Card pulled mid-copy | `OSError` fails that file; the partial is deleted; other files are unaffected. |
 | Quit during an offload | Confirmed, then cancelled cleanly, partials removed. |
-| Cancel | Deletes the in-flight partial rather than leaving plausible-looking media. Pause and cancel are also honoured during the `--paranoid` source reread and the full-verification destination reread, so a cancel there never promotes the file. |
+| Cancel | Deletes the in-flight partial rather than leaving plausible-looking media. Pause and cancel are also honoured during the `--paranoid` source reread and the full-verification destination reread, so a cancel there never promotes the file. A CLI job cancelled through `--control-file` exits 130, as Ctrl+C does, and its summary counts the files not attempted. |
+| Timeline offload with references it cannot supply | Missing, ambiguous, offline, unsupported and non-file references, and proxies whose frame counts could not be checked, are listed in the terminal and in the CSV, HTML and PDF reports; the job reads `Incomplete`, never `Verified`, and exits 4. See [timeline.md](timeline.md). |
+| `--control-file` pointing at real data | The control path is validated before anything is written. It may not be inside the source, alias selected timeline media or a destination root, be where a copy would land, or point (symlinks followed) at an existing file that is not empty or one of `run`, `pause`, `cancel`. A control file inside a destination root is allowed. Claiming never truncates anything that is not a control file; the job is refused with `UnsafeControlFile`. |
 | Report writer crashing | Caught; a bad PDF never changes a file's status. Every failure is recorded on the job, which then reads `Verified, reports failed` rather than `Verified`; the GUI lists the failures when the job finishes and the CLI prints them and exits `5`. |
 | A source folder that cannot be listed | The job fails, naming the folder, and the CLI exits `1`. Its manifests carry an unhashed entry for the folder, so `verify` fails too. It used to be dropped silently and the job read Verified. |
 | A file deleted after the scan | That file fails with "source vanished after scan"; the rest of the job carries on and its paperwork is written. |
@@ -462,9 +464,11 @@ Do not erase the card until step 3 has passed on more than one copy.
 
 A script can key off `offload`'s exit status: `0` Verified (or Copied under
 `--verify none`) with every report written, `1` a file or source folder failed,
-`2` could not run, `3` destination refused, `4` nothing failed but not
-everything was verified (an empty source, a `--skip-existing` rerun, a cancel),
-`5` the copies verified but a report or manifest could not be written.
+`2` could not run, `3` destination or control file refused, `4` nothing failed
+but not everything was verified (unresolved timeline references, an empty
+source, an all-skipped `--skip-existing` rerun), `5` the copies verified but a
+report or manifest could not be written, `130` cancelled (Ctrl+C or a
+control-file cancel). The full table is in the README.
 
 ## Sources
 

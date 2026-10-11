@@ -91,6 +91,10 @@ def _audio_columns(media) -> list:
     ]
 
 
+#: The heading every report gives the media a timeline job did not supply.
+UNRESOLVED_TITLE = "Unresolved timeline references, NOT supplied by this job"
+
+
 def write_csv(job: Job, path: Path, *, delimiter: str = ",", **_options) -> Path:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -167,4 +171,13 @@ def write_csv(job: Job, path: Path, *, delimiter: str = ",", **_options) -> Path
                     + tail
                     + [destination.error or "", belongs_to]
                 )
+
+        if job.unresolved:
+            # After the file rows, so a reader that takes row 3 as the header
+            # and stops at the first comment still parses, and labelled so
+            # nobody mistakes the table above for the whole of the cut.
+            writer.writerow([])
+            writer.writerow([f"# {UNRESOLVED_TITLE} ({len(job.unresolved)})"])
+            for line in job.unresolved:
+                writer.writerow([f"# {line}"])
     return path

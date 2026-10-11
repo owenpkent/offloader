@@ -27,6 +27,43 @@ project uses [semantic versioning][semver].
 
 ### Fixed
 
+- **A timeline offload could call a partial cut complete.** With nothing to
+  copy it printed "every reference is already here" and exited 0 while
+  references were missing or ambiguous, and with gaps to copy it reported
+  "Verified" and exited 0 while the reports listed only the copied files. Now
+  every unresolved reference is printed, recorded on the job and listed in the
+  CSV, HTML and PDF reports; the job reads `Incomplete` and exits 4, the same
+  code `resolve` uses.
+- **One file could satisfy several different timeline references.** Two
+  recordings sharing a name (`f2/260223_009.WAV`, `f3/260223_009.WAV`) both
+  resolved to the single copy on the drive. They are now `ambiguous` unless
+  their bytes show which is which. A readable original is compared with the
+  same-named file under the roots (size, then checksum), so a "MISSING MEDIA"
+  slate no longer stands in for real footage the timeline can reach; the
+  original is copied instead, with a warning naming the slate.
+- **Offline clips and image sequences were reported as generated media.** An
+  OTIO `MissingReference`, an FCP 7 clip without a `<pathurl>` and an image
+  sequence are now reported by name as `offline` or `unsupported`, count as
+  unresolved and fail the exit code. A generator, title or matte is still
+  `generated`.
+- **A proxy could stand in without any check.** A same-stem file that yields no
+  frame count no longer satisfies a camera original. A proxy whose count
+  cannot be compared with the original's is shown in the terminal with its
+  `frames unverified` note, carried as a job warning, and keeps the job from
+  reading `Verified`.
+- **Relative timeline paths were read against the working directory.** They
+  are now read against the timeline file's folder, so an unrelated file of the
+  same relative path is never copied. Non-file URLs (`https`, `s3` and so on)
+  are reported as `external` and never matched to a local file by name.
+- **A `--control-file` cancel exited 0.** A cancelled job now exits 130, as
+  Ctrl+C does, and the summary says how many files were not attempted.
+- **`--control-file` could overwrite a source or destination file.** Starting a
+  job wrote `run` to the control path before anything was validated, so a path
+  that named a source clip (or a good copy) truncated it to five bytes, and the
+  job then copied and reported the replacement as Verified. The path is now
+  checked first: it may not be inside the source, be a selected timeline file,
+  be a destination root, or be where a copy would land, and an existing file is
+  only overwritten if it is empty or holds `run`, `pause` or `cancel`.
 - **`verify` passed a destination whose offload had failed a file.** The
   manifest listed only the files that copied, so a clip that failed was simply
   absent and `verify` said "VERIFIED - safe to erase the source". MHL and ASC
@@ -161,6 +198,73 @@ project uses [semantic versioning][semver].
   the bottom.
 
 ### Added
+
+- **Pause, resume and cancel from the command line.** `JobControl` has existed
+  since the desktop app needed transport buttons, and is checked once per 8 MiB
+  chunk, but the CLI never passed one — so a job started in a terminal could
+  only be killed. `--control-file PATH` wires one to a file, and
+  `offloader control PATH --pause|--resume|--cancel` drives it from anywhere.
+  A file rather than a signal or a keypress because Windows has almost no
+  signal support, a detached job has no console to type into, and a file needs
+  no port or daemon, survives the terminal closing, and can be read to see what
+  a job is doing.
+
+  The failure modes are the interesting part. The file holds one word;
+  **anything else — empty, garbled, half-written, momentarily locked — is "no
+  opinion" and leaves the job in the state it is already in**, because
+  inferring `cancel` from a damaged control file would let a stray byte stop an
+  offload that is nine hours in. `offloader control` writes through a staging
+  file and renames it into place, so a job polling between chunks cannot read a
+  truncated instruction. Starting a job writes `run` to the path first, so a
+  stale `pause` from a previous job cannot silently stop the next one.
+
+  "One word" means the whole value, not its first token: `cancel pending
+  upload`, the kind of thing an editor or a sync client leaves behind, is
+  damaged content and not an instruction to stop. Contents that are not valid
+  UTF-8 are damage too — that raises a `UnicodeDecodeError` rather than an
+  `OSError`, so it used to abort the checkpoint instead of being read as no
+  opinion.
+
+- **Offloading from an edit timeline.** `offloader resolve --timeline cut.xml
+  --search-root E:\Media` reports which of a cut's media is already on the
+  drive and which is not; `offloader offload --timeline ...` copies the
+  difference, with the same verified copy, checksums and reports as a card.
+  Timelines are read with OpenTimelineIO (`pip install "offloader[timeline]"`),
+  covering FCP 7 XML, FCPXML, EDL, AAF and `.otio` — but trusted with media
+  references only, never with structure: on the file this was measured
+  against, the adapter recovered all 334 references exactly while reporting
+  29.97 fps and 12 audio tracks for a sequence that declares 24 and 23. See
+  [`docs/timeline.md`](docs/timeline.md).
+
+  The resolver **refuses to choose between two files that share a name.** On
+  that conform, 20 basenames had more than one copy under the search root:
+  seven byte-identical and harmless, thirteen genuinely different files,
+  eleven of those being "MISSING MEDIA" stand-in slates from an earlier pass
+  sitting beside the real archival footage. A relink by filename picks one at
+  random and the clip reports as online either way. Byte-identical duplicates
+  resolve normally and are not copied again, which on that job avoided 1.4 GB
+  of transfer and, more to the point, avoided manufacturing 32 filename
+  collisions on a drive that had none. A camera original may be satisfied by a
+  proxy already on the drive, but only where the frame counts agree — a proxy
+  one frame short moves every edit point after it.
+
+  A `file:` URL keeps its leading slash unless a drive letter follows it.
+  Stripping it unconditionally turns `/Volumes/Edit/a.mov` into the *relative*
+  path `Volumes/Edit/a.mov`, which still resolves by basename and so looks
+  correct on Windows, while every "is it where the timeline says?" test quietly
+  answers no. An editor cutting on a Mac addresses every clip that way, so it
+  is the common case rather than an edge; CI on macOS and Linux is what caught
+  it.
+
+- **`OffloadOptions.selection`**, an explicit file set for `engine.run` in
+  place of scanning one source root. Files may come from any number of volumes
+  and each carries its own destination-relative path, so the engine infers no
+  layout. A selection is held to a narrower safety rule than a card's: a card
+  refuses a destination inside the source, which would wrongly refuse the
+  ordinary timeline case of collecting a cut's gaps into a folder on the drive
+  they were resolved against. Instead, no file being read may sit at or beneath
+  somewhere being written, and a destination-relative path that is absolute or
+  climbs out with `..` is refused before the job starts.
 
 - **The desktop app can set `replace_existing`.** The engine refuses to replace
   an existing destination file whose content differs, and its message pointed
