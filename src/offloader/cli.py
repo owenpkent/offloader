@@ -317,6 +317,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("info", help="show tool and environment status")
     sub.add_parser("gui", help="launch the desktop interface")
+
+    update = sub.add_parser(
+        "update", help="check for a newer release, and install it (Windows)")
+    update.add_argument("--install", action="store_true",
+                        help="download, verify and run the installer rather "
+                             "than only reporting what is available")
+    update.add_argument("--dir", type=Path, default=None, metavar="PATH",
+                        help="where to download the installer (default: a "
+                             "private temporary directory)")
     return parser
 
 
@@ -679,11 +688,134 @@ def cmd_gui(_args: argparse.Namespace) -> int:
     return gui_main([sys.argv[0]])
 
 
+def cmd_update(args: argparse.Namespace) -> int:
+    """Report or apply a newer release.
+
+    Exit status (documented in docs/updates.md):
+
+    * 0: up to date, or the installer ran and reported success;
+    * 1: an update exists but was not applied (no `--install`);
+    * 2: usage, a build that cannot update itself, or a download,
+      verification, launch or installer failure;
+    * 5: the release feed could not be fetched or read, so nothing is known;
+    * 6: the installer was started but its result could not be observed.
+
+    A caller scripting this can therefore tell "nothing to do" from "something
+    to do" from "could not find out".
+    """
+    import tempfile
+
+    from . import update as update_mod
+
+    try:
+        release = update_mod.find_release()
+    except update_mod.UpdateError as exc:
+        print(f"error: could not check for updates: {exc}", file=sys.stderr)
+        return 5
+    if release is None:
+        print(f"Offloader {__version__} is the newest release available.")
+        return 0
+
+    print(f"Offloader {release.version} is available "
+          f"(installed: {__version__}).")
+    if not args.install:
+        print("  offloader update --install    download, verify and install")
+        return 1
+
+    if sys.platform != "win32":
+        print("error: only the Windows release can be installed this way",
+              file=sys.stderr)
+        return 2
+
+    try:
+        target = update_mod.install_target()
+    except update_mod.UpdateError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    def report(done: int, total: int) -> None:
+        if total:
+            sys.stderr.write(f"\r  downloading {done * 100 // total:3d}%")
+        else:
+            sys.stderr.write(f"\r  downloading {format_size(done)}")
+        sys.stderr.flush()
+
+    created: Path | None = None
+    staged: Path | None = None
+    installer: Path | None = None
+    observed: bool | None = None
+    wait = False
+    try:
+        directory = args.dir
+        if directory is None:
+            directory = created = Path(tempfile.mkdtemp(prefix="offloader-update-"))
+        elif update_mod.is_link(directory):
+            raise update_mod.UpdateError(
+                f"refusing a download directory that is a link or junction: "
+                f"{directory}")
+        else:
+            directory.mkdir(parents=True, exist_ok=True)
+
+        staged, digest = update_mod.download(release, directory,
+                                             progress=report)
+        sys.stderr.write("\r" + " " * 32 + "\r")
+        update_mod.verify(staged, release, expected_digest=digest)
+        installer = update_mod.promote(staged)
+        staged = None
+        print(f"  verified {installer.name}")
+        print(f"  sha256   {digest}")
+        # Said before the prompt appears, because the installer refuses rather
+        # than closing anything: an operator who does not know that reads the
+        # refusal as a broken update.
+        print("\nThe installer will not replace a running Offloader. Close "
+              "the app and any\nCLI transfer first; an active job makes it "
+              "exit without changing anything.")
+        # A process running from the installation it replaces cannot wait:
+        # it holds that installation's lock and files open, which is exactly
+        # what makes the installer refuse.
+        wait = not update_mod.runs_from(target)
+        observed = update_mod.apply(installer, target, expected_digest=digest,
+                                    wait=wait)
+    except update_mod.UpdateError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    finally:
+        if staged is not None:
+            update_mod.discard(staged)
+        # A temporary directory this command created is removed unless the
+        # installer may still be running from it (started, not waited for).
+        if created is not None and observed is not False:
+            if installer is not None:
+                update_mod.discard(installer)
+            try:
+                created.rmdir()
+            except OSError:
+                pass
+
+    if observed:
+        print(f"Offloader {release.version} was installed.")
+        return 0
+    if wait:
+        print("The installer has started, but Windows returned no process to "
+              "wait on, so its result is unknown. Silent mode shows no "
+              "message if it refuses; run `offloader --version` once it has "
+              f"finished to confirm {release.version} is installed.")
+    else:
+        print("The installer has started. This command runs from the "
+              "installation it is replacing, so it exits now rather than hold "
+              "that installation open, and it cannot see the installer's "
+              "result. Silent mode shows no message if it refuses; run "
+              f"`offloader --version` once it has finished to confirm "
+              f"{release.version} is installed.")
+    return 6
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     handlers = {"offload": cmd_offload, "report": cmd_report,
                 "verify": cmd_verify, "info": cmd_info, "gui": cmd_gui,
-                "resolve": cmd_resolve, "control": cmd_control}
+                "resolve": cmd_resolve, "control": cmd_control,
+                "update": cmd_update}
     try:
         return handlers[args.command](args)
     except KeyboardInterrupt:

@@ -97,6 +97,7 @@ offloader verify D:\video\080426\A001
 | `report` | regenerate paperwork for an existing tree, copying nothing |
 | `info` | show tool and environment status |
 | `gui` | launch the desktop app (also `offloader-gui`) |
+| `update` | check for a newer release, and install it (Windows) |
 
 ### `offload` and `report`
 
@@ -141,7 +142,9 @@ Exit status for `offload` (and, where they apply, `resolve`, `report` and
 | `5` | the copies verified but a report or manifest could not be written |
 | `130` | cancelled: Ctrl+C or a control-file cancel |
 
-`report` exits `5` when a report could not be written and `0` otherwise.
+`report` exits `5` when a report could not be written and `0` otherwise. `update`
+has its own status codes (`5` feed unreadable, `6` installer started but its
+result not observed), listed in [docs/updates.md](docs/updates.md#exit-status).
 
 ### Pausing a running job
 
@@ -627,7 +630,7 @@ ruff check src tests
 pytest --cov=offloader --cov-report=term-missing
 ```
 
-899 tests at 84% line coverage. They cover formatting against the reference's
+1006 tests at 84% line coverage. They cover formatting against the reference's
 exact strings, checksum vectors and streaming equivalence, copy/verify
 behaviour including simulated destination corruption, pause/resume/cancel
 concurrency, retry discrimination, BRAW container parsing, ffprobe parsing,

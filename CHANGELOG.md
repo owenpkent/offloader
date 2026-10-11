@@ -27,6 +27,46 @@ project uses [semantic versioning][semver].
 
 ### Fixed
 
+- **`offloader update` reported a feed it could not read as "up to date".**
+  Being offline, an HTTP error or rate limit, a redirect off the allowlist and
+  malformed JSON all printed "the newest release available" and exited 0, so
+  a broken proxy could suppress updates indefinitely. Each is now printed as a
+  failure to check, with status 5 (see `docs/updates.md` for every status).
+- **The updater's digest check compared the streamed digest with itself.**
+  The installer is now re-hashed on disk before and after its signature is
+  read and immediately before launch; a mismatch refuses to run it and names
+  the file. The remaining window between the last hash and the launch is
+  documented.
+- **The signature verdict came from whichever `powershell` the search order
+  found first,** which includes the current directory, often a card root.
+  PowerShell is now run by absolute path under `%SystemRoot%` with a fixed
+  working directory, and the elevated installer runs in its own directory.
+- **An apostrophe in the installer's path broke signature checking.** The
+  path was pasted into a quoted PowerShell literal; a profile named O'Brien
+  failed every update and a crafted directory name became script. It is now
+  passed through an environment variable and never becomes script text.
+- **A refused silent install was reported as started.** The installer is
+  launched with `ShellExecuteExW` so its exit code can be read, and a non-zero
+  code is reported as a refusal or failure. The installed CLI runs from the
+  installation it replaces and cannot wait without blocking that installer,
+  so there it says it cannot see the result and exits with status 6 instead
+  of claiming success.
+- **A failed download left a plausible installer behind.** Bytes now go to an
+  exclusively created `.offloader-partial` file, flushed to disk, and get the
+  installer's name only after the size and signature checks pass; any failure
+  deletes the partial and the temporary directory. A short body against its
+  `Content-Length`, a linked or junctioned download directory, and a link at
+  the installer's name are refused, and a dropped connection is an update
+  error rather than a traceback.
+- **`offloader update --install` guessed a target for builds it cannot
+  update.** A pip or source install fell back to `Program Files`, risking a
+  second copy; a portable bundle was handed to an installer that always
+  refuses it. Both are now refused before downloading, naming the build that
+  was detected and how to update it instead.
+- **One certificate thumbprint left no path for renewal.** The updater
+  accepts a tuple of pinned thumbprints, current first, so the next
+  certificate can be shipped ahead of a rotation; the publisher name is still
+  required. `docs/updates.md` describes the rotation steps.
 - **A silent installer `/D=` target was overridden by the registered location.** NSIS
   consumes `/D=` before `.onInit`, so the old `$CMDLINE` check never saw it and
   `setup.exe /S /D=B` reinstalled into the registered location A. An explicit
@@ -202,6 +242,45 @@ project uses [semantic versioning][semver].
   the bottom.
 
 ### Added
+
+- **`offloader update` finds, verifies and applies a newer release.** GitHub
+  Releases is the feed, so there is no manifest server and no second place a
+  version is written down. Before anything runs: HTTPS with a host allowlist
+  re-checked after redirects, a size ceiling held against `Content-Length` and
+  again mid-stream, a SHA-256 taken while streaming and checked against the
+  file on disk before and after the signature is read and immediately before
+  launch, and an Authenticode check that requires a valid status, one of this
+  project's pinned certificate thumbprints, its publisher name, and an embedded
+  `FileVersion` matching the release. That last check is what stops a rollback:
+  re-serving an older, still validly signed installer under a newer asset name
+  would otherwise move every install back onto a build whose faults are fixed.
+  The install target is the running installed build's own directory rather
+  than the uninstall key's `InstallLocation`, which records where the last
+  install went rather than which copy is running (the key is under HKLM; when
+  the running copy is in the default location the installer still prefers the
+  registered one, a documented limit).
+
+  Prereleases are ordered rather than rejected, matching the grammar
+  `build/windows/versioning.py` already enforces, and a test asserts the two
+  orderings agree. The feed is the releases collection rather than
+  `/releases/latest`, which GitHub documents as excluding prereleases: on that
+  endpoint an installed `0.1.0b1` could never see `0.1.0b2`, and a repository
+  holding only the betas the candidate workflow publishes would answer with
+  nothing at all. The collection is ordered by creation date rather than by
+  version, so every entry is read and the greatest eligible one wins; drafts
+  are skipped, since their assets are not published.
+
+  **An install is offered what is newer on the channel it is already on.** A
+  build that is itself a prerelease is testing the prereleases and takes the
+  next one, and takes the stable release when it arrives, because `0.1.0b2` is
+  older than `0.1.0`. An install on a stable release is offered only stable
+  releases: `0.1.0b1` finding `0.1.0b2` must not also mean `1.0.0` finding
+  `1.0.1b1`.
+
+  The updater never closes a running copy: the installer's
+  refusal while a transfer is in flight is the guarantee, so the command says
+  so before the elevation prompt appears. See
+  [`docs/updates.md`](docs/updates.md); the in-app check is still deferred.
 
 - Windows desktop/CLI bundles and an NSIS installer, with pinned dependencies,
   embedded version metadata, signing by default, explicit unsigned CI builds,
