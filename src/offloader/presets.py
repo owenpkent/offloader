@@ -48,6 +48,9 @@ class Preset:
     proxies_first: bool = True
     #: Read every source file twice and compare. For irreplaceable material.
     paranoid: bool = False
+    #: Let a finished copy replace an existing destination file whose content
+    #: differs. Off by default; see `OffloadOptions.replace_existing`.
+    replace_existing: bool = False
     excludes: list[str] = field(default_factory=list)
     naming_template: str = DEFAULT_TEMPLATE
     retry_attempts: int = 3
@@ -115,6 +118,7 @@ class Preset:
             retry=RetryPolicy(attempts=max(1, self.retry_attempts),
                               delay=max(0.0, self.retry_wait)),
             paranoid=self.paranoid,
+            replace_existing=self.replace_existing,
         )
 
     # ---------------------------------------------------------------- codec
@@ -131,6 +135,7 @@ class Preset:
             "skip_existing": self.skip_existing,
             "proxies_first": self.proxies_first,
             "paranoid": self.paranoid,
+            "replace_existing": self.replace_existing,
             "excludes": list(self.excludes),
             "naming_template": self.naming_template,
             "retry_attempts": self.retry_attempts,
@@ -203,6 +208,7 @@ class Preset:
             # inherit the new default rather than the old behaviour.
             proxies_first=bool(value("proxies_first", True)),
             paranoid=bool(value("paranoid", False)),
+            replace_existing=bool(value("replace_existing", False)),
             excludes=[e for e in as_list("excludes") if isinstance(e, str)],
             naming_template=str(value("naming_template", DEFAULT_TEMPLATE)),
             retry_attempts=as_int("retry_attempts", 3),
