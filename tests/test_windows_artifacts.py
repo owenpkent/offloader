@@ -46,6 +46,29 @@ def test_build_record_round_trip_and_tamper_detection(tmp_path: Path):
         artifacts.validate_build_record(bundle, identity)
 
 
+def test_build_record_covers_portable_executable(tmp_path: Path):
+    bundle = _bundle(tmp_path)
+    portable = tmp_path / "Offloader-0.1.0-portable.exe"
+    portable.write_bytes(b"portable")
+    identity = {"version": "0.1.0", "source_commit": "abc", "source_digest": "d" * 64}
+    record = artifacts.write_build_record(bundle, identity, portable)
+    assert record["portable"]["name"] == portable.name
+    assert artifacts.validate_build_record(bundle, identity, portable) == record
+    # A record written for the portable build cannot be reused without it,
+    # and one written without it cannot vouch for a portable file.
+    with pytest.raises(RuntimeError, match="identity fields"):
+        artifacts.validate_build_record(bundle, identity)
+    portable.write_bytes(b"swapped")
+    with pytest.raises(RuntimeError, match="portable executable hash"):
+        artifacts.validate_build_record(bundle, identity, portable)
+    artifacts.write_build_record(bundle, identity)
+    with pytest.raises(RuntimeError, match="identity fields"):
+        artifacts.validate_build_record(bundle, identity, portable)
+    portable.unlink()
+    with pytest.raises(RuntimeError, match="missing"):
+        artifacts.write_build_record(bundle, identity, portable)
+
+
 def test_record_rejects_wrong_identity_and_unexpected_file(tmp_path: Path):
     bundle = _bundle(tmp_path)
     identity = {"version": "0.1.0", "source_commit": "abc", "source_digest": "d" * 64}

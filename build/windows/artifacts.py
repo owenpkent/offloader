@@ -149,11 +149,27 @@ def bundle_inventory(bundle: Path) -> dict[str, str]:
     return dict(sorted(names.items(), key=lambda item: item[0].casefold()))
 
 
-def write_build_record(bundle: Path, identity: dict[str, str]) -> dict[str, Any]:
-    """Write the versioned build record atomically and return its contents."""
+def _portable_entry(portable: Path) -> dict[str, str]:
+    portable = Path(portable)
+    _reject_path_links(portable)
+    if not portable.is_file():
+        raise RuntimeError(f"portable executable is missing: {portable}")
+    return {"name": portable.name, "sha256": _sha256(portable)}
+
+
+def write_build_record(
+    bundle: Path, identity: dict[str, str], portable: Path | None = None,
+) -> dict[str, Any]:
+    """Write the versioned build record atomically and return its contents.
+
+    The portable executable sits outside the bundle, so its name and digest
+    are recorded separately when one was built.
+    """
     bundle = Path(bundle)
     files = bundle_inventory(bundle)
     record: dict[str, Any] = {"schema": 1, **identity, "files": files}
+    if portable is not None:
+        record["portable"] = _portable_entry(portable)
     target = bundle / _RECORD_NAME
     _reject_path_links(bundle)
     fd, temporary_name = tempfile.mkstemp(prefix=".offloader-build-", suffix=".tmp", dir=bundle)
@@ -170,8 +186,10 @@ def write_build_record(bundle: Path, identity: dict[str, str]) -> dict[str, Any]
     return record
 
 
-def validate_build_record(bundle: Path, identity: dict[str, str]) -> dict[str, Any]:
-    """Validate a build record and the complete current bundle contents."""
+def validate_build_record(
+    bundle: Path, identity: dict[str, str], portable: Path | None = None,
+) -> dict[str, Any]:
+    """Validate a build record, the bundle contents, and any portable executable."""
     bundle = Path(bundle)
     target = bundle / _RECORD_NAME
     _reject_path_links(bundle)
@@ -186,7 +204,10 @@ def validate_build_record(bundle: Path, identity: dict[str, str]) -> dict[str, A
         raise RuntimeError("could not read build record") from exc
     if not isinstance(record, dict) or record.get("schema") != 1:
         raise RuntimeError("unsupported or malformed build record schema")
-    if set(record) != {"schema", *identity, "files"}:
+    expected_fields = {"schema", *identity, "files"}
+    if portable is not None:
+        expected_fields.add("portable")
+    if set(record) != expected_fields:
         raise RuntimeError("build record identity fields differ")
     for key, value in identity.items():
         if record.get(key) != value:
@@ -203,4 +224,15 @@ def validate_build_record(bundle: Path, identity: dict[str, str]) -> dict[str, A
         raise RuntimeError("bundle file set differs from build record")
     if any(recorded[name].lower() != actual[name].lower() for name in actual):
         raise RuntimeError("bundle file hash differs from build record")
+    if portable is not None:
+        recorded_portable = record["portable"]
+        actual_portable = _portable_entry(portable)
+        if (
+            not isinstance(recorded_portable, dict)
+            or set(recorded_portable) != {"name", "sha256"}
+            or recorded_portable["name"] != actual_portable["name"]
+        ):
+            raise RuntimeError("malformed or mismatched portable executable record")
+        if str(recorded_portable["sha256"]).lower() != actual_portable["sha256"]:
+            raise RuntimeError("portable executable hash differs from build record")
     return record

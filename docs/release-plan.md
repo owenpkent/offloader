@@ -244,7 +244,7 @@ Implemented interface for `build/windows/build.py`:
 | `--no-sign` | Explicit unsigned development build; required in hosted PR CI; not eligible for publication |
 | `--skip-build` | Repackage and sign the existing bundle after confirming its version and source identity |
 | `--verify-only` | Verify existing application/installer signatures without signing or rebuilding |
-| `--no-installer` | Produce the portable bundle; signing still defaults on |
+| `--no-installer` | Produce the portable bundle, ZIP, and single-file executable; signing still defaults on |
 
 These modes are implemented; signed release use still requires the hardware
 key, signature qualification, and the release gates below.
