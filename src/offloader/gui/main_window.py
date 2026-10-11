@@ -23,6 +23,7 @@ from ..presets import Preset, PresetStore
 from ..util import format_size
 from . import theme
 from .drives import DrivesPanel
+from .file_list import FileListPanel
 from .preset_mode import PresetModePanel
 from .queue_view import QueuePanel, reveal
 from .simple_mode import SimpleModePanel
@@ -72,6 +73,8 @@ class MainWindow(QMainWindow):
         self.drives.useAsDestination.connect(self._add_destination)
 
         self.queue = QueuePanel(self.controller)
+        self.files = FileListPanel()
+        self.queue.selectionChanged.connect(self._show_files)
 
         # ----------------------------------------------------------- chrome
         self._preset_button = button("Presets")
@@ -106,9 +109,24 @@ class MainWindow(QMainWindow):
         upper.setStretchFactor(1, 1)
         upper.setSizes([280, 900])
 
+        # Jobs on the left, the selected job's files on the right: the queue is
+        # the rail and this is its detail pane. Split rather than tabbed, so
+        # the proof of what landed is visible at the same time as the job it
+        # belongs to.
+        # Weighted towards the queue: its six columns include two fixed-width
+        # ones, and squeezing it clips the throughput figure off the right.
+        # The detail pane's columns are mostly fixed too, hence the floor.
+        self.files.setMinimumWidth(330)
+        lower = QSplitter(Qt.Horizontal)
+        lower.addWidget(self.queue)
+        lower.addWidget(self.files)
+        lower.setStretchFactor(0, 5)
+        lower.setStretchFactor(1, 2)
+        lower.setSizes([800, 480])
+
         vertical = QSplitter(Qt.Vertical)
         vertical.addWidget(upper)
-        vertical.addWidget(self.queue)
+        vertical.addWidget(lower)
         vertical.setStretchFactor(0, 3)
         vertical.setStretchFactor(1, 2)
         vertical.setSizes([520, 300])
@@ -207,6 +225,29 @@ class MainWindow(QMainWindow):
             f"<span style='color:{theme.FG_MUTED}'>{self._environment_summary()}"
             "</span>",
         )
+
+    def _show_files(self, item) -> None:
+        """Follow the queue's selection with the file detail.
+
+        A job's files only exist once the engine hands the finished job back,
+        so until then the pane says which state it is waiting on rather than
+        sitting empty and looking broken.
+        """
+        if item is None:
+            self.files.show_job(None)
+        elif item.job is not None:
+            self.files.show_job(item.job)
+        elif item.state.is_terminal:
+            # Terminal with nothing to show: cancelled or failed before the
+            # engine got as far as handing a job back. Saying it will appear
+            # once the job finishes would be a promise nothing will keep.
+            self.files.show_job(
+                None, f"{item.status_text} — no files were recorded."
+                      + (f"\n{item.error}" if item.error else ""))
+        else:
+            self.files.show_job(
+                None, f"{item.status_text} — the file list appears "
+                      "once the job finishes.")
 
     # ---------------------------------------------------------------- routing
     def _set_source(self, path: Path) -> None:

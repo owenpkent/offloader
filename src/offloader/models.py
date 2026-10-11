@@ -234,6 +234,13 @@ class Job:
     #: erasing a card — empty files, verifications that may have been served
     #: from cache.
     warnings: list[str] = field(default_factory=list)
+    #: How many files the scan found, so a cancelled job can say how far it got.
+    #: Zero means unknown (a job built by hand or loaded from elsewhere).
+    scanned_files: int = 0
+    #: The page cache could not be dropped before a re-read, so a "read back"
+    #: may have been served from memory. Structured, not only a warning string,
+    #: because the file list must not claim a read-back this flag disputes.
+    cache_eviction_failed: bool = False
 
     @property
     def total_bytes(self) -> int:

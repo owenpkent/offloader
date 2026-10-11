@@ -26,6 +26,18 @@ project uses [semantic versioning][semver].
   the repository. The desktop app now uses the same mark as its window icon,
   built in memory, so the shell entry, the window and the report header finally
   agree on what this tool looks like.
+- **A file list beside the queue, showing both checksums.** The interface could
+  say a job was "Verified" but never showed the evidence — the source hash and
+  the destination's, per file — which was only in the CSV and the PDF. The
+  selected job's files now sit next to the queue: size, both hashes head:tail
+  (`3F2A:05D1`, because a prefix cannot distinguish a match from a near-miss),
+  the full values and every destination path in the tooltip, and a doubled
+  check mark for a copy that was written *and* read back. That mark depends on
+  the job's verification mode: a source-only job, whose "verified" never reads
+  the destination, shows a single check and a summary that says so.
+  Destinations that
+  disagree with one another read `mismatch` rather than showing the first and
+  hiding the rest.
 - **A stall is reported instead of looking like a slow link.** A hung network
   handle raises nothing — it just stops returning bytes — so nothing could be
   retried and the job sat at a stale throughput figure. Source reads are now
@@ -63,6 +75,17 @@ project uses [semantic versioning][semver].
 
 ### Fixed
 
+- **The file list no longer implies stronger evidence than the engine
+  produced.** A cancelled job's summary says "cancelled after 2 of 5 files"
+  instead of "verified 2 of 2". A full verification whose page cache could not
+  be evicted (`Job.cache_eviction_failed`) shows one check and says the
+  read-back could not be confirmed. A checksum of "none" shows `≈` and
+  "size-checked", not a double check. The destination column is green only for
+  a verified, read-back, checksummed match; failed destinations show no
+  checksum; a source-only or unchecked job labels the column "As written";
+  a source/destination difference reads `mismatch` in red; warnings are
+  counted in the header with the list in a tooltip; C4 identifiers keep their
+  case when abbreviated.
 - The stalled stage now clears as soon as bytes resume on a slow link, instead
   of staying up until the whole 8 MiB chunk has assembled.
 - Time spent paused no longer counts toward the stall watchdog, so resuming a

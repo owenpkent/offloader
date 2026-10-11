@@ -6,7 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, QTimer
+from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -230,6 +230,11 @@ def reveal(path: Path) -> None:
 class QueuePanel(QWidget):
     """Queue table plus the transport controls that act on the selection."""
 
+    #: The selected job, or None. Emitted on selection *and* on any change to
+    #: an item, so a detail view following it sees a job's files the moment it
+    #: finishes rather than when the operator next clicks.
+    selectionChanged = Signal(object)
+
     def __init__(self, controller: QueueController, parent=None) -> None:
         super().__init__(parent)
         self.controller = controller
@@ -363,6 +368,7 @@ class QueuePanel(QWidget):
         self._remove.setEnabled(terminal or queued)
         self._reports.setEnabled(bool(item and item.reports))
         self._clear.setEnabled(any(i.state.is_terminal for i in self.controller.items))
+        self.selectionChanged.emit(item)
 
     # ---------------------------------------------------------------- actions
     def _toggle_pause(self) -> None:
