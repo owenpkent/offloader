@@ -1117,6 +1117,7 @@ def run(source_root: Path, options: OffloadOptions,
         paranoid=options.paranoid,
         scan_errors=scan_errors,
         preserve_structure=options.preserve_structure,
+        selection_relatives=dict(relatives or {}),
     )
 
     for problem in scan_errors:
