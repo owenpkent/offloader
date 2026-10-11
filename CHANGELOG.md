@@ -46,6 +46,14 @@ project uses [semantic versioning][semver].
 
 ### Fixed
 
+- **The queue table could not be reached from the keyboard.** It had its
+  focus disabled, so choosing a job to cancel, remove, reorder or report on
+  needed a mouse. It now takes Tab focus and Up/Down selects rows.
+- **An invalid saved verification mode disabled verification.** A null or
+  unrecognised `verification` (or algorithm or profile) in `settings.json`
+  selected the first list entry, which for verification is None. It now
+  restores the default (source-only, xxh3-64, media).
+
 Found by adding CI on Linux and macOS — the suite had only ever run on Windows.
 
 - **A preset with explicit nulls loaded unusable.** `dict.get(key, default)`

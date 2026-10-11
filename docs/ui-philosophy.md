@@ -21,6 +21,9 @@ that clips has reported one.
 Source, destinations, Start. Everything else has a sensible default and is
 remembered between runs in `settings.json`. The operator never configures
 anything before the first offload, and never configures the same thing twice.
+An unreadable or unrecognised saved value falls back to its default, never to
+the first entry in a list. Every control, including the queue table, is
+reachable with Tab.
 
 There are no presets. A preset is a name for "the settings I used last time",
 and the app already remembers those.

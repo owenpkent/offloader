@@ -226,7 +226,8 @@ class QueuePanel(QWidget):
         self.table.verticalHeader().setVisible(False)
         self.table.setShowGrid(False)
         self.table.verticalHeader().setDefaultSectionSize(32)
-        self.table.setFocusPolicy(Qt.NoFocus)
+        # Keyboard users need to reach the table to pick a job.
+        self.table.setFocusPolicy(Qt.StrongFocus)
         self.table.setMinimumHeight(150)
         self.table.setMaximumHeight(210)
 
