@@ -210,3 +210,29 @@ def test_a_manifest_for_the_second_copy_points_at_the_second_copy(tmp_path: Path
     # Deleting the *first* copy must not affect the second's verification.
     (tmp_path / "d1" / "clip.mov").unlink()
     assert verify.verify_manifest(second).passed
+
+
+def test_a_failed_eviction_is_reported_as_a_warning(offloaded, monkeypatch):
+    """Reading back out of the page cache checks memory against itself. The
+    verdicts stand, but the caveat must be visible, as it is for an offload."""
+    destination, manifest = offloaded
+    monkeypatch.setattr(verify, "evict_from_cache", lambda p: False)
+
+    report = verify.verify_manifest(manifest)
+
+    assert report.passed
+    assert len(report.warnings) == 1
+    assert "page cache" in report.warnings[0]
+
+    monkeypatch.setattr(verify, "evict_from_cache", lambda p: True)
+    assert verify.verify_manifest(manifest).warnings == []
+
+
+def test_verify_cli_prints_the_eviction_warning(offloaded, monkeypatch, capsys):
+    from offloader import cli
+
+    destination, manifest = offloaded
+    monkeypatch.setattr(verify, "evict_from_cache", lambda p: False)
+
+    assert cli.main(["verify", str(destination)]) == 0
+    assert "warning: could not evict" in capsys.readouterr().out
