@@ -15,6 +15,11 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
+# The sibling build scripts are imported by name from inside functions. Running
+# this file directly puts its directory on the path; importing it as a module,
+# which the tests do, does not.
+if str(HERE) not in sys.path:
+    sys.path.insert(0, str(HERE))
 SPEC = HERE / "offloader.spec"
 DIST = REPO / "dist" / "windows"
 WORK = REPO / ".pyinstaller" / "windows"
@@ -57,8 +62,22 @@ def check_signatures(bundle: Path, *, signing: bool, version: str) -> list[dict]
     return records
 
 
+def sbom_names(version: str) -> set[str]:
+    """The bill-of-materials files a release carries.
+
+    Named in `artifacts` because four places have to agree about them:
+    `save_outputs` checksums them, `validate_outputs` refuses anything it did
+    not expect, and `scripts/release_notes.py` writes the upload command that
+    publishes them.
+    """
+    from artifacts import sbom_names as names
+
+    return set(names(version))
+
+
 def save_outputs(bundle: Path, setup: Path | None, identity: dict,
                  signatures: list[dict], signed: bool) -> None:
+    import sbom
     from artifacts import bundle_inventory
 
     version = identity["version"]
@@ -77,7 +96,7 @@ def save_outputs(bundle: Path, setup: Path | None, identity: dict,
         for path in sorted(bundle.rglob("*")):
             if path.is_file():
                 output.write(path, f"Offloader/{path.relative_to(bundle).as_posix()}")
-    outputs = [archive, inventory]
+    outputs = [archive, inventory, *sbom.write_all(DIST, identity)]
     if setup is not None:
         outputs.append(setup)
     lines = []
@@ -101,7 +120,8 @@ def validate_outputs(bundle: Path, setup: Path | None, identity: dict) -> None:
         raise RuntimeError("Output inventory is unsigned or belongs to different sources")
     if record.get("files") != bundle_inventory(bundle):
         raise RuntimeError("Output inventory no longer matches the bundle")
-    expected = {inventory.name, f"Offloader-{version}-windows-x64.zip"}
+    expected = {inventory.name, f"Offloader-{version}-windows-x64.zip",
+                *sbom_names(version)}
     if setup is not None:
         expected.add(setup.name)
     checksums = {}
