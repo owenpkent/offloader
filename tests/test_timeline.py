@@ -174,12 +174,18 @@ def test_unverifiable_frame_count_says_so_rather_than_implying_agreement(
         library: Path, tmp_path: Path, monkeypatch):
     original = _write(tmp_path / "camera" / "A006_C121.braw", b"raw" * 1000)
     _write(library / "package" / "A006_C121.mp4", b"proxy")
-    monkeypatch.setattr(timeline, "_frames", lambda path: None)
+    # The proxy reads as media; the original's count cannot be got.
+    lengths = {"braw": None, "mp4": 1065}
+    monkeypatch.setattr(timeline, "_frames",
+                        lambda path: lengths[Path(path).suffix.lstrip(".")])
 
     report = timeline.resolve([_ref("A006_C121.braw", original)], [library])
     (resolution,) = report.resolutions
     assert resolution.status is Status.SUBSTITUTED
     assert "unverified" in resolution.note
+    # Offered, but not counted as settled: see test_timeline_completeness.
+    assert resolution.unverified
+    assert report.incomplete == [resolution]
 
 
 def test_substitution_can_be_switched_off(library: Path, tmp_path: Path):
@@ -547,7 +553,7 @@ def test_resolve_exits_non_zero_when_something_is_unsettled(
 
     code = cli.main(["resolve", "--timeline", str(cut),
                      "--search-root", str(library)])
-    assert code == 1
+    assert code == 4
     assert "MORE THAN ONE CANDIDATE" in capsys.readouterr().out
 
 
@@ -594,3 +600,44 @@ def test_offload_from_a_timeline_copies_only_the_gap(tmp_path: Path,
     assert landed[0].read_bytes() == b"not on the drive"
     # The file already under the search root is not copied again.
     assert not list(dest.rglob("A001_C001.mp4"))
+
+
+def test_control_file_that_is_a_selected_media_file_is_refused(tmp_path: Path):
+    """The selection is drawn from several trees, none of them the job root."""
+    one = _write(tmp_path / "treeA" / "clips" / "A.mov", b"a" * 500)
+    selection = [engine.SelectedFile(one, Path("treeA", "clips", "A.mov"),
+                                     tmp_path)]
+    cut = _write(tmp_path / "cuts" / "edit.xml", b"<xmeml/>")
+
+    with pytest.raises(engine.UnsafeControlFile):
+        engine.run(cut, _options(tmp_path, selection=selection),
+                   control=engine.FileControl(one))
+
+    assert one.read_bytes() == b"a" * 500
+    assert not (tmp_path / "dest").exists()
+
+
+def test_cancelled_selection_lists_unreached_files_at_their_selected_paths(
+        tmp_path: Path):
+    """A file a cancel never reached is listed unhashed in the manifest where
+    the selection would have put it, not at `<root>/<filename>`."""
+    one = _write(tmp_path / "volA" / "clips" / "A.mov", b"a" * 500)
+    two = _write(tmp_path / "volB" / "sound" / "B.wav", b"b" * 500)
+    cut = _write(tmp_path / "cut.otio", b"{}")
+    selection = [
+        engine.SelectedFile(one, Path("volA", "clips", "A.mov"), tmp_path / "volA"),
+        engine.SelectedFile(two, Path("volB", "sound", "B.wav"), tmp_path / "volB"),
+    ]
+    control = engine.JobControl()
+
+    def progress(event: engine.ProgressEvent) -> None:
+        if event.file_name == "B.wav":
+            control.cancel()
+
+    job = engine.run(cut, _options(tmp_path, selection=selection), progress, control)
+
+    assert job.cancelled
+    assert job.not_attempted == [two]
+    dest = tmp_path / "dest"
+    unhashed = [row for row in job.manifest_rows(0) if row.checksum is None]
+    assert [row.path for row in unhashed] == [dest / "volB" / "sound" / "B.wav"]

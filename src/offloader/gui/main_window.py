@@ -491,6 +491,19 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"“{item.name}” failed", 10000)
         elif item.state is JobState.CANCELLED:
             self.statusBar().showMessage(f"“{item.name}” cancelled", 6000)
+        elif item.job is not None and item.job.report_failures:
+            # The copies are fine, but a missing manifest leaves a later
+            # verify with nothing to check against. Never a quiet success.
+            failures = item.job.report_failures
+            body = "\n".join(f"• {failure}" for failure in failures[:12])
+            if len(failures) > 12:
+                body += f"\n… and {len(failures) - 12} more"
+            QMessageBox.warning(
+                self, "Offload finished, but reports failed",
+                f"“{item.name}” copied, but {len(failures)} report(s) could "
+                f"not be written:\n\n{body}")
+            self.statusBar().showMessage(
+                f"“{item.name}” {item.job.final_status.lower()}", 10000)
         elif item.job is not None and item.job.warnings:
             shown = item.job.warnings[:12]
             body = "\n".join(f"• {warning}" for warning in shown)

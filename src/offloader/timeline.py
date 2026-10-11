@@ -43,10 +43,10 @@ from __future__ import annotations
 import os
 import re
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path, PurePath
-from urllib.parse import unquote
+from urllib.parse import unquote, urlparse
 
 from . import companions, engine
 from .hashers import DEFAULT_ALGORITHM, hash_file
@@ -96,13 +96,35 @@ class Status(str, Enum):
     AMBIGUOUS = "ambiguous"
     #: Not under the roots and not where the timeline says either.
     MISSING = "missing"
+    #: The timeline names a clip but carries no path for it: an OTIO
+    #: MissingReference, or an FCP 7 `<file>` with a name and no `<pathurl>`.
+    #: Real media the editor had offline. Nothing can be found or copied by
+    #: path, so a human relinks it.
+    OFFLINE = "offline"
+    #: A media reference this module does not resolve, such as an image
+    #: sequence. Real media, reported by name, never counted as satisfied.
+    UNSUPPORTED = "unsupported"
+    #: A non-file URL (http, https, s3 and so on). Never treated as a local
+    #: path, never searched by basename, never copied.
+    EXTERNAL = "external"
     #: The timeline carries no media for this at all -- a Premiere-native
     #: graphic, a title, a generator. No file exists to supply.
     GENERATED = "generated"
 
 
-#: Statuses that leave the caller with something to do before a conform.
-UNRESOLVED = (Status.AMBIGUOUS, Status.MISSING, Status.GENERATED)
+#: Statuses that leave real media unsupplied: the cut will not conform until
+#: a human settles each one, so no offload may call itself complete while any
+#: remain. GENERATED is not among them: there is no file to supply.
+UNRESOLVED = (Status.AMBIGUOUS, Status.MISSING, Status.OFFLINE,
+              Status.UNSUPPORTED, Status.EXTERNAL)
+
+#: `Reference.kind` values. Only FILE references carry a local target.
+KIND_FILE = "file"
+KIND_GENERATED = "generated"
+KIND_OFFLINE = "offline"
+KIND_SEQUENCE = "sequence"
+KIND_EXTERNAL = "external"
+KIND_UNSUPPORTED = "unsupported"
 
 
 @dataclass(frozen=True)
@@ -118,6 +140,13 @@ class Reference:
     #: report a sound effect as used twice as often as it is.
     uses: int = 1
     generated: bool = False
+    #: What sort of reference this is; see the KIND_* constants. Anything
+    #: but KIND_FILE has no local target and can never be PRESENT or a GAP.
+    kind: str = KIND_FILE
+    #: The timeline's own text for a reference with no local target: a URL,
+    #: an image sequence's base, or the media reference's type. Shown to the
+    #: user so an unresolved item can be found by hand.
+    url: str = ""
 
 
 @dataclass
@@ -133,6 +162,10 @@ class Resolution:
     #: AMBIGUOUS, and for PRESENT when the copies are byte-identical.
     alternatives: list[Path] = field(default_factory=list)
     note: str = ""
+    #: A SUBSTITUTED proxy whose frame count could not be compared with the
+    #: original's. It may well be right, but nothing has shown it, so it
+    #: counts against completeness.
+    unverified: bool = False
 
     @property
     def name(self) -> str:
@@ -156,8 +189,33 @@ class Report:
 
     @property
     def unresolved(self) -> list[Resolution]:
-        """Everything a human has to deal with before the cut will conform."""
+        """References whose media is not supplied: see `UNRESOLVED`."""
         return self.of(*UNRESOLVED)
+
+    @property
+    def unconfirmed(self) -> list[Resolution]:
+        """Proxy substitutions whose frame counts could not be compared."""
+        return [r for r in self.resolutions
+                if r.status is Status.SUBSTITUTED and r.unverified]
+
+    @property
+    def incomplete(self) -> list[Resolution]:
+        """Everything a human has to deal with before the cut will conform.
+
+        Unresolved references, and proxies standing in without proof. While
+        this is non-empty neither `resolve` nor `offload` may report the cut
+        as complete, and both exit non-zero.
+        """
+        return [r for r in self.resolutions
+                if r.status in UNRESOLVED
+                or (r.status is Status.SUBSTITUTED and r.unverified)]
+
+    @property
+    def differing(self) -> list[Resolution]:
+        """GAPs copied from the timeline's own path although a *different*
+        file of the same name is under a search root. Worth a warning: after
+        the copy the drive holds two files of that name."""
+        return [r for r in self.gaps if r.alternatives]
 
     @property
     def counts(self) -> dict[Status, int]:
@@ -227,6 +285,35 @@ def _url_to_path(url: str) -> Path | None:
     return Path(text)
 
 
+_SCHEME = re.compile(r"^([A-Za-z][A-Za-z0-9+.\-]*):")
+
+
+def _url_scheme(url: str) -> str:
+    """The URL scheme, lowercased, or "" for a bare path.
+
+    A single letter is a Windows drive (`E:/Media/a.mov`), not a scheme.
+    """
+    match = _SCHEME.match(url.strip())
+    if not match or len(match.group(1)) == 1:
+        return ""
+    return match.group(1).lower()
+
+
+def _anchored(target: Path, base: Path) -> Path:
+    """`target`, resolved against `base` when the timeline wrote it relative.
+
+    A relative target means "relative to the timeline", never "relative to
+    wherever the command happened to be run": resolved against the working
+    directory, `media/clip.mov` would find, and copy, an unrelated file of
+    that name. `anchor` rather than `is_absolute()` decides, because on
+    Windows a Mac editor's `/Volumes/Edit/a.mov` has a root but no drive and
+    is not relative to anything here.
+    """
+    if target.anchor:
+        return target
+    return Path(os.path.normpath(base / target))
+
+
 def _adapter_for(path: Path, adapter: str | None = None) -> str:
     if adapter:
         return adapter
@@ -247,6 +334,11 @@ def read_references(path: Path, adapter: str | None = None) -> list[Reference]:
     -- a Premiere-native graphic, a title, a generator -- comes back with
     `generated=True` and no target, because there is no file to supply and
     saying so is more useful than dropping it.
+
+    Real media the module cannot resolve by path is never folded in with
+    those. An offline clip (no path), an image sequence, a non-file URL and
+    any other kind of media reference each come back by name, with a `kind`
+    that makes the resolver report it as unresolved.
     """
     path = Path(path)
     if not path.is_file():
@@ -269,33 +361,84 @@ def read_references(path: Path, adapter: str | None = None) -> list[Reference]:
         )
 
     timeline = otio.adapters.read_from_file(str(path), name)
+    base = Path(os.path.abspath(path)).parent
+    schema = otio.schema
 
-    order: list[str] = []
-    found: dict[str, dict] = {}
+    order: list[tuple[str, str]] = []
+    found: dict[tuple[str, str], dict] = {}
     generated = 0
+
+    def add(kind: str, key: str, label: str, target: Path | None = None,
+            url: str = "") -> None:
+        slot = (kind, key)
+        if slot not in found:
+            order.append(slot)
+            found[slot] = {"name": label, "target": target, "url": url,
+                           "kind": kind, "uses": 0}
+        found[slot]["uses"] += 1
+
     for clip in timeline.find_clips():
         media = clip.media_reference
-        url = getattr(media, "target_url", None)
-        resolved = _url_to_path(url) if url else None
-        if resolved is None:
-            # A generator, a title, a missing reference: real clips in the cut
-            # that no file can satisfy. Counted once, reported once.
+        clip_name = (getattr(clip, "name", "") or "").strip()
+        media_name = (getattr(media, "name", "") or "").strip()
+
+        if isinstance(media, schema.GeneratorReference):
+            # A generator, a title, a matte: real clips in the cut that no
+            # file can satisfy. Counted once, reported once.
             generated += 1
             continue
-        key = os.path.normcase(str(resolved))
-        if key not in found:
-            order.append(key)
-            found[key] = {"path": resolved, "name": resolved.name, "uses": 0}
-        found[key]["uses"] += 1
+
+        if isinstance(media, schema.ImageSequenceReference):
+            padding = "#" * max(1, media.frame_zero_padding)
+            stem = f"{media.name_prefix}{padding}{media.name_suffix}"
+            url = media.target_url_base or ""
+            add(KIND_SEQUENCE, os.path.normcase(url + stem), stem, url=url)
+            continue
+
+        if media is None or isinstance(media, schema.MissingReference):
+            label = media_name or clip_name or "unnamed offline clip"
+            add(KIND_OFFLINE, os.path.normcase(label), label)
+            continue
+
+        if not isinstance(media, schema.ExternalReference):
+            kind_name = type(media).__name__
+            label = media_name or clip_name or kind_name
+            add(KIND_UNSUPPORTED, f"{kind_name}:{os.path.normcase(label)}", label,
+                url=kind_name)
+            continue
+
+        url = (media.target_url or "").strip()
+        if not url:
+            label = media_name or clip_name or "unnamed offline clip"
+            add(KIND_OFFLINE, os.path.normcase(label), label)
+            continue
+
+        scheme = _url_scheme(url)
+        if scheme and scheme != "file":
+            # Not a local path, whatever its last component looks like.
+            # Matching https://host/clip.mov by basename would "find" an
+            # unrelated local clip.mov.
+            label = Path(unquote(urlparse(url).path)).name or url
+            add(KIND_EXTERNAL, url, label, url=url)
+            continue
+
+        resolved = _url_to_path(url)
+        if resolved is None:
+            label = media_name or clip_name or "unnamed offline clip"
+            add(KIND_OFFLINE, os.path.normcase(label), label)
+            continue
+        resolved = _anchored(resolved, base)
+        add(KIND_FILE, os.path.normcase(str(resolved)), resolved.name, resolved)
 
     references = [
-        Reference(name=found[k]["name"], target=found[k]["path"], uses=found[k]["uses"])
+        Reference(name=found[k]["name"], target=found[k]["target"],
+                  uses=found[k]["uses"], kind=found[k]["kind"], url=found[k]["url"])
         for k in order
     ]
     if generated:
         references.append(
             Reference(name=f"{generated} timeline-native item(s)", target=None,
-                      uses=generated, generated=True)
+                      uses=generated, generated=True, kind=KIND_GENERATED)
         )
     return references
 
@@ -411,13 +554,23 @@ def resolve(references: Sequence[Reference], search_roots: Sequence[Path], *,
     The order of the tests is the whole design:
 
     1. A reference the timeline carries no media for is GENERATED and stops
-       there. No search would ever satisfy it.
+       there. No search would ever satisfy it. Real media with no usable
+       local path (offline, an image sequence, a URL) is OFFLINE,
+       UNSUPPORTED or EXTERNAL and stops there too, but counts as unresolved.
     2. Anything under a search root with that basename wins, whatever path the
        timeline asked for. This is what stops a file being copied again under
        a second name because an editor addressed it on their own volume.
        Several copies that are byte-identical are still PRESENT, with the
        duplicates recorded; several that differ are AMBIGUOUS and nothing is
-       chosen.
+       chosen. Two limits on "wins":
+
+       * When the timeline's own path is readable it is the truth. The file
+         under the root counts only if it holds the same bytes; otherwise the
+         original is a GAP and the other file is reported as differing.
+       * Distinct timeline references that share a basename must resolve to
+         distinct files. Without content evidence one file cannot be shown to
+         be any particular one of them, so each such reference is AMBIGUOUS
+         rather than all of them mapping to the one file.
     3. A camera original with no decoder may be satisfied by a proxy already
        under the roots, if the frame counts agree.
     4. Only then, a file readable where the timeline says it is, is a GAP: the
@@ -428,50 +581,135 @@ def resolve(references: Sequence[Reference], search_roots: Sequence[Path], *,
     if table is None:
         table = index(roots, excludes)
 
-    resolutions: list[Resolution] = []
+    base = Path(os.path.abspath(timeline)).parent if timeline else None
+    prepared: list[Reference] = []
     for reference in references:
+        if (base is not None and reference.target is not None
+                and not reference.target.anchor):
+            reference = replace(reference, target=_anchored(reference.target, base))
+        prepared.append(reference)
+
+    # How many *distinct* files the timeline asks for under each basename.
+    # Lowercased like the index, so A.MOV and a.mov from a case-sensitive
+    # volume count as two references competing for one name.
+    wanted: dict[str, set[str]] = {}
+    for reference in prepared:
+        if _is_file_reference(reference):
+            wanted.setdefault(reference.target.name.lower(), set()).add(
+                os.path.normcase(str(reference.target)))
+
+    resolutions: list[Resolution] = []
+    for reference in prepared:
+        siblings = (len(wanted.get(reference.target.name.lower(), ()))
+                    if _is_file_reference(reference) else 1)
         resolutions.append(
-            _resolve_one(reference, table, substitute_proxies, algorithm)
+            _resolve_one(reference, table, substitute_proxies, algorithm, siblings)
         )
     return Report(timeline=Path(timeline) if timeline else Path(),
                   search_roots=roots, resolutions=resolutions)
 
 
+def _is_file_reference(reference: Reference) -> bool:
+    return (not reference.generated and reference.kind == KIND_FILE
+            and reference.target is not None)
+
+
+def _matches(target: Path, candidate: Path, algorithm: str) -> bool:
+    """Whether a readable timeline target and a candidate hold the same bytes.
+
+    The same file is trivially a match and is not hashed: a reference
+    addressed by its real path under the root is the common case.
+    """
+    try:
+        if os.path.samefile(target, candidate):
+            return True
+    except OSError:
+        return False
+    return _same_file([target, candidate], algorithm)
+
+
 def _resolve_one(reference: Reference, table: dict[str, list[Path]],
-                 substitute_proxies: bool, algorithm: str) -> Resolution:
-    if reference.generated or reference.target is None:
+                 substitute_proxies: bool, algorithm: str,
+                 siblings: int = 1) -> Resolution:
+    if reference.generated or reference.kind == KIND_GENERATED:
         return Resolution(reference, Status.GENERATED,
                           note="the timeline carries no media for this")
 
+    if reference.kind == KIND_SEQUENCE:
+        return Resolution(
+            reference, Status.UNSUPPORTED,
+            note=(f"image sequence at {reference.url or 'an unknown location'}; "
+                  "sequences are not resolved, check it by hand"))
+
+    if reference.kind == KIND_EXTERNAL:
+        return Resolution(
+            reference, Status.EXTERNAL,
+            note=f"not a local file: {reference.url}; not searched or copied")
+
+    if reference.kind == KIND_UNSUPPORTED:
+        return Resolution(
+            reference, Status.UNSUPPORTED,
+            note=f"{reference.url or 'unknown'} media reference is not supported")
+
+    if reference.kind == KIND_OFFLINE or reference.target is None:
+        # Searching by the clip's name would be a guess at which file the
+        # editor meant; offering the hits is useful, choosing one is not.
+        hits = table.get(reference.name.lower(), [])
+        note = "the timeline has no media path for this clip (offline)"
+        if hits:
+            note += (f"; {len(hits)} file(s) of this name under the search "
+                     "roots, not chosen")
+        return Resolution(reference, Status.OFFLINE, alternatives=list(hits),
+                          note=note)
+
     target = reference.target
     candidates = table.get(target.name.lower(), [])
+    readable = target.is_file()
 
-    if len(candidates) == 1:
-        return Resolution(reference, Status.PRESENT, location=candidates[0])
-
-    if len(candidates) > 1:
-        if _same_file(candidates, algorithm):
-            best = _closest(candidates, target)
-            others = [c for c in candidates if c != best]
-            return Resolution(
-                reference, Status.PRESENT, location=best, alternatives=others,
-                note=f"{len(candidates)} byte-identical copies; either resolves",
-            )
+    if candidates:
         best = _closest(candidates, target)
         others = [c for c in candidates if c != best]
-        return Resolution(
-            reference, Status.AMBIGUOUS, location=None,
-            alternatives=[best, *others],
-            note=(f"{len(candidates)} different files share this name; "
-                  f"closest to the timeline path is {best}"),
-        )
+        if others and not _same_file(candidates, algorithm):
+            return Resolution(
+                reference, Status.AMBIGUOUS, location=None,
+                alternatives=[best, *others],
+                note=(f"{len(candidates)} different files share this name; "
+                      f"closest to the timeline path is {best}"),
+            )
+        copies = (f"{len(candidates)} byte-identical copies; either resolves"
+                  if others else "")
 
+        if readable:
+            if _matches(target, best, algorithm):
+                return Resolution(reference, Status.PRESENT, location=best,
+                                  alternatives=others, note=copies)
+            # The "MISSING MEDIA" slate case: the real file is reachable and
+            # the one under the root of that name is something else.
+            return Resolution(
+                reference, Status.GAP, location=target,
+                alternatives=list(candidates),
+                note=(f"a different file of this name is under the search roots "
+                      f"({best}); the timeline's original is copied"),
+            )
+
+        if siblings > 1:
+            return Resolution(
+                reference, Status.AMBIGUOUS, location=None,
+                alternatives=[best, *others],
+                note=(f"{siblings} different timeline references are named "
+                      f"{target.name} but the search roots hold only one file "
+                      "of that name; not chosen"),
+            )
+        return Resolution(reference, Status.PRESENT, location=best,
+                          alternatives=others, note=copies)
+
+    proxy_note = ""
     if substitute_proxies and companions.needs_proxy(target):
         proxy = _proxy_for(target, table)
         if proxy is not None:
-            original = target if target.is_file() else None
-            note = _substitution_note(original, proxy)
-            if note is None:
+            original = target if readable else None
+            verdict, note = _substitution(original, proxy)
+            if verdict == "mismatch":
                 return Resolution(
                     reference, Status.AMBIGUOUS, location=None,
                     alternatives=[proxy],
@@ -479,33 +717,61 @@ def _resolve_one(reference: Reference, table: dict[str, list[Path]],
                           "does not match the original; relinking to it would "
                           "move every edit point"),
                 )
-            return Resolution(reference, Status.SUBSTITUTED, location=proxy,
-                              note=note)
+            if verdict in ("verified", "unverified"):
+                return Resolution(reference, Status.SUBSTITUTED, location=proxy,
+                                  note=note, unverified=verdict == "unverified")
+            # "unusable": the stand-in could not be read as media at all.
+            proxy_note = note
 
-    if target.is_file():
-        return Resolution(reference, Status.GAP, location=target)
+    if readable:
+        return Resolution(reference, Status.GAP, location=target, note=proxy_note)
 
-    return Resolution(reference, Status.MISSING, location=None,
-                      note=f"not under any search root, and not at {target}")
+    note = f"not under any search root, and not at {target}"
+    if proxy_note:
+        note += f"; {proxy_note}"
+    return Resolution(reference, Status.MISSING, location=None, note=note)
 
 
-def _substitution_note(original: Path | None, proxy: Path) -> str | None:
+def _substitution(original: Path | None, proxy: Path) -> tuple[str, str]:
     """Whether `proxy` may stand in for `original`, and why.
 
-    None means refuse. A proxy is only a safe stand-in if it is the same length
-    as what it replaces, frame for frame: relink a clip to a shorter file and
-    every edit point after it moves. Where the original cannot be reached the
-    check cannot be made, and the note says so rather than implying agreement.
+    Returns a verdict and a note. The verdict is "verified" (frame counts
+    agree), "unverified" (the proxy is readable media but the original's count
+    could not be got), "mismatch" (the counts disagree: refuse), or
+    "unusable" (the proxy itself yields no frame count, so nothing shows it is
+    media at all, let alone this media: it must not stand in).
+
+    A proxy is only a safe stand-in if it is the same length as what it
+    replaces, frame for frame: relink a clip to a shorter file and every edit
+    point after it moves.
     """
-    if original is None:
-        return "proxy stands in for an original that is not reachable; frames unverified"
-    want = _frames(original)
     got = _frames(proxy)
-    if want is None or got is None:
-        return "proxy stands in for the original; frame counts unverified"
+    if got is None:
+        return "unusable", (f"same-stem file {proxy} could not be read as media "
+                            "(no frame count), so it does not stand in")
+    if original is None:
+        return "unverified", ("proxy stands in for an original that is not "
+                              "reachable; frames unverified")
+    want = _frames(original)
+    if want is None:
+        return "unverified", "proxy stands in for the original; frame counts unverified"
     if want != got:
-        return None
-    return f"proxy matches the original frame for frame ({want} frames)"
+        return "mismatch", ""
+    return "verified", f"proxy matches the original frame for frame ({want} frames)"
+
+
+def describe(resolution: Resolution) -> str:
+    """One line for a report or a summary: status, name, uses and why."""
+    label = ("unverified proxy" if resolution.unverified
+             else resolution.status.value)
+    text = f"{label}: {resolution.name} (used {resolution.reference.uses}x)"
+    if resolution.status is Status.SUBSTITUTED and resolution.location is not None:
+        text += f", stood in for by {resolution.location}"
+    elif resolution.reference.target is not None:
+        text += f", timeline path {resolution.reference.target}"
+    if resolution.note:
+        text += f"; {resolution.note}"
+    return text
 
 
 # --------------------------------------------------------------------------
