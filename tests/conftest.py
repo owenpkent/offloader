@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import datetime as _dt
+import gc
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -15,6 +17,24 @@ from offloader.models import (
     MediaInfo,
     VerificationMode,
 )
+
+
+@pytest.fixture(autouse=True)
+def _finalise_qt_objects_on_the_main_thread():
+    """Collect garbage on the main thread after every test once Qt is up.
+
+    GUI tests leave parentless widgets to the garbage collector. The collector
+    runs on whichever thread happens to allocate, and a later engine test's
+    reader thread was the one to trigger it on macOS, so QWidget destructors
+    ran off the GUI thread and the whole pytest process died with a
+    segmentation fault inside an unrelated retry test. Collecting here keeps
+    the destructors on the thread Qt requires.
+    """
+    yield
+    widgets = sys.modules.get("PySide6.QtWidgets")
+    if widgets is not None and widgets.QApplication.instance() is not None:
+        widgets.QApplication.processEvents()
+        gc.collect()
 
 
 @pytest.fixture
