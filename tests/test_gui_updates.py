@@ -197,24 +197,25 @@ def _listed(tag: str) -> dict:
     ([_listed("v0.1.0"), _listed("v0.9.0"), _listed("v0.6.0")], "found"),
     ([_listed("v0.1.0"), _listed("v0.5.0")], "up to date"),
     ([], "up to date"),
-    # Anything that is not a collection of releases.
+    # A single release object is still a release.
+    (_listed("v0.9.0"), "found"),
+    # Anything that is neither: an error body, a list of non-releases, text.
     ({"message": "API rate limit exceeded"}, "failed"),
-    (_listed("v0.9.0"), "failed"),
     (["v0.9.0"], "failed"),
     ("<html>a proxy login page</html>", "failed"),
     (None, "failed"),
 ])
 def test_the_feed_check_separates_its_three_outcomes(payload, outcome):
-    """At the source, where the distinction is made. `check_feed` raises for a
+    """At the source, where the distinction is made. `find_release` raises for a
     feed it could not read and returns None only when the feed answered and had
     nothing newer.
 
     REGRESSION. The feed became the releases collection, and this check still
     accepted only a single object, so every normal response was refused before
     any version was compared: the app reported a feed failure on every check,
-    and `check()` swallowed it and never offered an update. A single object is
-    what GitHub sends from that endpoint as an error body, so it is the
-    malformed case now, not the normal one."""
+    and `check()` swallowed it and never offered an update. An object without
+    a `tag_name` is what GitHub sends from that endpoint as an error body, so
+    it is the malformed case; one with a `tag_name` is a single release."""
     from offloader import update
 
     def fetch(_url):
@@ -222,10 +223,10 @@ def test_the_feed_check_separates_its_three_outcomes(payload, outcome):
 
     if outcome == "failed":
         with pytest.raises(FeedError):
-            update.check_feed("0.5.0", fetch=fetch)
+            update.find_release("0.5.0", fetch=fetch)
         assert update.check("0.5.0", fetch=fetch) is None
         return
-    result = update.check_feed("0.5.0", fetch=fetch)
+    result = update.find_release("0.5.0", fetch=fetch)
     assert (result is not None) is (outcome == "found")
     if outcome == "found":
         assert result.version == "0.9.0"
@@ -234,7 +235,7 @@ def test_the_feed_check_separates_its_three_outcomes(payload, outcome):
         assert update.check("0.5.0", fetch=fetch) == result
 
 
-def test_the_default_feed_is_the_collection_check_feed_accepts():
+def test_the_default_feed_is_the_collection_find_release_accepts():
     """The two halves of the parent correction, held together: the URL that
     returns a collection, and the check that reads one."""
     from offloader import update
@@ -246,7 +247,7 @@ def test_the_default_feed_is_the_collection_check_feed_accepts():
         seen.append(url)
         return [_listed("v0.9.0")]
 
-    assert update.check_feed("0.5.0", fetch=fetch).version == "0.9.0"
+    assert update.find_release("0.5.0", fetch=fetch).version == "0.9.0"
     assert seen == [update.FEED_URL]
 
 
@@ -257,7 +258,7 @@ def test_a_fetch_that_raises_becomes_a_feed_error():
         raise OSError("name or service not known")
 
     with pytest.raises(FeedError, match="could not reach"):
-        update.check_feed("0.5.0", fetch=fetch)
+        update.find_release("0.5.0", fetch=fetch)
     # The never-raising form is unchanged, for callers with nowhere to put it.
     assert update.check("0.5.0", fetch=fetch) is None
 

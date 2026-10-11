@@ -31,8 +31,8 @@ from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal
 from .._version import __version__
 from ..update import UpdateError
 from ..update import apply as apply_release
-from ..update import check_feed as check_release
 from ..update import download as download_release
+from ..update import find_release as check_release
 from ..update import verify as verify_release
 
 #: How often an automatic check may run, in milliseconds. Long, because a

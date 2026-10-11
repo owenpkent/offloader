@@ -334,15 +334,15 @@ def test_a_clip_with_dialogue_is_not_counted_twice(capsys):
 
 
 def _feed(monkeypatch, result):
-    """Stand in for `update.check_feed`: return `result`, or raise it."""
+    """Stand in for `update.find_release`: return `result`, or raise it."""
     from offloader import update
 
-    def check_feed(*args, **kwargs):
+    def find_release(*args, **kwargs):
         if isinstance(result, BaseException):
             raise result
         return result
 
-    monkeypatch.setattr(update, "check_feed", check_feed)
+    monkeypatch.setattr(update, "find_release", find_release)
 
 
 def test_update_names_a_newer_release(monkeypatch, capsys):
@@ -372,7 +372,7 @@ def test_update_failed_fetch_is_an_error_not_a_confirmation(monkeypatch, capsys,
     from offloader.update import FeedError
 
     _feed(monkeypatch, FeedError(error))
-    assert cli.main(["update"]) == 2
+    assert cli.main(["update"]) == 5
     captured = capsys.readouterr()
     assert "newest" not in captured.out + captured.err
     assert "could not check for updates" in captured.err
@@ -386,7 +386,7 @@ def test_update_failed_fetch_through_the_real_feed_check(monkeypatch, capsys):
         raise OSError("network is unreachable")
 
     monkeypatch.setattr(update.urllib.request, "urlopen", unreachable)
-    assert cli.main(["update"]) == 2
+    assert cli.main(["update"]) == 5
     captured = capsys.readouterr()
     assert "newest" not in captured.out
     assert "network is unreachable" in captured.err

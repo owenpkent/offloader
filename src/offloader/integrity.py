@@ -22,6 +22,8 @@ import os
 import platform
 from pathlib import Path
 
+from . import longpath
+
 _WINDOWS = platform.system() == "Windows"
 
 # CreateFileW constants
@@ -46,7 +48,9 @@ def _evict_windows(path: Path) -> bool:
     kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
 
     handle = kernel32.CreateFileW(
-        str(path), _GENERIC_READ, _FILE_SHARE_READ | _FILE_SHARE_WRITE,
+        # Through longpath, or a name Win32 rewrites (a trailing dot, `NUL`)
+        # evicts some other file, or none.
+        longpath.extended(path), _GENERIC_READ, _FILE_SHARE_READ | _FILE_SHARE_WRITE,
         None, _OPEN_EXISTING, _FILE_FLAG_NO_BUFFERING, None,
     )
     if not handle or handle == _INVALID_HANDLE or handle == 2 ** 64 - 1:
