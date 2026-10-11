@@ -1,4 +1,4 @@
-"""Main window: mode switch, drive panel, and the queue."""
+"""Main window: header, drive panel, the job panel, and the queue."""
 
 from __future__ import annotations
 
@@ -8,32 +8,28 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
-    QButtonGroup,
     QMainWindow,
     QMessageBox,
     QSplitter,
-    QStackedWidget,
     QVBoxLayout,
-    QWidget,
 )
 
 from .. import PRODUCT_NAME, __version__, engine, history, probe, thumbs
 from ..config import config_file, read_json, write_json
-from ..presets import Preset, PresetStore
+from ..presets import Preset
 from ..util import format_size
 from . import theme
 from .drives import DrivesPanel
-from .preset_mode import PresetModePanel
+from .job_panel import JobPanel
 from .queue_view import QueuePanel, reveal
-from .simple_mode import SimpleModePanel
-from .widgets import button, label, row
+from .widgets import Backdrop, Led, card, label, row
 from .worker import JobState, QueueController
 
 SETTINGS_FILE = "settings.json"
 DEFAULT_SETTINGS = {
     "sound_on_completion": True,
     "warn_on_duplicate": True,
-    "mode": "preset",
+    "job": {},
 }
 
 
@@ -41,12 +37,11 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle(f"{PRODUCT_NAME} {__version__}")
-        self.resize(1280, 840)
-        self.setMinimumSize(980, 640)
+        self.resize(1280, 800)
+        self.setMinimumSize(1024, 720)
 
         self.settings = {**DEFAULT_SETTINGS,
                          **read_json(config_file(SETTINGS_FILE), {})}
-        self.store = PresetStore()
         self.controller = QueueController(self)
         self.controller.jobFinished.connect(self._on_job_finished)
         self.controller.jobStarted.connect(lambda _: self._update_status())
@@ -54,14 +49,11 @@ class MainWindow(QMainWindow):
         self.controller.itemChanged.connect(lambda _: self._update_status())
 
         # ----------------------------------------------------------- panels
-        self.simple = SimpleModePanel()
-        self.simple.runRequested.connect(self._enqueue_simple)
-        self.presets = PresetModePanel(self.store)
-        self.presets.runRequested.connect(self._enqueue_preset)
-
-        self.stack = QStackedWidget()
-        self.stack.addWidget(self.presets)
-        self.stack.addWidget(self.simple)
+        self.job = JobPanel()
+        self.job.apply_options(self.settings.get("job") or {})
+        self.job.runRequested.connect(self._enqueue)
+        self.job.optionsChanged.connect(
+            lambda: self._save_setting("job", self.job.options()))
 
         self.drives = DrivesPanel()
         self.drives.useAsSource.connect(self._set_source)
@@ -69,58 +61,47 @@ class MainWindow(QMainWindow):
 
         self.queue = QueuePanel(self.controller)
 
+        # One secondary surface at a time, so the screen never overflows
+        # (docs/ui-philosophy.md, rule 3).
+        self.job.advancedToggled.connect(
+            lambda on: self.queue.set_expanded(False) if on else None)
+        self.queue.expandedChanged.connect(
+            lambda on: self.job.set_advanced_open(False) if on else None)
+
         # ----------------------------------------------------------- chrome
-        self._preset_button = button("Presets")
-        self._simple_button = button("Simple")
-        for widget in (self._preset_button, self._simple_button):
-            widget.setProperty("mode", "true")
-            widget.setCheckable(True)
-        group = QButtonGroup(self)
-        group.setExclusive(True)
-        group.addButton(self._preset_button, 0)
-        group.addButton(self._simple_button, 1)
-        group.idClicked.connect(self._set_mode)
+        self._activity_led = Led(theme.FG_FAINT)
+        self._activity = label("IDLE", "readout")
 
         header = row(
-            label(PRODUCT_NAME, "title"),
-            24,
-            self._preset_button,
-            self._simple_button,
+            label(PRODUCT_NAME.upper(), "wordmark"),
+            label(f"v{__version__}", "version"),
             None,
+            self._activity_led,
+            self._activity,
+            spacing=10,
         )
 
-        left = QWidget()
-        left_layout = QVBoxLayout(left)
-        left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.addWidget(self.drives)
-        left.setMinimumWidth(240)
-        left.setMaximumWidth(360)
+        left = card(self.drives, margins=14, role="rail")
+        left.setMinimumWidth(290)
+        left.setMaximumWidth(380)
 
         upper = QSplitter(Qt.Horizontal)
         upper.addWidget(left)
-        upper.addWidget(self.stack)
+        upper.addWidget(card(self.job, margins=18, role="rail"))
         upper.setStretchFactor(1, 1)
-        upper.setSizes([280, 900])
+        upper.setSizes([290, 900])
 
-        vertical = QSplitter(Qt.Vertical)
-        vertical.addWidget(upper)
-        vertical.addWidget(self.queue)
-        vertical.setStretchFactor(0, 3)
-        vertical.setStretchFactor(1, 2)
-        vertical.setSizes([520, 300])
-
-        central = QWidget()
+        central = Backdrop()
         layout = QVBoxLayout(central)
-        layout.setContentsMargins(18, 14, 18, 14)
+        layout.setContentsMargins(18, 12, 18, 14)
         layout.setSpacing(12)
         layout.addWidget(header)
-        layout.addWidget(vertical, 1)
+        layout.addWidget(upper, 1)
+        layout.addWidget(card(self.queue, margins=14, role="rail"), 0)
         self.setCentralWidget(central)
 
         self._build_menu()
         self.statusBar().showMessage(self._environment_summary())
-
-        self._set_mode(1 if self.settings.get("mode") == "simple" else 0)
         self.drives.start()
 
     # ---------------------------------------------------------------- chrome
@@ -140,12 +121,6 @@ class MainWindow(QMainWindow):
         quit_action.setShortcut(QKeySequence.Quit)
         quit_action.triggered.connect(self.close)
         job_menu.addAction(quit_action)
-
-        view_menu = self.menuBar().addMenu("&View")
-        for index, name in ((0, "Preset mode"), (1, "Simple mode")):
-            action = QAction(name, self)
-            action.triggered.connect(lambda _=False, i=index: self._set_mode(i))
-            view_menu.addAction(action)
 
         options_menu = self.menuBar().addMenu("&Options")
         self._sound_action = QAction("Sound on completion", self, checkable=True)
@@ -175,12 +150,6 @@ class MainWindow(QMainWindow):
         self.settings[key] = value
         write_json(config_file(SETTINGS_FILE), self.settings)
 
-    def _set_mode(self, index: int) -> None:
-        self.stack.setCurrentIndex(index)
-        self._preset_button.setChecked(index == 0)
-        self._simple_button.setChecked(index == 1)
-        self._save_setting("mode", "simple" if index else "preset")
-
     def _environment_summary(self) -> str:
         missing = []
         if probe.ffprobe_path() is None:
@@ -202,23 +171,12 @@ class MainWindow(QMainWindow):
 
     # ---------------------------------------------------------------- routing
     def _set_source(self, path: Path) -> None:
-        self.simple.set_source(path)
-        self.presets.set_source(path)
+        self.job.set_source(path)
 
     def _add_destination(self, path: Path) -> None:
-        self.simple.add_destination(path)
-        if self.stack.currentIndex() == 0:
-            self.statusBar().showMessage(
-                f"{path} added to Simple mode destinations. "
-                "Edit a preset to add it there.", 6000)
+        self.job.add_destination(path)
 
     # ---------------------------------------------------------------- queueing
-    def _enqueue_simple(self, source: Path, preset: Preset, name: str) -> None:
-        self._enqueue(source, preset, name)
-
-    def _enqueue_preset(self, source: Path, preset: Preset) -> None:
-        self._enqueue(source, preset, None)
-
     def _enqueue(self, source: Path, preset: Preset, name: str | None) -> None:
         if not self._check_destinations(source, preset):
             return
@@ -231,9 +189,8 @@ class MainWindow(QMainWindow):
         """Refuse destinations that sit inside the source, and warn when one
         does not have room."""
         if not preset.destinations:
-            QMessageBox.warning(
-                self, "No destinations",
-                f"“{preset.name}” has no destinations. Edit it to add one.")
+            QMessageBox.warning(self, "No destinations",
+                                "Add at least one destination.")
             return False
 
         try:
@@ -297,6 +254,7 @@ class MainWindow(QMainWindow):
     # ---------------------------------------------------------------- events
     def _update_status(self) -> None:
         running = [i for i in self.controller.items if i.state is JobState.RUNNING]
+        paused = [i for i in self.controller.items if i.state is JobState.PAUSED]
         queued = [i for i in self.controller.items if i.state is JobState.QUEUED]
         if running:
             item = running[0]
@@ -305,14 +263,28 @@ class MainWindow(QMainWindow):
                 f"— {item.fraction * 100:.0f}%"
                 + (f", {len(queued)} waiting" if queued else "")
             )
+            self._set_activity(theme.ACCENT, f"{item.stage.upper() or 'RUNNING'}  "
+                               f"{item.fraction * 100:3.0f}%", pulse=True)
+        elif paused:
+            self._set_activity(theme.WARN, "PAUSED")
         elif queued:
             self.statusBar().showMessage(f"{len(queued)} job(s) waiting")
+            self._set_activity(theme.FG_MUTED, f"{len(queued)} QUEUED")
+        else:
+            self._set_activity(theme.FG_FAINT, "IDLE")
+
+    def _set_activity(self, colour: str, text: str, pulse: bool = False) -> None:
+        self._activity_led.set_colour(colour, pulse=pulse)
+        self._activity.setText(text)
+        self._activity.setProperty(
+            "role", "readout-accent" if colour == theme.ACCENT else "readout")
+        self._activity.style().unpolish(self._activity)
+        self._activity.style().polish(self._activity)
 
     def _on_job_finished(self, identifier: int) -> None:
         item = self.controller.find(identifier)
         if item is None:
             return
-        self.presets.reload()      # refresh use counts
 
         if self.settings.get("sound_on_completion", True):
             QApplication.beep()
