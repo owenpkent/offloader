@@ -23,6 +23,7 @@ from ..util import (
     format_sample_rate,
     format_size,
 )
+from .csv_report import UNRESOLVED_TITLE
 
 _STYLE = """
 :root {
@@ -67,6 +68,9 @@ tbody tr:nth-child(odd) { background: var(--band); }
 td.name { color: var(--label); font-weight: bold; white-space: nowrap; }
 .status-Verified { color: var(--ok); font-weight: bold; }
 .status-Failed { color: var(--bad); font-weight: bold; }
+.unresolved { border: 2px solid var(--bad); padding: 8px 12px; margin-top: 14px; }
+.unresolved h2 { color: var(--bad); font-size: 16px; font-weight: bold; margin: 0 0 6px; }
+.unresolved li { font-size: 11px; word-break: break-all; }
 footer { margin-top: 28px; border-top: 1px solid var(--rule); padding-top: 8px;
          font-size: 10px; color: var(--muted); }
 .wrap { overflow-x: auto; }
@@ -243,6 +247,14 @@ def write_html(job: Job, path: Path, *, thumbnails: bool = True, **_options) -> 
         for i, root in enumerate(job.destination_roots, start=1)
     )
 
+    # Straight under the summary, above the clips: what the job did not
+    # supply is the first thing a reader of a partial cut needs to see.
+    unresolved = ""
+    if job.unresolved:
+        items = "".join(f"<li>{_esc(line)}</li>" for line in job.unresolved)
+        unresolved = (f'<div class="unresolved"><h2>{_esc(UNRESOLVED_TITLE)} '
+                      f'({len(job.unresolved)})</h2><ul>{items}</ul></div>')
+
     document = f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -252,6 +264,7 @@ def write_html(job: Job, path: Path, *, thumbnails: bool = True, **_options) -> 
 <div class="summary">
 {''.join(f'<div><b>{_esc(k)}:</b> {_esc(v)}</div>' for k, v in summary if v)}
 </div>
+{unresolved}
 {''.join(clips)}
 <h2>All file details for root source: {_esc(job.name)}</h2>
 <div class="paths"><div><b>Full Path:</b> {_esc(job.source_root)}</div>{destinations}</div>
