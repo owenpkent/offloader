@@ -182,7 +182,7 @@ exists precisely so it can be checked independently.
 | Re-offloading a card already pulled | Fingerprinted by name and size, warned with the earlier job's name and date. Only successful offloads count. |
 | Card pulled mid-copy | `OSError` fails that file; the partial is deleted; other files are unaffected. |
 | Quit during an offload | Confirmed, then cancelled cleanly, partials removed. |
-| Cancel | Deletes the in-flight partial rather than leaving plausible-looking media. |
+| Cancel | Deletes the in-flight partial rather than leaving plausible-looking media. Pause and cancel are also honoured during the `--paranoid` source reread and the full-verification destination reread, so a cancel there never promotes the file. |
 | Report writer crashing | Caught; a bad PDF never invalidates a good copy. |
 | Corrupt config file | Treated as empty. Config must never stand between someone and their card. |
 
@@ -212,6 +212,9 @@ known.
   source that had been silent for fifteen seconds, and stay that far short for
   as long as the outage lasted. It is the number someone reads to decide
   whether to go and look at the cable. A cancel is honoured during it too.
+  The stalled stage clears as soon as bytes resume, not when the whole chunk
+  has assembled, and time spent paused is not counted as silence from the
+  source.
   What still cannot happen is aborting the read itself, so *recovery* waits on
   the operating system to turn the hang into one of the codes above — on Windows, the SMB
   client's `SessionTimeout`, 60 seconds by default. No data is at risk in the

@@ -324,3 +324,69 @@ def test_a_cancel_is_noticed_while_a_read_hangs(tmp_path: Path, monkeypatch):
     assert elapsed < hang / 2, (
         f"waited {elapsed:.1f}s for a cancel while a read slept {hang}s")
     assert job.cancelled
+
+
+def test_the_stalled_stage_clears_when_sub_reads_resume(
+        tmp_path: Path, monkeypatch):
+    """After a stall the link recovers but is still slow: later sub-reads land
+    within `stall_after`, yet the whole 8 MiB chunk is not assembled for a
+    while. The queue must leave "stalled" as soon as bytes flow again, not when
+    the chunk finally arrives, and byte counts must not move until it does."""
+    monkeypatch.setattr(engine, "STALL_POLL", 0.02)
+    card = tmp_path / "card"
+    card.mkdir()
+    (card / "A001_C001.mov").write_bytes(b"\x5a" * (3 << 20))
+
+    events: list[tuple[float, str, int]] = []
+    # One hang past the threshold, then three slow-but-live sub-reads.
+    _pace_source_reads(monkeypatch, card, [0.6, 0.15, 0.15, 0.15])
+    job = engine.run(
+        card, _options(tmp_path, stall_after=0.3),
+        progress=lambda e: events.append(
+            (time.monotonic(), e.stage, e.job_bytes_done)))
+    monkeypatch.undo()
+
+    stages = [stage for _, stage, _ in events]
+    assert "stalled" in stages
+    # "stalled" repeats every poll while silent; find where it stops.
+    after = [e for e in events[stages.index("stalled"):] if e[1] != "stalled"]
+    assert after, "nothing followed the stalled events"
+    _, first_stage, first_done = after[0]
+    assert first_stage == "copy", f"stage after stall was {first_stage!r}"
+    assert first_done == 0, "the stage cleared only once the chunk landed"
+    # The chunk itself still arrives afterwards and is counted.
+    assert any(done == 3 << 20 for _, _, done in after[1:])
+    # Recovery means no further "stalled" once the stage has cleared.
+    last_stalled = max(i for i, st in enumerate(stages) if st == "stalled")
+    assert events[last_stalled][2] == 0
+    assert job.warnings, "the stall that did happen should still be reported"
+
+
+def test_paused_time_is_not_counted_as_a_stall(tmp_path: Path, monkeypatch):
+    """A deliberate pause on a healthy source must not read as the link
+    dropping when the job resumes."""
+    monkeypatch.setattr(engine, "STALL_POLL", 0.02)
+    card = tmp_path / "card"
+    card.mkdir()
+    payload = b"healthy " * 256
+    (card / "A001_C001.mov").write_bytes(payload)
+
+    control = engine.JobControl()
+    stages: list[str] = []
+    paused_once = []
+
+    def progress(event):
+        stages.append(event.stage)
+        if event.stage == "copy" and not paused_once:
+            paused_once.append(True)
+            control.pause()
+            threading.Timer(0.7, control.resume).start()
+
+    job = engine.run(card, _options(tmp_path, stall_after=0.3),
+                     control=control, progress=progress)
+
+    assert paused_once, "the pause never happened"
+    assert "stalled" not in stages
+    assert not any("stalled" in w for w in job.warnings)
+    copied = list((tmp_path / "dest").rglob("A001_C001.mov"))
+    assert copied and copied[0].read_bytes() == payload

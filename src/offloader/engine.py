@@ -303,7 +303,8 @@ def _copy_fanout(source: Path, targets: Sequence[Path], algorithm: str,
                  control: JobControl | None = None,
                  retry: retry_mod.RetryPolicy = retry_mod.NO_RETRY,
                  on_stall: Callable[[float], None] | None = None,
-                 stall_after: float = 0.0) -> _CopyResult:
+                 stall_after: float = 0.0,
+                 on_resume: Callable[[], None] | None = None) -> _CopyResult:
     """Stream `source` into every target at once.
 
     `targets` are the *in-flight* paths — the caller renames them into place
@@ -323,6 +324,11 @@ def _copy_fanout(source: Path, targets: Sequence[Path], algorithm: str,
     `STALL_POLL` for as long as nothing is arriving. It needs no thread of its
     own: the consumer below already runs on a different thread from the read it
     is waiting on, which is the only thing a watchdog requires.
+
+    `on_resume` is called once when bytes start arriving again after a stall was
+    reported, so the caller can leave the stalled state without waiting for the
+    whole chunk to assemble. A later silence reports a stall afresh. Time spent
+    paused by `control` is not counted as silence from the source.
     """
     source = Path(source)
     src_hasher = new_hasher(algorithm)
@@ -402,7 +408,11 @@ def _copy_fanout(source: Path, targets: Sequence[Path], algorithm: str,
 
             while not stop.is_set():
                 if control is not None:
+                    was_paused = control.paused
                     control.checkpoint()
+                    if was_paused:
+                        # Time spent paused is not the source's silence.
+                        last_byte[0] = max(last_byte[0], time.monotonic())
                 try:
                     chunk, attempts = retry_mod.call(read_one, retry,
                                                      before_retry=recover)
@@ -449,6 +459,7 @@ def _copy_fanout(source: Path, targets: Sequence[Path], algorithm: str,
         thread.start()
         started = True
 
+        stall_reported = False
         while True:
             try:
                 chunk = chunks.get(timeout=STALL_POLL)
@@ -460,14 +471,29 @@ def _copy_fanout(source: Path, targets: Sequence[Path], algorithm: str,
                 if control is not None:
                     # A hung read never reaches the reader's own checkpoint, so
                     # without this a cancel waits on the operating system too.
+                    was_paused = control.paused
                     control.checkpoint()
+                    if was_paused:
+                        # Time spent paused is not the source's silence, so a
+                        # resume must not read the pre-pause timestamp as a
+                        # stall.
+                        last_byte[0] = max(last_byte[0], time.monotonic())
                 if stall_after and on_stall is not None:
                     idle = time.monotonic() - last_byte[0]
                     if idle >= stall_after:
                         on_stall(idle)
+                        stall_reported = True
+                    elif stall_reported:
+                        # Sub-reads are arriving again; say so now rather than
+                        # leaving "stalled" up until the whole chunk lands.
+                        stall_reported = False
+                        if on_resume is not None:
+                            on_resume()
                 continue
             if chunk is None:
                 break
+            # A whole chunk landing is the end of any reported stall too.
+            stall_reported = False
             src_hasher.update(chunk)
             for handle, hasher in zip(handles, dst_hashers, strict=True):
                 handle.write(chunk)
@@ -504,7 +530,8 @@ def _copy_fanout(source: Path, targets: Sequence[Path], algorithm: str,
                        recovered)
 
 
-def _confirm_source(source: Path, expected: str, algorithm: str) -> bool:
+def _confirm_source(source: Path, expected: str, algorithm: str,
+                    control: JobControl | None = None) -> bool:
     """Read `source` a second time and insist it hashes the same.
 
     The gap this closes: a read that returns wrong bytes *without raising*. The
@@ -519,9 +546,14 @@ def _confirm_source(source: Path, expected: str, algorithm: str) -> bool:
     Returns whether the page cache was actually dropped first. A second read
     served out of memory compares the first read against itself, so a caller
     that cannot evict has to say so rather than claim the guarantee.
+
+    With `control`, the reread honours pause and cancel at every chunk. A
+    cancel raises `JobCancelled` out of here, so the caller never promotes the
+    file on the strength of a confirmation that did not finish.
     """
     evicted = integrity.evict_from_cache(source)
-    again = hash_file(source, algorithm)
+    again = hash_file(source, algorithm,
+                      checkpoint=control.checkpoint if control else None)
     if again != expected:
         raise retry_mod.UnstableRead(
             f"two reads of {source.name} disagreed ({expected} then {again}) — "
@@ -743,13 +775,22 @@ def run(source_root: Path, options: OffloadOptions,
                                    counters.job_bytes_total,
                                    stalled_for=idle))
 
+            def note_resume(_idx=index, _src=source, _st=stat) -> None:
+                # Byte counts are unchanged: a partial sub-read is not a
+                # delivered chunk. Only the stage leaves "stalled".
+                emit(ProgressEvent(_idx, len(files), _src.name, "copy",
+                                   0, _st.st_size,
+                                   counters.job_bytes_done,
+                                   counters.job_bytes_total))
+
             def copy_once(_src=source, _partials=partials, _idx=index,
                           _st=stat) -> _CopyResult:
                 nonlocal reread_noted
                 result = _copy_fanout(_src, _partials, options.algorithm,
                                       on_chunk, control, options.retry,
                                       on_stall=note_stall,
-                                      stall_after=options.stall_after)
+                                      stall_after=options.stall_after,
+                                      on_resume=note_resume)
                 if not options.paranoid:
                     return result
                 emit(ProgressEvent(_idx, len(files), _src.name, "reread",
@@ -760,8 +801,11 @@ def run(source_root: Path, options: OffloadOptions,
                 # this call treats as transient: the honest response to a source
                 # that read differently twice is to read it again, not to guess
                 # which of the two was right.
+                # The checkpoint is here so a cancel during the reread stops
+                # the job before promotion instead of being ignored until the
+                # file is already in place and reported Verified.
                 evicted = _confirm_source(_src, result.source_checksum,
-                                          options.algorithm)
+                                          options.algorithm, control)
                 if not evicted and not reread_noted:
                     reread_noted = True
                     job.warnings.append(
@@ -817,6 +861,7 @@ def run(source_root: Path, options: OffloadOptions,
 
         # strict: a short dst_sums would silently drop a destination from the
         # report while its file sat on disk unrecorded.
+        cancelled_in_verify = False
         for root, target, partial, dst_sum in zip(dest_roots, targets, partials,
                                                   dst_sums, strict=True):
             destination = Destination(root=root, path=target, checksum=dst_sum or None)
@@ -846,8 +891,13 @@ def run(source_root: Path, options: OffloadOptions,
                             "memory rather than the device"
                         )
                     try:
+                        # The checkpoint lets a cancel during the reread stop
+                        # the job before promotion. JobCancelled is not an
+                        # OSError, so retry_mod.call lets it propagate.
                         dst_sum, verify_attempts = retry_mod.call(
-                            lambda p=partial: hash_file(p, options.algorithm),
+                            lambda p=partial: hash_file(
+                                p, options.algorithm,
+                                checkpoint=control.checkpoint if control else None),
                             options.retry,
                         )
                         if verify_attempts > 1:
@@ -856,6 +906,14 @@ def run(source_root: Path, options: OffloadOptions,
                                 f"{verify_attempts} — the destination may be "
                                 "failing")
                         destination.checksum = dst_sum or None
+                    except JobCancelled:
+                        # Nothing unpromoted survives. Destinations already
+                        # promoted were verified and stay; their partials
+                        # are gone, so discarding the whole list only
+                        # removes this one and the ones not yet reached.
+                        _discard(partials)
+                        cancelled_in_verify = True
+                        break
                     except OSError as exc:
                         destination.status = FileStatus.FAILED
                         destination.error = str(exc)
@@ -897,6 +955,12 @@ def run(source_root: Path, options: OffloadOptions,
                 pass
 
             entry.destinations.append(destination)
+
+        if cancelled_in_verify:
+            job.cancelled = True
+            if entry.destinations:
+                job.files.append(entry)
+            break
 
         if options.extra_probe:
             emit(ProgressEvent(index, len(files), source.name, "probe",
