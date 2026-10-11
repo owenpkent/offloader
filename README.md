@@ -110,7 +110,7 @@ offloader verify D:\video\080426\A001
 | `--profile P` | `media` (default: ffprobe, thumbnails, BRAW) or `data` (generic transfer, no media probing) |
 | `--generic` | shorthand for `--profile data` |
 | `--report FMT[,FMT]` | `pdf` (default), `csv`, `mhl`, `ascmhl`, `html` |
-| `--report-dir PATH` | override the report location |
+| `--report-dir PATH` | move the PDF, CSV and HTML; each destination still gets its own MHL inside it (the folder holds one only for the destination it sits in) |
 | `--thumbs N` | frames per clip, 0 to disable (default 4) |
 | `--name NAME` | job name; defaults to the source folder name, or the volume label for a card offloaded from its root |
 | `--logo PATH` | image for the PDF header |
@@ -121,15 +121,27 @@ offloader verify D:\video\080426\A001
 | `--control-file PATH` | make the job pausable from another terminal; see [Pausing a running job](#pausing-a-running-job) |
 | `--proxies-first` | copy the camera's proxy folders before the originals (default) |
 | `--originals-first` | copy in plain tree order instead |
+| `--replace-existing` | let a copy replace an existing destination file whose content differs; by default that file is kept and the copy fails (offload only) |
 | `--paranoid` | read each source file twice and compare (offload only) |
 | `--retries N` | attempts per failing read on a transient error (default 3, 1 disables) |
 | `--retry-wait SECONDS` | pause before the first retry, backing off after (default 2) |
 | `--no-probe` | skip ffprobe metadata and thumbnails |
 | `--quiet` | suppress progress |
 
-Exit status is `0` on success, `1` if any file failed verification, `2` on a
-usage or I/O error, `3` if a destination was refused as unsafe, `4` if a
-timeline could not be read for want of an adapter.
+Exit status for `offload` (and, where they apply, `resolve`, `report` and
+`verify`):
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Verified (or Copied under `--verify none`), and every report was written |
+| `1` | failed: a copy, verify or scan failure (a file failed, or a source folder could not be listed) |
+| `2` | error: usage, environment (such as a missing timeline adapter) or an unreadable manifest; nothing was attempted |
+| `3` | refused: an unsafe destination or control file; nothing was copied |
+| `4` | incomplete: nothing failed, but not everything asked for was verified (unresolved timeline references, an empty source, files skipped by `--skip-existing` and checked by size only) |
+| `5` | the copies verified but a report or manifest could not be written |
+| `130` | cancelled: Ctrl+C or a control-file cancel |
+
+`report` exits `5` when a report could not be written and `0` otherwise.
 
 ### Pausing a running job
 
@@ -164,7 +176,11 @@ a job polling between chunks can never read a half-written instruction.
 
 Starting a job also *claims* the path by writing `run` to it. A control file
 left saying `pause` by a previous job would otherwise stop the next one before
-it copied a byte, with nothing on screen to explain why.
+it copied a byte, with nothing on screen to explain why. The path is validated
+first and claiming never truncates anything that is not a control file: a path
+inside the source, on a selected media file, on a destination root, or naming an
+existing file that is not empty or a control word is refused before anything is
+written.
 
 Why a file rather than a signal or a keypress: Windows has almost no signal
 support beyond SIGINT, a detached job has no console to press a key in, and a
@@ -200,8 +216,12 @@ checksums and reports as a card.
 | `--csv PATH` | (`resolve`) write the full per-reference table |
 
 Every reference gets one status: `present`, `substituted`, `gap`, `ambiguous`,
-`missing` or `generated`. Only `gap` is copied. `resolve` exits non-zero if
-anything is `ambiguous` or `missing`.
+`missing`, `offline`, `unsupported`, `external` or `generated`. Only `gap` is
+copied. While anything is unresolved (every status but `present`, `gap` and
+`generated`, plus a proxy whose frame counts could not be checked), `resolve`
+exits 4 and `offload` copies the gaps, lists what it could not supply in the
+terminal and every report, calls the job `Incomplete` and exits 4. See
+[docs/timeline.md](docs/timeline.md).
 
 The part worth knowing before you trust it: **it refuses to choose between two
 files that share a name.** On the conform it was built against, 20 basenames
@@ -227,8 +247,11 @@ offloader verify PATH [--allow-cache] [--quiet]
 
 `PATH` is an `.mhl` file or a folder to search for them. Re-hashes everything the
 manifest lists and exits non-zero if anything is off, so a format script can gate
-on it. `--allow-cache` skips the page-cache eviction — faster, and may verify
-memory rather than the device.
+on it. An offload's manifest lists every file it scanned for that
+destination, including any that failed (recorded with no checksum when none
+could be taken), so a destination missing a clip fails here; every manifest
+under the folder is checked, earlier runs' included. `--allow-cache` skips the
+page-cache eviction: faster, and may verify memory rather than the device.
 
 For an ASC MHL history it also recomputes the directory content and structure
 hashes, which is the only check that catches a rename or a moved file — every

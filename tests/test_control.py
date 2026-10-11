@@ -543,3 +543,191 @@ def test_cancel_during_full_verification_reread_does_not_promote(
         progress, control)
 
     _assert_nothing_promoted(job, tmp_path)
+
+
+# ------------------------------------------------ an unsafe control-file path
+#
+# `--control-file` is user input, and `claim()` writes to it before the engine
+# has validated anything else. Each of these used to truncate the named file
+# to the five bytes of `run\n`, and the job then copied and "verified" it.
+
+_CLIP = bytes(range(256)) * 64          # 16,384 bytes of recognisable content
+
+
+def _card(tmp_path: Path) -> Path:
+    card = tmp_path / "card"
+    card.mkdir()
+    (card / "clip.mov").write_bytes(_CLIP)
+    return card
+
+
+def _offload_with_control(card: Path, dest: Path, control: Path) -> int:
+    from offloader import cli
+
+    return cli.main([
+        "offload", "--source", str(card), "--dest", str(dest),
+        "--control-file", str(control), "--no-probe", "--report", "csv",
+        "--quiet",
+    ])
+
+
+def _nothing_copied(dest: Path) -> None:
+    assert not list(dest.rglob("*.mov"))
+    assert not list(dest.rglob("*" + engine.PARTIAL_SUFFIX))
+
+
+def test_control_file_that_is_a_source_file_is_refused(tmp_path: Path, capsys):
+    card = _card(tmp_path)
+    dest = tmp_path / "dest"
+
+    code = _offload_with_control(card, dest, card / "clip.mov")
+
+    assert code != 0
+    assert (card / "clip.mov").read_bytes() == _CLIP
+    _nothing_copied(dest)
+    assert "control file" in capsys.readouterr().err
+
+
+def test_control_file_that_is_a_good_destination_file_is_refused(tmp_path: Path):
+    card = _card(tmp_path)
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    good = dest / "clip.mov"
+    good.write_bytes(b"an earlier good copy" * 100)
+
+    code = _offload_with_control(card, dest, good)
+
+    assert code != 0
+    assert good.read_bytes() == b"an earlier good copy" * 100
+    assert not list(dest.rglob("*" + engine.PARTIAL_SUFFIX))
+
+
+def test_control_path_inside_the_source_is_refused_before_it_is_created(
+    tmp_path: Path,
+):
+    card = _card(tmp_path)
+    dest = tmp_path / "dest"
+    path = card / "job.control"
+
+    assert _offload_with_control(card, dest, path) != 0
+
+    assert not path.exists()
+    _nothing_copied(dest)
+
+
+def test_control_path_that_is_a_symlink_to_a_source_file_is_refused(
+    tmp_path: Path,
+):
+    card = _card(tmp_path)
+    dest = tmp_path / "dest"
+    link = tmp_path / "job.control"
+    try:
+        link.symlink_to(card / "clip.mov")
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks are not permitted on this machine")
+
+    assert _offload_with_control(card, dest, link) != 0
+
+    assert (card / "clip.mov").read_bytes() == _CLIP
+    _nothing_copied(dest)
+
+
+def test_library_run_refuses_a_control_file_inside_the_source(tmp_path: Path):
+    card = _card(tmp_path)
+    control = engine.FileControl(card / "clip.mov")
+
+    with pytest.raises(engine.UnsafeControlFile):
+        engine.run(card, _options(tmp_path), control=control)
+
+    assert (card / "clip.mov").read_bytes() == _CLIP
+    assert not (tmp_path / "dest").exists()
+
+
+def test_library_run_refuses_a_control_file_that_is_a_promotion_target(
+    tmp_path: Path,
+):
+    card = _card(tmp_path)
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    (dest / "clip.mov").write_bytes(b"x" * 10)
+    control = engine.FileControl(dest / "clip.mov")
+
+    with pytest.raises(engine.UnsafeControlFile):
+        engine.run(card, _options(tmp_path), control=control)
+
+    assert (dest / "clip.mov").read_bytes() == b"x" * 10
+
+
+def test_control_file_inside_a_destination_root_is_still_allowed(tmp_path: Path):
+    card = _card(tmp_path)
+    dest = tmp_path / "dest"
+
+    assert _offload_with_control(card, dest, dest / "job.control") == 0
+
+    assert (dest / "clip.mov").read_bytes() == _CLIP
+
+
+def test_claim_refuses_content_that_is_not_a_control_word(tmp_path: Path):
+    path = tmp_path / "notes.txt"
+    path.write_bytes(b"precious" * 100)
+
+    with pytest.raises(engine.UnsafeControlFile):
+        engine.FileControl(path).claim()
+
+    assert path.read_bytes() == b"precious" * 100
+
+
+def test_claim_refuses_a_directory(tmp_path: Path):
+    with pytest.raises(engine.UnsafeControlFile):
+        engine.FileControl(tmp_path).claim()
+
+
+@pytest.mark.parametrize("before", [b"", b"pause\n", b"  CANCEL \r\n"])
+def test_claim_overwrites_an_empty_or_stale_control_file(
+    tmp_path: Path, before: bytes,
+):
+    path = tmp_path / "job.control"
+    path.write_bytes(before)
+
+    engine.FileControl(path).claim()
+
+    assert path.read_text(encoding="utf-8").strip() == "run"
+
+
+def test_claim_creates_a_missing_file_and_its_parent(tmp_path: Path):
+    path = tmp_path / "new" / "job.control"
+
+    engine.FileControl(path).claim()
+
+    assert path.read_text(encoding="utf-8").strip() == "run"
+def test_cancel_during_the_second_destination_reread_records_the_missing_copy(
+    tmp_path: Path,
+):
+    """A cancel while destination two is being reread must not leave the file
+    reading as Verified on the strength of destination one. The missing copy
+    is recorded as cancelled, so the entry's status is its weakest copy."""
+    card = _one_file_card(tmp_path)
+    first, second = tmp_path / "d1", tmp_path / "d2"
+    control = engine.JobControl()
+    verifies: list[str] = []
+
+    def progress(event: engine.ProgressEvent) -> None:
+        if event.stage == "verify":
+            verifies.append(event.file_name)
+            if len(verifies) == 2:
+                control.cancel()
+
+    job = engine.run(
+        card, _options(tmp_path, destinations=[first, second],
+                       verification=VerificationMode.FULL),
+        progress, control)
+
+    assert job.cancelled
+    assert job.final_status != "Verified"
+    (entry,) = job.files
+    assert entry.status is FileStatus.CANCELLED
+    assert [d.status for d in entry.destinations] == [
+        FileStatus.VERIFIED, FileStatus.CANCELLED]
+    assert (first / "clip.mov").exists()
+    assert not (second / "clip.mov").exists()
+    assert not list(tmp_path.rglob("*.offloader-partial"))
