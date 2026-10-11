@@ -537,3 +537,21 @@ def test_installing_runs_the_verified_file(qapp, tmp_path):
 
     controller.install()
     assert started == [controller.installer]
+
+
+def test_the_feed_error_message_reaches_the_failed_signal(qapp):
+    """GitHub's error body names the cause; the controller must pass it on."""
+    from offloader import update
+
+    message = "API rate limit exceeded for 1.2.3.4"
+
+    def check(installed):
+        return update.find_release(
+            installed, fetch=lambda _url: {"message": message})
+
+    failures: list[str] = []
+    controller = UpdateController(check=check)
+    controller.failed.connect(failures.append)
+    controller.check_now()
+    assert _pump(qapp, lambda: bool(failures))
+    assert message in failures[0]

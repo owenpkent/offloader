@@ -390,3 +390,19 @@ def test_update_failed_fetch_through_the_real_feed_check(monkeypatch, capsys):
     captured = capsys.readouterr()
     assert "newest" not in captured.out
     assert "network is unreachable" in captured.err
+
+
+def test_update_reports_the_feed_error_message(monkeypatch, capsys):
+    """GitHub's error body (here a rate limit) must reach the operator on
+    stderr, not just a generic feed failure."""
+    from offloader import update
+
+    message = "API rate limit exceeded for 1.2.3.4"
+    real = update.find_release
+    monkeypatch.setattr(
+        update, "find_release",
+        lambda *a, **k: real(*a, fetch=lambda _url: {"message": message}, **k))
+    assert cli.main(["update"]) == 5
+    captured = capsys.readouterr()
+    assert message in captured.err
+    assert "newest" not in captured.out
