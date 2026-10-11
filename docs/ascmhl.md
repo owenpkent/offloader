@@ -39,6 +39,15 @@ A `failed` hash is recorded but never reused: the spec is explicit that only
 failed file is excluded from the directory hashes so a directory hash can never
 certify a tree known to contain a bad file.
 
+A file whose copy to this destination failed is recorded `failed` too, with
+the source hash, and one the offload could not hash at all (an unreadable
+source, a file a cancel never reached, a folder the scan could not list) is
+recorded as a bare `<path>` with no hash. Either way `verify` fails it, so a
+history cannot read as complete for a copy that is missing a file. The
+comparison with the previous generation is per algorithm: hex digests
+case-insensitively, C4 exactly, so another tool's uppercase hex is not
+recorded as `failed`.
+
 ## Directory hashes
 
 Each directory gets a `content` and a `structure` hash, and the root gets both

@@ -27,10 +27,148 @@ project uses [semantic versioning][semver].
 
 ### Fixed
 
+- **`offloader update` reported a feed it could not read as "up to date".**
+  Being offline, an HTTP error or rate limit, a redirect off the allowlist and
+  malformed JSON all printed "the newest release available" and exited 0, so
+  a broken proxy could suppress updates indefinitely. Each is now printed as a
+  failure to check, with status 5 (see `docs/updates.md` for every status).
+- **The updater's digest check compared the streamed digest with itself.**
+  The installer is now re-hashed on disk before and after its signature is
+  read and immediately before launch; a mismatch refuses to run it and names
+  the file. The remaining window between the last hash and the launch is
+  documented.
+- **The signature verdict came from whichever `powershell` the search order
+  found first,** which includes the current directory, often a card root.
+  PowerShell is now run by absolute path under `%SystemRoot%` with a fixed
+  working directory, and the elevated installer runs in its own directory.
+- **An apostrophe in the installer's path broke signature checking.** The
+  path was pasted into a quoted PowerShell literal; a profile named O'Brien
+  failed every update and a crafted directory name became script. It is now
+  passed through an environment variable and never becomes script text.
+- **A refused silent install was reported as started.** The installer is
+  launched with `ShellExecuteExW` so its exit code can be read, and a non-zero
+  code is reported as a refusal or failure. The installed CLI runs from the
+  installation it replaces and cannot wait without blocking that installer,
+  so there it says it cannot see the result and exits with status 6 instead
+  of claiming success.
+- **A failed download left a plausible installer behind.** Bytes now go to an
+  exclusively created `.offloader-partial` file, flushed to disk, and get the
+  installer's name only after the size and signature checks pass; any failure
+  deletes the partial and the temporary directory. A short body against its
+  `Content-Length`, a linked or junctioned download directory, and a link at
+  the installer's name are refused, and a dropped connection is an update
+  error rather than a traceback.
+- **`offloader update --install` guessed a target for builds it cannot
+  update.** A pip or source install fell back to `Program Files`, risking a
+  second copy; a portable bundle was handed to an installer that always
+  refuses it. Both are now refused before downloading, naming the build that
+  was detected and how to update it instead.
+- **One certificate thumbprint left no path for renewal.** The updater
+  accepts a tuple of pinned thumbprints, current first, so the next
+  certificate can be shipped ahead of a rotation; the publisher name is still
+  required. `docs/updates.md` describes the rotation steps.
 - **A silent installer `/D=` target was overridden by the registered location.** NSIS
   consumes `/D=` before `.onInit`, so the old `$CMDLINE` check never saw it and
   `setup.exe /S /D=B` reinstalled into the registered location A. An explicit
   target now wins.
+- **A timeline offload could call a partial cut complete.** With nothing to
+  copy it printed "every reference is already here" and exited 0 while
+  references were missing or ambiguous, and with gaps to copy it reported
+  "Verified" and exited 0 while the reports listed only the copied files. Now
+  every unresolved reference is printed, recorded on the job and listed in the
+  CSV, HTML and PDF reports; the job reads `Incomplete` and exits 4, the same
+  code `resolve` uses.
+- **One file could satisfy several different timeline references.** Two
+  recordings sharing a name (`f2/260223_009.WAV`, `f3/260223_009.WAV`) both
+  resolved to the single copy on the drive. They are now `ambiguous` unless
+  their bytes show which is which. A readable original is compared with the
+  same-named file under the roots (size, then checksum), so a "MISSING MEDIA"
+  slate no longer stands in for real footage the timeline can reach; the
+  original is copied instead, with a warning naming the slate.
+- **Offline clips and image sequences were reported as generated media.** An
+  OTIO `MissingReference`, an FCP 7 clip without a `<pathurl>` and an image
+  sequence are now reported by name as `offline` or `unsupported`, count as
+  unresolved and fail the exit code. A generator, title or matte is still
+  `generated`.
+- **A proxy could stand in without any check.** A same-stem file that yields no
+  frame count no longer satisfies a camera original. A proxy whose count
+  cannot be compared with the original's is shown in the terminal with its
+  `frames unverified` note, carried as a job warning, and keeps the job from
+  reading `Verified`.
+- **Relative timeline paths were read against the working directory.** They
+  are now read against the timeline file's folder, so an unrelated file of the
+  same relative path is never copied. Non-file URLs (`https`, `s3` and so on)
+  are reported as `external` and never matched to a local file by name.
+- **A `--control-file` cancel exited 0.** A cancelled job now exits 130, as
+  Ctrl+C does, and the summary says how many files were not attempted.
+- **`--control-file` could overwrite a source or destination file.** Starting a
+  job wrote `run` to the control path before anything was validated, so a path
+  that named a source clip (or a good copy) truncated it to five bytes, and the
+  job then copied and reported the replacement as Verified. The path is now
+  checked first: it may not be inside the source, be a selected timeline file,
+  be a destination root, or be where a copy would land, and an existing file is
+  only overwritten if it is empty or holds `run`, `pause` or `cancel`.
+- **`verify` passed a destination whose offload had failed a file.** The
+  manifest listed only the files that copied, so a clip that failed was simply
+  absent and `verify` said "VERIFIED - safe to erase the source". MHL and ASC
+  MHL now list every scanned file for each destination: a failed copy with the
+  source checksum (verify finds it missing or different), and anything with no
+  checksum at all (an unreadable source, a file a cancel never reached, a folder
+  that could not be listed) as an unhashed entry, which verify fails.
+- **A `--skip-existing` rerun overwrote the manifest that covered the skipped
+  files.** A same-size corrupt copy the size check skipped then verified clean.
+  A manifest is never overwritten now: a rerun's paperwork goes to
+  `<name>_Reports-2` when `<name>_Reports` already exists, a reused
+  `--report-dir` gets `JobReport-2.mhl`, and `verify` checks every manifest
+  under the folder.
+- **A source folder that could not be listed was silently left out.** The job
+  read Verified without the files under it. Listing errors are now recorded,
+  the job fails naming the folder, the CLI exits `1`, and the manifests carry an
+  unhashed entry so `verify` fails as well.
+- **Names Windows rewrites were read as a different file.** `clip.mov.` opened
+  `clip.mov`, so the wrong bytes were copied and certified, and `NUL` read as an
+  empty device. Such names now take the extended-length prefix everywhere (scan,
+  copy, stat, rename, eviction, manifest paths, verify) and copy as themselves.
+- **A junction listed before its target claimed the real folder.** The real
+  folder was skipped and its files landed under the alias. Directory symlinks
+  and junctions are no longer entered at all, and each one skipped is named in
+  a warning.
+- **Reports overwrote copied files when the source held `<name>_Reports`.**
+  Re-offloading a previous destination replaced the shuttle's own manifest
+  after certifying it. Reports now go to the next free `<name>_Reports-N` with
+  a warning.
+- **Report failures disappeared into a Verified verdict.** The GUI swallowed
+  them and the CLI exited `0`. Failures are recorded on the job
+  (`report_failures`), the status reads `Verified, reports failed`, the GUI
+  lists them on completion and the CLI exits `5`.
+- **A different card with the same folder layout replaced verified files.** A
+  finished copy no longer replaces an existing file whose content differs: that
+  file fails with the reason and the existing copy is kept. Identical content is
+  still replaced. `--replace-existing` (`OffloadOptions.replace_existing`)
+  restores the old behaviour.
+- **With `--report-dir` inside the second destination, its only manifest
+  described the first.** Every destination now gets its own manifest inside it;
+  `--report-dir` moves the PDF, CSV and HTML and holds a manifest only for the
+  destination it sits in.
+- **`offload` exited `0` for an Incomplete job.** An empty source or a
+  `--skip-existing` rerun now exits `4`; the exit codes are documented in the
+  README.
+- **`verify` did not report unlisted files beside a one-file manifest.** The
+  scan now starts at the root the manifest belongs to.
+- **A file deleted after the scan aborted the whole offload.** It now fails
+  alone with "source vanished after scan" and the job carries on.
+- **Same-named clips in different folders shared thumbnail files.** One clip's
+  frames replaced the other's in the report; thumbnails are now named by a hash
+  of the relative path.
+- **An uppercase hex digest in a previous ASC MHL generation was recorded as
+  `failed`.** The comparison is now case-insensitive for hex and exact for C4.
+- **A cancel during a second destination's reread left the file reading as
+  Verified.** Only the destinations already promoted were recorded, and a
+  file's status is its weakest recorded copy, so the copy that was never made
+  could not lower it. The missing copies are now recorded as cancelled.
+- **`offloader verify` stayed silent when it could not evict the page cache.**
+  The offload warns that a read-back may have come from memory; verify
+  discarded the same result. It now reports the same warning.
 - **Pause and cancel are honoured during rereads.** A cancel issued during the
   `--paranoid` source reread or the full-verification destination reread was
   ignored, and the file was promoted and reported Verified. Both rereads now
@@ -134,15 +272,18 @@ project uses [semantic versioning][semver].
   Releases is the feed, so there is no manifest server and no second place a
   version is written down. Before anything runs: HTTPS with a host allowlist
   re-checked after redirects, a size ceiling held against `Content-Length` and
-  again mid-stream, a SHA-256 taken while streaming and compared before
-  launch, and an Authenticode check that requires a valid status, this
-  project's certificate thumbprint, its publisher name, and an embedded
+  again mid-stream, a SHA-256 taken while streaming and checked against the
+  file on disk before and after the signature is read and immediately before
+  launch, and an Authenticode check that requires a valid status, one of this
+  project's pinned certificate thumbprints, its publisher name, and an embedded
   `FileVersion` matching the release. That last check is what stops a rollback:
   re-serving an older, still validly signed installer under a newer asset name
   would otherwise move every install back onto a build whose faults are fixed.
-  The install target is computed from the running executable rather than read
-  from the uninstall registry key, which anything running as the user can
-  write.
+  The install target is the running installed build's own directory rather
+  than the uninstall key's `InstallLocation`, which records where the last
+  install went rather than which copy is running (the key is under HKLM; when
+  the running copy is in the default location the installer still prefers the
+  registered one, a documented limit).
 
   Prereleases are ordered rather than rejected, matching the grammar
   `build/windows/versioning.py` already enforces, and a test asserts the two
