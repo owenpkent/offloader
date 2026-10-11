@@ -50,8 +50,9 @@ Found by adding CI on Linux and macOS — the suite had only ever run on Windows
   where the scan looked. It listed the empty `/media/<user>` directory and
   another user's unreadable mount as fake removable drives instead. Volumes
   now come from `/proc/self/mountinfo`, which names real mount points and
-  gives the filesystem type, so pseudo, network and system filesystems are
-  filtered by type. An overlay root (containers, live sessions) is still
+  gives the filesystem type, so pseudo and system filesystems are filtered
+  by type while NFS and SMB shares stay listed as network volumes, outside
+  card detection. An overlay root (containers, live sessions) is still
   treated as the system volume. Without `/proc` the old directory scan is
   the fallback.
 

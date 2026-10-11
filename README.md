@@ -245,8 +245,10 @@ detected by the marker directories cameras write (`DCIM`, `PRIVATE`, `XDROOT`
 and friends) or by a root full of camera originals, since a Blackmagic card
 writes clips straight to the root and a reader in a dock reports as a fixed
 disk. On Linux the panel reads the kernel's mount table, so a card mounted under
-`/media/<user>/` or `/run/media/<user>/` appears with its filesystem type, and
-pseudo, network and system mounts stay out of the list.
+`/media/<user>/` or `/run/media/<user>/` appears with its filesystem type.
+Pseudo and system mounts stay out of the list; NFS and SMB shares are kept
+and classified as network volumes, so they can be chosen as destinations,
+but they are never offered as cards.
 
 Along the bottom is the **queue**. Jobs run one at a time — offloads are I/O
 bound, and running two at once against the same bus makes both slower and the
