@@ -47,6 +47,10 @@ project uses [semantic versioning][semver].
 
 ### Fixed
 
+- The stalled stage now clears as soon as bytes resume on a slow link, instead
+  of staying up until the whole 8 MiB chunk has assembled.
+- Time spent paused no longer counts toward the stall watchdog, so resuming a
+  healthy copy no longer reports a stall.
 - **A source on a network share survives its session dropping.** The retry
   machinery reopened a dead handle and resumed from the last delivered chunk
   already; the classifier just did not recognise a dropped SMB session as

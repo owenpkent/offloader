@@ -212,6 +212,9 @@ known.
   source that had been silent for fifteen seconds, and stay that far short for
   as long as the outage lasted. It is the number someone reads to decide
   whether to go and look at the cable. A cancel is honoured during it too.
+  The stalled stage clears as soon as bytes resume, not when the whole chunk
+  has assembled, and time spent paused is not counted as silence from the
+  source.
   What still cannot happen is aborting the read itself, so *recovery* waits on
   the operating system to turn the hang into one of the codes above — on Windows, the SMB
   client's `SessionTimeout`, 60 seconds by default. No data is at risk in the
