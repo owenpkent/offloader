@@ -123,15 +123,26 @@ def new_hasher(key: str) -> Hasher:
     return get_algorithm(key).new() or _NullHasher()
 
 
-def hash_file(path: Path, key: str, chunk_size: int = 8 << 20) -> str:
+def hash_file(path: Path, key: str, chunk_size: int = 8 << 20, *,
+              checkpoint: Callable[[], None] | None = None) -> str:
     """Hash a file off disk. Used by full verification to re-read a
     destination, and by the `report` and `verify` commands to reconstruct or
-    re-check checksums without copying."""
+    re-check checksums without copying.
+
+    `checkpoint`, when given, is called before every chunk read. The engine
+    passes `JobControl.checkpoint` so a long reread blocks on pause and raises
+    on cancel; whatever it raises propagates and the file is left unhashed.
+    This module stays independent of the engine."""
     from .longpath import open_binary
 
     hasher = new_hasher(key)
     with open_binary(path, "rb") as handle:
-        for chunk in iter(lambda: handle.read(chunk_size), b""):
+        while True:
+            if checkpoint is not None:
+                checkpoint()
+            chunk = handle.read(chunk_size)
+            if not chunk:
+                break
             hasher.update(chunk)
     return hasher.hexdigest()
 
