@@ -5,6 +5,12 @@ marginal reader drops off the bus for a moment; a sector needs a second attempt;
 antivirus holds a handle open for a beat. robocopy has retried this way for
 decades (`/R`, `/W`) and it is the main thing it does that this engine did not.
 
+A network source fails the same way for different reasons. An SMB session over a
+VPN or a WAN link dies mid-transfer and the handle with it, while the path stays
+perfectly reachable either side of the drop — the case Explorer's copy engine
+gives up on and robocopy rides out. Those codes are here for the same reason the
+media ones are: the fault is in the link, not in the data.
+
 The discrimination matters more than the retrying. Retrying a missing file, a
 permission denial or a full disk wastes time and hides the real problem, so only
 errors with a plausible transient cause are retried, and a file that needed one
@@ -31,6 +37,16 @@ _TRANSIENT_ERRNO = {
     errno.ETIMEDOUT,
     errno.ENODEV,     # device dropped off the bus and may come back
     errno.ENXIO,
+    # A network mount that dropped its session. Only ever consulted on POSIX:
+    # `is_transient` short-circuits on winerror, which Windows always sets.
+    errno.ECONNRESET,
+    errno.ECONNABORTED,
+    errno.ENETRESET,
+    errno.ENETUNREACH,
+    errno.EHOSTUNREACH,
+    errno.ENOTCONN,
+    errno.EPIPE,
+    errno.ESTALE,     # the NFS classic: handle outlived the thing it named
 }
 
 #: Windows error codes worth a second attempt. Python surfaces these on
@@ -40,11 +56,22 @@ _TRANSIENT_WINERROR = {
     23,    # ERROR_CRC — "Data error (cyclic redundancy check)"
     32,    # ERROR_SHARING_VIOLATION — usually antivirus, and usually brief
     33,    # ERROR_LOCK_VIOLATION
+    # The network-mount family. A read mid-copy proves the path resolved a
+    # moment ago, so these are a session that died under us rather than a name
+    # that was never right — the distinction that makes them worth retrying.
+    53,    # ERROR_BAD_NETPATH
+    54,    # ERROR_NETWORK_BUSY
+    58,    # ERROR_BAD_NET_RESP
+    59,    # ERROR_UNEXP_NET_ERR — what Explorer surfaces as 0x8007003B
     64,    # ERROR_NETNAME_DELETED — network destination blipped
+    71,    # ERROR_REQ_NOT_ACCEP — server at its connection limit
     121,   # ERROR_SEM_TIMEOUT
     170,   # ERROR_BUSY
     1117,  # ERROR_IO_DEVICE
     1167,  # ERROR_DEVICE_NOT_CONNECTED
+    1231,  # ERROR_NETWORK_UNREACHABLE
+    1232,  # ERROR_HOST_UNREACHABLE
+    1450,  # ERROR_NO_SYSTEM_RESOURCES — seen on sustained large SMB reads
 }
 
 class UnstableRead(OSError):

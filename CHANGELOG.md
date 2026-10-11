@@ -27,6 +27,16 @@ project uses [semantic versioning][semver].
 
 ### Fixed
 
+- **A source on a network share survives its session dropping.** The retry
+  machinery reopened a dead handle and resumed from the last delivered chunk
+  already; the classifier just did not recognise a dropped SMB session as
+  transient, so the retry never fired and the file failed outright. The
+  network-mount codes now qualify — including `ERROR_UNEXP_NET_ERR`, which
+  Explorer reports as **0x8007003B** before abandoning the whole transfer, and
+  `ECONNRESET`, `ENETRESET`, `EPIPE` and `ESTALE` on a POSIX mount. Observed
+  offloading from a NAS over a VPN link: the path pings clean either side of
+  the drop, which is exactly why the retry is worth making. Recovery costs one
+  re-read of the chunk in flight.
 - **A cancel during a second destination's reread left the file reading as
   Verified.** Only the destinations already promoted were recorded, and a
   file's status is its weakest recorded copy, so the copy that was never made

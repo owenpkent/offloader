@@ -33,6 +33,10 @@ not only the file hashes — so a rename or a moved file, which every file hash
 agrees is fine, is reported as the structure-hash mismatch it is. See
 [`docs/ascmhl.md`](docs/ascmhl.md#directory-hashes).
 
+A source on a network mount is handled like marginal media, because it fails
+like it: the dropped-session error codes are retried, the handle reopened and
+the read resumed from the last delivered chunk.
+
 `--paranoid` reads every source file a second time and compares, which is the
 only thing that catches a read returning wrong bytes without reporting an error.
 Retry works at the chunk that failed rather than restarting the file. Sidecars
