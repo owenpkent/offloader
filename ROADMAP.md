@@ -35,7 +35,10 @@ agrees is fine, is reported as the structure-hash mismatch it is. See
 
 A source on a network mount is handled like marginal media, because it fails
 like it: the dropped-session error codes are retried, the handle reopened and
-the read resumed from the last delivered chunk.
+the read resumed from the last delivered chunk. A stall — bytes stopping with
+no error raised at all — is timed at 1 MiB granularity so it is distinguishable
+from a slow link, reported while it happens, and named in the job's warnings
+afterwards.
 
 `--paranoid` reads every source file a second time and compares, which is the
 only thing that catches a read returning wrong bytes without reporting an error.
@@ -63,6 +66,19 @@ Verifying directory hashes made a rename visible; it did not make it
 has `previousPath` for exactly this and it is not written.
 
 *Where:* `ascmhl.py`, and `verify.py` to read it back.
+
+### Aborting a hung read, not just reporting it
+
+A stall is now detected and reported, and a cancel is honoured while one is in
+progress. What is still not possible is ending the read itself: recovery waits
+for the operating system to turn the hang into an error, up to `SessionTimeout`
+— 60 seconds on Windows. On Windows `CancelIoEx` against the handle would do
+it, reached through `ctypes` with `msvcrt.get_osfhandle`; POSIX has no portable
+equivalent, which is why this is one platform's fix and not a general one.
+Listed under "What is still not protected" in
+[`docs/data-safety.md`](docs/data-safety.md).
+
+*Where:* `engine.py`, around the `read_ahead` loop.
 
 ### Coordination between instances
 
