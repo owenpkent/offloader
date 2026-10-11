@@ -27,6 +27,10 @@ project uses [semantic versioning][semver].
 
 ### Fixed
 
+- **A silent installer `/D=` target was overridden by the registered location.** NSIS
+  consumes `/D=` before `.onInit`, so the old `$CMDLINE` check never saw it and
+  `setup.exe /S /D=B` reinstalled into the registered location A. An explicit
+  target now wins.
 - **A report directory more than one level down failed its own verification.**
   The writer records a relocated report directory as a relative path, so
   `--report-dir` two levels below the destination was recorded as
