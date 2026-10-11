@@ -530,7 +530,8 @@ def _copy_fanout(source: Path, targets: Sequence[Path], algorithm: str,
                        recovered)
 
 
-def _confirm_source(source: Path, expected: str, algorithm: str) -> bool:
+def _confirm_source(source: Path, expected: str, algorithm: str,
+                    control: JobControl | None = None) -> bool:
     """Read `source` a second time and insist it hashes the same.
 
     The gap this closes: a read that returns wrong bytes *without raising*. The
@@ -545,9 +546,14 @@ def _confirm_source(source: Path, expected: str, algorithm: str) -> bool:
     Returns whether the page cache was actually dropped first. A second read
     served out of memory compares the first read against itself, so a caller
     that cannot evict has to say so rather than claim the guarantee.
+
+    With `control`, the reread honours pause and cancel at every chunk. A
+    cancel raises `JobCancelled` out of here, so the caller never promotes the
+    file on the strength of a confirmation that did not finish.
     """
     evicted = integrity.evict_from_cache(source)
-    again = hash_file(source, algorithm)
+    again = hash_file(source, algorithm,
+                      checkpoint=control.checkpoint if control else None)
     if again != expected:
         raise retry_mod.UnstableRead(
             f"two reads of {source.name} disagreed ({expected} then {again}) — "
@@ -795,8 +801,11 @@ def run(source_root: Path, options: OffloadOptions,
                 # this call treats as transient: the honest response to a source
                 # that read differently twice is to read it again, not to guess
                 # which of the two was right.
+                # The checkpoint is here so a cancel during the reread stops
+                # the job before promotion instead of being ignored until the
+                # file is already in place and reported Verified.
                 evicted = _confirm_source(_src, result.source_checksum,
-                                          options.algorithm)
+                                          options.algorithm, control)
                 if not evicted and not reread_noted:
                     reread_noted = True
                     job.warnings.append(
@@ -852,6 +861,7 @@ def run(source_root: Path, options: OffloadOptions,
 
         # strict: a short dst_sums would silently drop a destination from the
         # report while its file sat on disk unrecorded.
+        cancelled_in_verify = False
         for root, target, partial, dst_sum in zip(dest_roots, targets, partials,
                                                   dst_sums, strict=True):
             destination = Destination(root=root, path=target, checksum=dst_sum or None)
@@ -881,8 +891,13 @@ def run(source_root: Path, options: OffloadOptions,
                             "memory rather than the device"
                         )
                     try:
+                        # The checkpoint lets a cancel during the reread stop
+                        # the job before promotion. JobCancelled is not an
+                        # OSError, so retry_mod.call lets it propagate.
                         dst_sum, verify_attempts = retry_mod.call(
-                            lambda p=partial: hash_file(p, options.algorithm),
+                            lambda p=partial: hash_file(
+                                p, options.algorithm,
+                                checkpoint=control.checkpoint if control else None),
                             options.retry,
                         )
                         if verify_attempts > 1:
@@ -891,6 +906,14 @@ def run(source_root: Path, options: OffloadOptions,
                                 f"{verify_attempts} — the destination may be "
                                 "failing")
                         destination.checksum = dst_sum or None
+                    except JobCancelled:
+                        # Nothing unpromoted survives. Destinations already
+                        # promoted were verified and stay; their partials
+                        # are gone, so discarding the whole list only
+                        # removes this one and the ones not yet reached.
+                        _discard(partials)
+                        cancelled_in_verify = True
+                        break
                     except OSError as exc:
                         destination.status = FileStatus.FAILED
                         destination.error = str(exc)
@@ -932,6 +955,12 @@ def run(source_root: Path, options: OffloadOptions,
                 pass
 
             entry.destinations.append(destination)
+
+        if cancelled_in_verify:
+            job.cancelled = True
+            if entry.destinations:
+                job.files.append(entry)
+            break
 
         if options.extra_probe:
             emit(ProgressEvent(index, len(files), source.name, "probe",
