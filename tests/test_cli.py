@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
 
 from offloader import cli
+from offloader.models import Destination
 
 
 def test_info_reports_the_environment(capsys):
@@ -390,3 +392,91 @@ def test_update_failed_fetch_through_the_real_feed_check(monkeypatch, capsys):
     captured = capsys.readouterr()
     assert "newest" not in captured.out
     assert "network is unreachable" in captured.err
+
+
+def test_update_reports_the_feed_error_message(monkeypatch, capsys):
+    """GitHub's error body (here a rate limit) must reach the operator on
+    stderr, not just a generic feed failure."""
+    from offloader import update
+
+    message = "API rate limit exceeded for 1.2.3.4"
+    real = update.find_release
+    monkeypatch.setattr(
+        update, "find_release",
+        lambda *a, **k: real(*a, fetch=lambda _url: {"message": message}, **k))
+    assert cli.main(["update"]) == 5
+    captured = capsys.readouterr()
+    assert message in captured.err
+    assert "newest" not in captured.out
+
+
+def test_exit_code_of_a_cancelled_job_is_130_whatever_the_files_say():
+    import datetime as _dt
+
+    from offloader.models import FileEntry, FileStatus, Job
+
+    now = _dt.datetime(2026, 8, 22, 10, 0, 0)
+    for status in (None, FileStatus.VERIFIED, FileStatus.COPIED,
+                   FileStatus.SKIPPED, FileStatus.CANCELLED):
+        job = Job(name="J", source_root=Path("src"),
+                  destination_roots=[Path("dst")], started=now, finished=now,
+                  cancelled=True)
+        entry = FileEntry(source=Path("a.mov"), source_root=Path("src"),
+                          size=1, created=0.0, modified=0.0)
+        if status is not None:
+            entry.destinations.append(Destination(
+                root=Path("dst"), path=Path("dst/a.mov"), status=status))
+        job.files.append(entry)
+        assert cli.exit_code(job) == cli.EXIT_CANCELLED == 130, status
+
+
+def test_card_offload_cancelled_by_control_file_exits_130(
+        tmp_path: Path, monkeypatch, capsys):
+    """A plain card offload, not a timeline, cancelled through --control-file."""
+    from offloader import engine
+
+    source = tmp_path / "card"
+    source.mkdir()
+    for index in range(3):
+        (source / f"clip{index}.mov").write_bytes(b"\x5a" * 100_000)
+    claim = engine.FileControl.claim
+
+    def claim_then_cancel(self):
+        claim(self)
+        self.path.write_text("cancel\n", encoding="utf-8")
+
+    monkeypatch.setattr(engine.FileControl, "claim", claim_then_cancel)
+
+    code = cli.main(["offload", "--source", str(source),
+                     "--dest", str(tmp_path / "dest"),
+                     "--control-file", str(tmp_path / "job.control"),
+                     "--no-probe", "--report", "csv", "--quiet"])
+
+    out = capsys.readouterr().out
+    assert code == 130
+    assert ": Cancelled" in out
+    assert "3 file(s) not attempted" in out
+
+
+@pytest.mark.parametrize("missing, expect", [
+    ("extension", "no timeline adapter"),
+    ("otio", "OpenTimelineIO"),
+])
+def test_missing_timeline_support_exits_2_and_names_it(
+        tmp_path: Path, monkeypatch, capsys, missing, expect):
+    root = tmp_path / "drive"
+    root.mkdir()
+    name = "cut.premiereproj" if missing == "extension" else "cut.otio"
+    cut = tmp_path / name
+    cut.write_text("x", encoding="utf-8")
+    if missing == "otio":
+        monkeypatch.setitem(sys.modules, "opentimelineio", None)
+
+    code = cli.main(["offload", "--timeline", str(cut),
+                     "--search-root", str(root),
+                     "--dest", str(tmp_path / "dest"), "--quiet"])
+
+    assert code == cli.EXIT_ERROR == 2
+    err = capsys.readouterr().err
+    assert expect in err
+    assert not (tmp_path / "dest").exists()
