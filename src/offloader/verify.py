@@ -17,8 +17,10 @@ every individual file is still perfectly intact.
 
 from __future__ import annotations
 
+import datetime as _dt
 import fnmatch
 import os
+import re
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from enum import Enum
@@ -55,12 +57,19 @@ class FileVerdict:
     expected_size: int | None = None
     actual_size: int | None = None
     detail: str = ""
+    #: A later manifest for the same root hashed this file and it matched,
+    #: which answers an entry this manifest could not check. Only ever set on
+    #: a `NO_CHECKSUM` verdict; see `supersede`.
+    superseded_by: Path | None = None
 
     @property
     def ok(self) -> bool:
         return self.result is EntryResult.OK
 
     def describe(self) -> str:
+        if self.superseded_by is not None:
+            return (f"superseded {self.path}  (no hash here; superseded by "
+                    f"{self.superseded_by})")
         if self.result is EntryResult.OK:
             return f"ok        {self.path}"
         if self.result is EntryResult.MISSING:
@@ -138,6 +147,12 @@ class VerifyReport:
     #: Caveats on the evidence that do not change a verdict, such as a
     #: page-cache eviction that failed, so the bytes may have come from memory.
     warnings: list[str] = field(default_factory=list)
+    #: The destination root the manifest describes, which is what decides
+    #: whether another manifest is about the same copy.
+    root: Path | None = None
+    #: When the manifest says it was written (MHL 1.1 `finishdate`, ASC MHL
+    #: `creationdate`), or `None` when it does not say or cannot be read.
+    recorded_at: _dt.datetime | None = None
 
     @property
     def checked(self) -> int:
@@ -145,7 +160,12 @@ class VerifyReport:
 
     @property
     def failures(self) -> list[FileVerdict]:
-        return [v for v in self.verdicts if not v.ok]
+        return [v for v in self.verdicts
+                if not v.ok and v.superseded_by is None]
+
+    @property
+    def superseded(self) -> list[FileVerdict]:
+        return [v for v in self.verdicts if v.superseded_by is not None]
 
     @property
     def directory_failures(self) -> list[DirectoryVerdict]:
@@ -159,12 +179,24 @@ class VerifyReport:
     def counts(self) -> dict[str, int]:
         tally: dict[str, int] = {}
         for verdict in self.verdicts:
-            tally[verdict.result.value] = tally.get(verdict.result.value, 0) + 1
+            name = ("superseded" if verdict.superseded_by is not None
+                    else verdict.result.value)
+            tally[name] = tally.get(name, 0) + 1
         return tally
 
     def summary(self) -> str:
         if not self.verdicts:
             return "manifest listed no files with checksums"
+        if self.passed and self.superseded:
+            # Never "all N files match": the superseded ones had nothing here
+            # to match, and the line has to say where their check came from.
+            line = (f"{self.checked - len(self.superseded)} files match the "
+                    f"manifest; {len(self.superseded)} with no hash here "
+                    "matched a later manifest")
+            if self.directories:
+                line += (f"; all {len(self.directories)} directory hashes "
+                         "match")
+            return line
         if self.passed:
             if self.directories:
                 return (f"all {self.checked} files and all "
@@ -176,8 +208,10 @@ class VerifyReport:
             # file tally first would open "N checked: N ok", which reads as a
             # pass to anyone scanning — and this is the one verdict where the
             # file hashes agreeing is the point rather than the reassurance.
+            files = (f"all {self.checked} files match" if not self.superseded
+                     else "every file matches here or in a later manifest")
             return (f"{len(self.directory_failures)} of {len(self.directories)} "
-                    f"directory hashes differ; all {self.checked} files match, "
+                    f"directory hashes differ; {files}, "
                     "so the bytes are intact and the tree is not")
         parts = [f"{count} {name}" for name, count in sorted(self.counts().items())]
         line = f"{self.checked} checked: " + ", ".join(parts)
@@ -275,7 +309,12 @@ def verify_manifest(
     # ASC MHL keeps its manifests in `ascmhl/` at the root of the managed data,
     # so the folder above is what the recorded paths are relative to.
     managed_root = manifest.parent.parent
-    ascmhl_root = _ascmhl_root(manifest) if check_directories else None
+    parsed = _ascmhl_root(manifest)
+    listed = {p.resolve() for p, _, _, _ in entries}
+    report.root = (managed_root if parsed is not None
+                   else _described_root(manifest, listed))
+    report.recorded_at = _recorded_at(manifest)
+    ascmhl_root = parsed if check_directories else None
     recorded: dict[str, tuple[str, str]] = {}
     if ascmhl_root is not None:
         recorded, directory_algorithm = _ascmhl_directory_hashes(ascmhl_root)
@@ -364,7 +403,6 @@ def verify_manifest(
     # The directory pass needs the unexpected files hashed, so it scans even
     # when the caller did not ask for them to be reported.
     if find_unlisted or ascmhl_root is not None:
-        listed = {p.resolve() for p, _, _, _ in entries}
         patterns = _ignore_patterns(ascmhl_root) if ascmhl_root is not None else []
         scan_root = (managed_root if ascmhl_root is not None
                      else _described_root(manifest, listed))
@@ -619,7 +657,140 @@ def _described_root(manifest: Path, listed: set[Path]) -> Path:
         return folder
 
 
+def _recorded_at(manifest: Path) -> _dt.datetime | None:
+    """When the manifest says it was written, from its own creator info.
+
+    MHL 1.1 records `finishdate` (falling back to `startdate`); ASC MHL records
+    `creationdate`. A value that will not parse is treated as absent rather
+    than guessed at, and the file's mtime is never used: copying an archive
+    to another drive rewrites mtimes, which says nothing about which run came
+    later.
+    """
+    try:
+        root = ET.parse(manifest).getroot()
+    except (OSError, ET.ParseError):
+        return None
+    prefix = (f"{{{ASCMHL_NAMESPACE}}}"
+              if root.tag == f"{{{ASCMHL_NAMESPACE}}}hashlist" else "")
+    info = root.find(f"{prefix}creatorinfo")
+    if info is None:
+        return None
+    names = ("creationdate",) if prefix else ("finishdate", "startdate")
+    for name in names:
+        text = (info.findtext(f"{prefix}{name}") or "").strip()
+        if not text:
+            continue
+        try:
+            return _dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    return None
+
+
+_NUMBERED = re.compile(r"^(?P<base>.*)-(?P<number>[0-9]+)$")
+
+
+def _numbering(manifest: Path) -> tuple[tuple[str, ...], tuple[int, ...]]:
+    """(series, position) of a manifest in this tool's numbering.
+
+    A classic manifest is `<name>_Reports[-N]/JobReport[-N].mhl`; two of them
+    are in one series when everything but the numbers matches, and the later
+    numbers are the later run. An ASC MHL generation is numbered by its
+    `0001_` prefix within its own `ascmhl/` folder. Only a manifest in the
+    same series can be ordered by name; across series the answer is unknown.
+    """
+    folder = manifest.parent
+    if folder.name == ASCMHL_DIRNAME:
+        match = re.match(r"^([0-9]+)_", manifest.name)
+        number = int(match.group(1)) if match else 0
+        return ("ascmhl", os.path.normcase(str(folder))), (number,)
+
+    folder_name, folder_number = folder.name, 1
+    match = _NUMBERED.match(folder.name)
+    if match and fnmatch.fnmatch(match.group("base"), REPORT_DIRECTORY_GLOB):
+        folder_name, folder_number = match.group("base"), int(match.group("number"))
+
+    stem, file_number = manifest.stem, 1
+    match = _NUMBERED.match(manifest.stem)
+    if match:
+        stem, file_number = match.group("base"), int(match.group("number"))
+
+    series = ("mhl", os.path.normcase(str(folder.parent)),
+              os.path.normcase(folder_name), os.path.normcase(stem))
+    return series, (folder_number, file_number)
+
+
+def _is_newer(candidate: VerifyReport, than: VerifyReport) -> bool:
+    """Whether `candidate` is known to have been written after `than`.
+
+    The manifests' own timestamps decide when both have one and they differ.
+    Otherwise (equal to the second, which two quick runs manage, or missing)
+    the numbering decides, and only within one series. Anything else is not
+    known to be newer, which keeps the older entry failing.
+    """
+    a, b = candidate.recorded_at, than.recorded_at
+    if a is not None and b is not None:
+        try:
+            if a != b:
+                return a > b
+        except TypeError:
+            # One carries a UTC offset and the other does not.
+            pass
+    series_a, position_a = _numbering(candidate.manifest)
+    series_b, position_b = _numbering(than.manifest)
+    return series_a == series_b and position_a > position_b
+
+
+def _same_root(a: VerifyReport, b: VerifyReport) -> bool:
+    if a.root is None or b.root is None:
+        return False
+    try:
+        return (os.path.normcase(str(a.root.resolve()))
+                == os.path.normcase(str(b.root.resolve())))
+    except OSError:
+        return False
+
+
+def _entry_key(path: Path) -> str:
+    # Lexical on purpose, as `reports.mhl._relative` is: `abspath` trims a
+    # trailing dot on Windows and would make `clip.mov.` match `clip.mov`.
+    return os.path.normcase(os.path.normpath(str(path)))
+
+
+def supersede(reports: list[VerifyReport]) -> None:
+    """Let a later manifest answer an earlier one's unhashed entries.
+
+    A failed run writes the files it could not read with no hash, and a rerun
+    that copies them writes a new manifest beside the old one rather than over
+    it. Without this the old manifest's unhashed entries fail `verify` forever.
+
+    One direction only. An entry is superseded when it has no hash in its own
+    manifest, and a newer manifest for the same destination root lists the
+    same path with a hash that matched just now. A hashed entry is never
+    superseded, so a copy corrupted since an earlier run cannot hide behind a
+    later manifest; and an unhashed entry never answers anything. Directory
+    hash failures are untouched, so a manifest that has them still fails.
+    """
+    for older in reports:
+        pending = [v for v in older.verdicts
+                   if v.result is EntryResult.NO_CHECKSUM and v.superseded_by is None]
+        if not pending:
+            continue
+        for newer in reports:
+            if newer is older or not _same_root(newer, older):
+                continue
+            if not _is_newer(newer, older):
+                continue
+            matched = {_entry_key(v.path) for v in newer.verdicts
+                       if v.result is EntryResult.OK and v.expected}
+            for verdict in pending:
+                if verdict.superseded_by is None and _entry_key(verdict.path) in matched:
+                    verdict.superseded_by = newer.manifest
+
+
 def verify_tree(root: Path, **options) -> list[VerifyReport]:
-    """Verify every MHL found under `root`."""
-    return [verify_manifest(manifest, **options)
-            for manifest in find_manifests(root)]
+    """Verify every MHL found under `root`, with `supersede` applied."""
+    reports = [verify_manifest(manifest, **options)
+               for manifest in find_manifests(root)]
+    supersede(reports)
+    return reports

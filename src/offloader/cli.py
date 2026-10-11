@@ -611,10 +611,11 @@ def cmd_verify(args: argparse.Namespace) -> int:
             sys.stderr.flush()
 
     worst = 0
+    reports = []
     for manifest in manifests:
         try:
-            report = verify_mod.verify_manifest(
-                manifest, progress=progress, bypass_cache=not args.allow_cache)
+            reports.append(verify_mod.verify_manifest(
+                manifest, progress=progress, bypass_cache=not args.allow_cache))
         except Exception as exc:
             print(f"error: could not read {manifest}: {exc}", file=sys.stderr)
             worst = max(worst, 2)
@@ -622,9 +623,18 @@ def cmd_verify(args: argparse.Namespace) -> int:
         if show:
             sys.stderr.write('\r' + " " * 90 + '\r')
 
+    # Every manifest is checked before any is reported, so a rerun's manifest
+    # can answer the entries an earlier failed run could not hash. Only that
+    # direction: see `verify.supersede`.
+    verify_mod.supersede(reports)
+
+    for report in reports:
+        manifest = report.manifest
         print('\n' + str(manifest))
         print(f"  {report.summary()}")
         for verdict in report.failures:
+            print(f"  {verdict.describe()}")
+        for verdict in report.superseded:
             print(f"  {verdict.describe()}")
         for verdict in report.directory_failures:
             print(f"  {verdict.describe()}")

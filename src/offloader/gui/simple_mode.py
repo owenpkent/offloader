@@ -24,7 +24,13 @@ from ..models import Profile, VerificationMode
 from ..presets import Preset
 from ..reports import WRITERS
 from ..volumes import volume_label
-from .preset_editor import PARANOID_LABEL, PARANOID_TOOLTIP, VERIFICATION_LABELS
+from .preset_editor import (
+    PARANOID_LABEL,
+    PARANOID_TOOLTIP,
+    REPLACE_EXISTING_LABEL,
+    REPLACE_EXISTING_TOOLTIP,
+    VERIFICATION_LABELS,
+)
 from .widgets import DestinationList, SourceDropZone, button, column, label, row
 
 
@@ -93,6 +99,8 @@ class SimpleModePanel(QWidget):
             "the originals are still copying. The report is unaffected: it "
             "always reads in tree order.")
         self._proxies_first.setChecked(True)
+        self._replace = QCheckBox(REPLACE_EXISTING_LABEL)
+        self._replace.setToolTip(REPLACE_EXISTING_TOOLTIP)
         self._paranoid = QCheckBox(PARANOID_LABEL)
         self._paranoid.setToolTip(PARANOID_TOOLTIP)
 
@@ -106,6 +114,7 @@ class SimpleModePanel(QWidget):
         form.addRow("Thumbnails", self._thumbnails)
         form.addRow("Reports", row(*report_row))
         form.addRow("Options", column(self._preserve, self._proxies_first,
+                                      self._replace,
                                       self._paranoid))
 
         self._start = button("Start offload", accent=True)
@@ -206,6 +215,7 @@ class SimpleModePanel(QWidget):
             preserve_structure=self._preserve.isChecked(),
             proxies_first=self._proxies_first.isChecked(),
             paranoid=self._paranoid.isChecked(),
+            replace_existing=self._replace.isChecked(),
         )
 
     def _start_clicked(self) -> None:
