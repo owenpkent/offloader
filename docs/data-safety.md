@@ -279,6 +279,9 @@ folder used.
 | A directory symlink or junction in the source | Never entered, and each one skipped is named in a warning. A junction pointing at its own parent cannot loop, and an alias listed before its target (`A_alias -> Z_real`) can no longer claim the real folder: the real folder is always scanned under its real name. Cloud-storage placeholder folders are reparse points too but are real folders, so only links (name-surrogate reparse points) are skipped. |
 | A manifest whose digests are uppercase | Compared case-insensitively for hex formats, exactly for C4. Another tool's casing is not corruption. |
 | A filename XML or UTF-8 cannot carry | Filtered to U+FFFD in manifests and CSV, so one bad name cannot strand a delivery's paperwork. |
+| A malformed chunk in a broadcast WAV | The walk advances on every step and is bounded, so a truncated file cannot hang it; the payload is capped, so a corrupt size field is not an allocation. The file still copies and verifies. |
+| An `iXML` chunk carrying a doctype | Refused outright, closing billion-laughs entity expansion and XXE. No recorder writes one. See [`ixml.md`](ixml.md). |
+| Card metadata rendered into the HTML report | Escaped. Scene, take and the mixer's note are attacker-controlled strings off a removable device. |
 
 ### Flattening is refused when it would lose a file
 

@@ -12,8 +12,9 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from . import ixml
 from .models import AudioTrack, CameraInfo, MediaInfo
-from .util import format_timecode
+from .util import format_clock, format_timecode
 
 #: Extensions we bother probing. Everything else is treated as a data file and
 #: listed without a metadata block, exactly as the reference does for sidecars.
@@ -197,7 +198,36 @@ def _probe(path: Path, timeout: float) -> MediaInfo:
     except (subprocess.SubprocessError, json.JSONDecodeError, OSError):
         return MediaInfo()
 
-    return _build(data)
+    info = _build(data)
+    if info.is_audio and ixml.is_wav(path):
+        try:
+            _attach_sound(info, path)
+        except Exception:            # noqa: BLE001 - the slate is a bonus
+            # Caught here rather than left to `probe`, which would discard the
+            # whole document: a card pulled mid-read must not cost us the
+            # container, the tracks and the clock ffprobe already gave us.
+            pass
+    return info
+
+
+def _attach_sound(info: MediaInfo, path: Path) -> None:
+    """Add what ffprobe could not read: the take, and the rate to read it at.
+
+    Only reached for a WAV with no video stream, so the cost is a couple of
+    seeks on a file that is megabytes rather than gigabytes.
+    """
+    sound = ixml.read_sound_info(path)
+    if sound is None:
+        return
+    info.sound = sound
+
+    rate = info.audio_tracks[0].sample_rate_hz if info.audio_tracks else None
+    frames = ixml.timecode_of(sound, rate)
+    if frames:
+        # iXML supplied the frame rate, so the clock `_build` derived from the
+        # bare sample count can be upgraded to the frame timecode a sound
+        # report is expected to show.
+        info.timecode = frames
 
 
 def _build(data: dict) -> MediaInfo:
@@ -250,6 +280,10 @@ def _build(data: dict) -> MediaInfo:
     for stream in audios:
         codec = stream.get("codec_name", "")
         bit_rate = _as_float(stream.get("bit_rate"))
+        # `bits_per_raw_sample` is the honest depth for PCM; `bits_per_sample`
+        # is 0 on several compressed codecs, which `or` steps past.
+        depth = (_as_int(stream.get("bits_per_raw_sample"))
+                 or _as_int(stream.get("bits_per_sample")))
         info.audio_tracks.append(
             AudioTrack(
                 channels=_as_int(stream.get("channels")) or 0,
@@ -257,6 +291,24 @@ def _build(data: dict) -> MediaInfo:
                 codec=_AUDIO_CODECS.get(codec, codec.upper() or "Unknown"),
                 bit_rate_kbps=bit_rate / 1000.0 if bit_rate else None,
                 sample_rate_hz=_as_int(stream.get("sample_rate")),
+                bit_depth=depth or None,
             )
         )
+
+    if video is None and info.audio_tracks:
+        # The clock on a sound card. A broadcast WAV stores its origin as
+        # `time_reference`, the sample count since midnight, and that is the
+        # field the report is read for. The frame rate to turn it into frame
+        # timecode lives in iXML, which ffprobe does not read, so
+        # `format_clock` renders the remainder as milliseconds rather than
+        # inventing a rate -- see its docstring.
+        tags = _tags(fmt)
+        explicit = tags.get("timecode")
+        rate = info.audio_tracks[0].sample_rate_hz
+        reference = _as_int(tags.get("time_reference"))
+        if explicit:
+            info.timecode = explicit
+        elif reference is not None and rate:
+            info.timecode = format_clock(reference / rate)
+
     return info
