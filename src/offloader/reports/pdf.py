@@ -29,6 +29,7 @@ from ..util import (
     format_size,
 )
 from . import fonts, icons, layout
+from .csv_report import UNRESOLVED_TITLE
 
 
 @dataclass(frozen=True)
@@ -548,6 +549,62 @@ class PdfReport:
 
         self.y = top + height
 
+    # ------------------------------------------------------------ unresolved
+    def _draw_unresolved(self) -> None:
+        """What a timeline job did not supply, after everything it did.
+
+        Only drawn when there is something to say, so a card's report keeps
+        the reference layout exactly. "Final Status: Incomplete" in the header
+        points here.
+        """
+        lines = self.job.unresolved
+        size = layout.SIZE_META
+        pitch = size + 2.5
+        self._ensure(layout.DETAIL_TITLE_GAP + layout.DETAIL_PITCH)
+        baseline = self.y + layout.DETAIL_TITLE_GAP
+        self._draw_text(layout.DETAIL_TITLE_X, baseline,
+                        f"{UNRESOLVED_TITLE} ({len(lines)})",
+                        layout.SIZE_HEADER, bold=True, color=layout.COLOR_LABEL)
+        self.y = baseline + 4.0
+        width = layout.DETAIL_MAX_X - layout.DETAIL_NAME_X
+        for line in lines:
+            # Wrapped, never elided: the middle of a path is often the part
+            # that says which of two same-named files is meant.
+            for index, piece in enumerate(self._wrap(line, size, width)):
+                self._ensure(pitch)
+                self.y += pitch
+                x = layout.DETAIL_NAME_X + (0.0 if index == 0 else 8.0)
+                self._draw_text(x, self.y, piece, size)
+            self.y += 1.5
+
+    def _wrap(self, text: str, size: float, width: float) -> list[str]:
+        """Greedy word wrap at `size`, hard-splitting a word wider than a line."""
+        font = self._font(False)
+
+        def fits(candidate: str) -> bool:
+            return pdfmetrics.stringWidth(candidate, font, size) <= width - 8.0
+
+        lines: list[str] = []
+        current = ""
+        for word in text.split(" "):
+            candidate = f"{current} {word}" if current else word
+            if fits(candidate):
+                current = candidate
+                continue
+            if current:
+                lines.append(current)
+            current = ""
+            while word and not fits(word):
+                cut = len(word)
+                while cut > 1 and not fits(word[:cut]):
+                    cut -= 1
+                lines.append(word[:cut])
+                word = word[cut:]
+            current = word
+        if current:
+            lines.append(current)
+        return lines or [""]
+
     # ------------------------------------------------------------ build
     def build(self) -> Path:
         self._draw_header()
@@ -559,6 +616,9 @@ class PdfReport:
             self._draw_detail_header()
             for index, entry in enumerate(self.job.files):
                 self._draw_detail_entry(entry, index)
+
+        if self.job.unresolved:
+            self._draw_unresolved()
 
         self._draw_footer()
         self.canvas.save()

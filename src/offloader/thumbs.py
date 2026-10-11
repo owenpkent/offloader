@@ -7,6 +7,7 @@ side bars. We reproduce that: ffmpeg scales to fit and pads to the cell.
 
 from __future__ import annotations
 
+import hashlib
 import shutil
 import subprocess
 from pathlib import Path
@@ -57,6 +58,14 @@ def _sample_offsets(duration: float, count: int) -> list[float]:
     return [start + span * i / (count - 1) for i in range(count)]
 
 
+def thumbnail_stem(source: Path, key: str | None = None) -> str:
+    """`C001_1a2b3c4d`: the clip's stem plus a stable hash of `key`."""
+    digest = hashlib.sha1(
+        (key if key is not None else str(source)).encode("utf-8", "surrogatepass")
+    ).hexdigest()[:8]
+    return f"{Path(source).stem}_{digest}"
+
+
 def extract(
     source: Path,
     media: MediaInfo,
@@ -64,12 +73,18 @@ def extract(
     count: int = 4,
     timeout: float = 60.0,
     memo: DecoderMemo | None = None,
+    key: str | None = None,
 ) -> list[Path]:
     """Grab `count` thumbnails. Returns [] if ffmpeg is missing, the file has
     no video stream, or extraction fails — thumbnails are never load-bearing.
 
     With a `memo`, a suffix whose every extraction failed is skipped for the
-    rest of that memo's lifetime instead of re-spawning ffmpeg per clip."""
+    rest of that memo's lifetime instead of re-spawning ffmpeg per clip.
+
+    `key` names the clip, normally its path relative to the source root.
+    It goes into the filenames, so two clips with one stem in different
+    folders (A/C001.mov and B/C001.mov) cannot overwrite each other's
+    frames and put the wrong picture beside a verified clip."""
     exe = ffmpeg_path()
     if exe is None or not media.is_video or not media.duration_sec:
         return []
@@ -77,7 +92,7 @@ def extract(
         return []
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    stem = source.stem
+    stem = thumbnail_stem(source, key)
     results: list[Path] = []
 
     vf = (
