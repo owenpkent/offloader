@@ -134,8 +134,13 @@ manifest lists and exits non-zero if anything is off, so a format script can gat
 on it. An offload's manifest lists every file it scanned for that
 destination, including any that failed (recorded with no checksum when none
 could be taken), so a destination missing a clip fails here; every manifest
-under the folder is checked, earlier runs' included. `--allow-cache` skips the
-page-cache eviction: faster, and may verify memory rather than the device.
+under the folder is checked, earlier runs' included. An entry a failed run could
+not hash is reported as superseded, and stops failing, once a newer manifest for
+the same destination lists that file with a hash that still matches; a hashed
+entry is never superseded. See
+[`docs/data-safety.md`](docs/data-safety.md#a-manifest-lists-what-did-not-arrive).
+`--allow-cache` skips the page-cache eviction: faster, and may verify memory
+rather than the device.
 
 For an ASC MHL history it also recomputes the directory content and structure
 hashes, which is the only check that catches a rename or a moved file — every
