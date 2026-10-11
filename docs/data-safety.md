@@ -176,7 +176,7 @@ known.
 Cards and readers fail intermittently long before they fail for good. A read
 that fails for a transient-looking reason is retried — three attempts by
 default, backing off from two seconds, matching robocopy's `/R` and `/W`. Tune
-with `--retries` and `--retry-wait`, or per preset.
+with `--retries` and `--retry-wait`. The desktop app uses the defaults.
 
 The discrimination matters more than the retrying. Retrying a missing file, a
 permission denial or a full disk wastes time and buries the real fault in a

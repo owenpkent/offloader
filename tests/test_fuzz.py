@@ -34,7 +34,6 @@ from offloader.models import (
     MediaInfo,
     VerificationMode,
 )
-from offloader.presets import Preset
 from offloader.reports import layout, write_csv, write_html, write_mhl, write_pdf
 
 fitz = pytest.importorskip("fitz", reason="PyMuPDF needed to inspect the PDF")
@@ -386,37 +385,3 @@ def test_html_input_can_never_become_markup(names: list[str], tmp_path_factory):
     expected = _tag_names(benign.read_text(encoding="utf-8"))
     actual = _tag_names(hostile.read_text(encoding="utf-8"))
     assert actual <= expected, f"input introduced elements: {actual - expected}"
-
-
-# --------------------------------------------------------------------- presets
-
-
-@given(
-    st.builds(
-        Preset,
-        name=safe_name,
-        destinations=st.lists(safe_name.map(lambda s: Path("D:/") / s), max_size=4),
-        algorithm=st.sampled_from(sorted(ALGORITHMS)),
-        verification=st.sampled_from(list(VerificationMode)),
-        thumbnail_count=st.integers(min_value=0, max_value=8),
-        reports=st.lists(st.sampled_from(["pdf", "csv", "mhl", "html"]),
-                         max_size=4, unique=True),
-        excludes=st.lists(safe_name, max_size=4),
-        naming_template=hostile_text,
-        use_count=st.integers(min_value=0, max_value=10**6),
-    )
-)
-def test_preset_round_trips_through_json(preset: Preset):
-    restored = Preset.from_dict(preset.to_dict())
-    assert restored == preset
-
-
-@given(st.dictionaries(st.text(max_size=20), st.none() | st.text(max_size=20),
-                       max_size=10))
-def test_preset_from_dict_tolerates_garbage(payload: dict):
-    """A hand-edited or version-skewed presets.json must still load."""
-    preset = Preset.from_dict(payload)
-    assert preset.name
-    assert preset.algorithm in ALGORITHMS
-    assert isinstance(preset.verification, VerificationMode)
-    assert preset.summary()

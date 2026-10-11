@@ -347,7 +347,3 @@ def test_retry_is_configurable_from_a_preset(tmp_path: Path):
     options = preset.to_options()
     assert options.retry.attempts == 7
     assert options.retry.delay == pytest.approx(0.5)
-
-    restored = Preset.from_dict(preset.to_dict())
-    assert restored.retry_attempts == 7
-    assert restored.retry_wait == pytest.approx(0.5)

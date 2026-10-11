@@ -27,14 +27,12 @@ def qapp():
 
 @pytest.fixture
 def window(qapp, tmp_path, monkeypatch):
-    """A MainWindow whose presets, history and settings live in the temp dir.
+    """A MainWindow whose history and settings live in the temp dir.
 
     Each module imported `config_file` by name, so patch it where it is used.
     """
     from offloader import history as history_module
-    from offloader import presets as presets_module
 
-    monkeypatch.setattr(presets_module, "config_file", lambda n: tmp_path / n)
     monkeypatch.setattr(history_module, "config_file", lambda n: tmp_path / n)
     monkeypatch.setattr(mw, "config_file", lambda n: tmp_path / n)
 

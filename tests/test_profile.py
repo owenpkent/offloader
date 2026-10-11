@@ -3,7 +3,7 @@
 The verified copy engine is the same for both profiles; `data` only switches
 off the media-specific work (ffprobe, thumbnails, the BRAW check). These tests
 pin that contract at every layer it passes through — OffloadOptions, the engine,
-the CLI and presets — so a future refactor cannot quietly start probing a data
+the CLI and the desktop app — so a future refactor cannot quietly start probing a data
 transfer or stop probing a media one.
 """
 
@@ -101,16 +101,10 @@ def test_cli_defaults_to_the_media_profile(tmp_path):
     assert options.profile is Profile.MEDIA
 
 
-def test_preset_round_trips_the_profile():
+def test_preset_carries_the_profile_to_the_engine():
     preset = Preset(name="Archive", profile=Profile.DATA)
-    restored = Preset.from_dict(preset.to_dict())
-    assert restored.profile is Profile.DATA
-    assert restored.to_options().profile is Profile.DATA
+    assert preset.to_options().profile is Profile.DATA
 
 
-def test_preset_defaults_to_media_and_tolerates_missing_key():
+def test_preset_defaults_to_media():
     assert Preset(name="x").profile is Profile.MEDIA
-    # A config written before profiles existed has no key at all.
-    assert Preset.from_dict({"name": "legacy"}).profile is Profile.MEDIA
-    # A garbage value must never brick a load.
-    assert Preset.from_dict({"name": "bad", "profile": "nonsense"}).profile is Profile.MEDIA
