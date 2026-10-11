@@ -622,7 +622,7 @@ ruff check src tests
 pytest --cov=offloader --cov-report=term-missing
 ```
 
-828 tests at 84% line coverage. They cover formatting against the reference's
+899 tests at 84% line coverage. They cover formatting against the reference's
 exact strings, checksum vectors and streaming equivalence, copy/verify
 behaviour including simulated destination corruption, pause/resume/cancel
 concurrency, retry discrimination, BRAW container parsing, ffprobe parsing,
