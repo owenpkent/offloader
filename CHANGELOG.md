@@ -27,6 +27,14 @@ project uses [semantic versioning][semver].
 
 ### Fixed
 
+- **A silent installer `/D=` target was overridden by the registered location.** NSIS
+  consumes `/D=` before `.onInit`, so the old `$CMDLINE` check never saw it and
+  `setup.exe /S /D=B` reinstalled into the registered location A. An explicit
+  target now wins.
+- **Pause and cancel are honoured during rereads.** A cancel issued during the
+  `--paranoid` source reread or the full-verification destination reread was
+  ignored, and the file was promoted and reported Verified. Both rereads now
+  check for pause and cancel at every chunk, and a cancel discards the partials.
 - **A report directory more than one level down failed its own verification.**
   The writer records a relocated report directory as a relative path, so
   `--report-dir` two levels below the destination was recorded as
