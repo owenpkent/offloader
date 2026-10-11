@@ -6,6 +6,7 @@ import itertools
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -270,7 +271,11 @@ def test_deleting_the_control_file_releases_a_paused_job(tmp_path: Path):
     assert not control.paused
 
 
-def test_file_control_cancels_a_running_offload(tmp_path: Path):
+def test_file_control_cancels_a_running_offload(tmp_path: Path, monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(
+        engine, "time", SimpleNamespace(monotonic=lambda: clock[0], sleep=time.sleep),
+    )
     source = tmp_path / "card"
     source.mkdir()
     for index in range(12):
@@ -289,6 +294,9 @@ def test_file_control_cancels_a_running_offload(tmp_path: Path):
         seen.add(event.file_name)
         if len(seen) == 3:
             path.write_text("cancel\n", encoding="utf-8")
+            # poll=0 is clamped to 50 ms. Make the next real checkpoint poll
+            # eligible without depending on disk speed or sleeping in the test.
+            clock[0] += 1.0
 
     job = engine.run(source, _options(tmp_path), progress, control)
 

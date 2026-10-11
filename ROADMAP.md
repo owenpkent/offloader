@@ -51,6 +51,11 @@ its grade is a warning rather than two unrelated rows.
 
 ## Next
 
+The proposed first packaged Windows beta is tracked in
+[`docs/release-plan.md`](docs/release-plan.md), with packaging, signing,
+integrity gates, a private pilot, and recovery steps. It adapts Alpha-OSK's
+release process to Offloader's data-safety requirements.
+
 ### `--skip-existing` by checksum, not size
 
 Today it is explicitly a speed option and says so: a destination file of the

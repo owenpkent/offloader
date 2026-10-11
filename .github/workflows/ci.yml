@@ -56,7 +56,7 @@ jobs:
         run: offloader info
 
       - name: Lint
-        run: ruff check src tests
+        run: ruff check src tests scripts build/windows
 
       - name: Test
         run: pytest -q --cov=offloader --cov-report=term --cov-report=xml
@@ -121,7 +121,40 @@ jobs:
           python -m pip install --upgrade pip build twine
           python -m build
           python -m twine check dist/*
+      - name: Check that the source archive contains the Windows builder
+        run: >-
+          python -c "import glob, tarfile;
+          names = tarfile.open(glob.glob('dist/*.tar.gz')[0]).getnames();
+          assert all(any(n.endswith('/build/windows/' + f) for n in names)
+          for f in ('build.py', 'sign.py', 'offloader.spec', 'installer.nsi'))"
+      - name: Install and check the built wheel outside the checkout
+        run: python scripts/check_wheel.py dist/*.whl
       - uses: actions/upload-artifact@v4
         with:
           name: dist
           path: dist/
+
+  windows-bundle:
+    name: Windows unsigned desktop and installer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install packaging dependencies
+        run: python -m pip install -e ".[gui]" -r requirements-build.txt
+      - name: Install NSIS
+        run: choco install nsis --version=3.12.0 -y --no-progress
+      - name: Build unsigned artifacts and check the frozen applications
+        run: python build/windows/build.py --clean --no-sign
+      - uses: actions/upload-artifact@v4
+        with:
+          name: offloader-windows-unsigned
+          path: |
+            dist/windows/Offloader-*.exe
+            dist/windows/Offloader-*.zip
+            dist/windows/Offloader-*-inventory.json
+            dist/windows/SHA256SUMS.txt
+          if-no-files-found: error
