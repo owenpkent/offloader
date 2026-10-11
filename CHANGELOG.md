@@ -121,6 +121,14 @@ project uses [semantic versioning][semver].
   `<name>_Reports-2` when `<name>_Reports` already exists, a reused
   `--report-dir` gets `JobReport-2.mhl`, and `verify` checks every manifest
   under the folder.
+- **A failed run's manifest kept failing `verify` after a successful rerun.**
+  The files it could not read stay unhashed in it, so `verify` failed until the
+  operator deleted it by hand. An unhashed entry is now superseded when a newer
+  manifest for the same destination root lists the same path with a hash that
+  matches; it is printed as `superseded by <manifest>`. Only that direction:
+  a hashed entry is never superseded, so a copy corrupted since still fails.
+  Newer means the manifest's own recorded time, then its number
+  (`<name>_Reports-2`, `JobReport-2.mhl`), never the file's modification time.
 - **A source folder that could not be listed was silently left out.** The job
   read Verified without the files under it. Listing errors are now recorded,
   the job fails naming the folder, the CLI exits `1`, and the manifests carry an
@@ -479,6 +487,13 @@ project uses [semantic versioning][semver].
   somewhere being written, and a destination-relative path that is absolute or
   climbs out with `..` is refused before the job starts.
 
+- **The desktop app can set `replace_existing`.** The engine refuses to replace
+  an existing destination file whose content differs, and its message pointed
+  at `--replace-existing`, a flag the app could not pass. Presets now carry
+  `replace_existing` (saved and reloaded, off for presets written before it),
+  the preset editor and Simple mode have a *Replace existing files whose content
+  differs* checkbox under Options, off by default, and the refusal names both
+  the flag and the checkbox.
 - **"Start offload" says "Add to queue" when that is what it does.** Jobs run
   one at a time; while one is running the button enqueues, and the ready line
   says the job runs after the current one.
