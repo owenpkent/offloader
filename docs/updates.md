@@ -91,6 +91,12 @@ build that Windows then considers older than the one it replaced.
 If either version is unreadable the answer is "not newer". String comparison
 is what makes `1.0.10` look older than `1.0.9`.
 
+Because the feed is the releases collection, this ordering is applied to
+releases the updater can actually see: an installed `0.1.0b1` finds `0.1.0b2`
+or `0.1.0rc1` once either is published, and a repository holding only betas
+still answers. The channel comes from the version in the tag, not from GitHub's
+`prerelease` flag, which the updater does not read.
+
 ## What is checked before anything runs
 
 | Check | What it stops |
@@ -212,7 +218,10 @@ rather than enforced.
 
 ## What it deliberately does not do
 
-**It does not close anything.** Offloader's installer refuses maintenance
+**It never closes a running transfer.** The command line closes nothing. The
+desktop app declines the update while a job is running or paused, and
+otherwise closes itself, after asking, once the installer has started.
+Offloader's installer refuses maintenance
 while any Offloader program (the desktop app or a CLI process, busy or idle)
 holds the installation's shared lock, and exits non-zero without changing the
 installation; it never force-kills a running copy. That refusal is a promise

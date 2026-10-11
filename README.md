@@ -259,12 +259,60 @@ the same destination lists that file with a hash that still matches; a hashed
 entry is never superseded. See
 [`docs/data-safety.md`](docs/data-safety.md#a-manifest-lists-what-did-not-arrive).
 `--allow-cache` skips the page-cache eviction: faster, and may verify memory
-rather than the device.
+rather than the device. Without it, a failed eviction is printed as a warning
+rather than ignored. On macOS eviction is not available, so the warning is
+expected there and the result may reflect memory rather than the device.
 
 For an ASC MHL history it also recomputes the directory content and structure
 hashes, which is the only check that catches a rename or a moved file — every
 file involved still hashes exactly as recorded. See
 [`docs/ascmhl.md`](docs/ascmhl.md#directory-hashes).
+
+### `update`
+
+```sh
+offloader update              # is there a newer release?
+offloader update --install    # download it, verify it, run the installer
+```
+
+GitHub Releases is the feed, so there is no manifest server and no second
+place a version number is recorded. Before anything runs, the download has to
+be served from an allowlisted host *after* redirects, and carry a valid
+Authenticode signature with this project's certificate thumbprint, its
+publisher name, and an embedded `FileVersion` matching the release. That last
+check is what stops an older but still validly signed installer being
+re-served under a newer asset name. The SHA-256 taken while streaming is
+compared with a fresh hash of the file on disk before the signature is read,
+after it is read, and immediately before launch; a mismatch refuses and
+nothing runs. One window remains: a process able to write the download
+directory between that last hash and the launch could still swap the file, so
+point `--dir` only at a private location (see the known limits in
+[`docs/updates.md`](docs/updates.md)).
+
+The feed is the releases collection (`/releases?per_page=30`), not
+`/releases/latest`, which GitHub documents as excluding prereleases. Drafts are
+ignored, the channel is taken from the version in the tag rather than from
+GitHub's prerelease flag, and the greatest eligible version wins rather than
+whichever is listed first. So an installed beta such as `0.1.0b1` is offered the
+next beta, release candidate or final release, while a stable install is
+offered stable releases only.
+
+A feed that could not be read is a failure, not "the newest release
+available": the command line prints an error and exits with status 2 (0 is up
+to date, 1 is a newer release found), and the desktop app reports the check as
+failed.
+
+**It never closes a running transfer.** The installer refuses maintenance
+while any Offloader program holds the installation, which is the guarantee
+rather than a limitation, so updating means finishing or cancelling the job
+first. The command line closes nothing and says so before the elevation prompt
+appears. The desktop app declines the update while a job is running or paused,
+and otherwise closes itself, after asking, once the installer has started.
+
+The desktop app does the same thing from **Help, Check for updates now**, and
+checks once on launch unless that is turned off in Options. Full detail,
+including what is deliberately not copied from the reference implementation,
+is in [`docs/updates.md`](docs/updates.md).
 
 ### Verification modes
 
@@ -544,7 +592,8 @@ The short version:
   was already there and never leaves a plausible-looking filename.
 - `--verify full` evicts each file from the page cache before reading it back,
   because a read straight after a write is otherwise served from memory and
-  proves nothing about the device.
+  proves nothing about the device. If eviction fails, which is always the case
+  on macOS, that is recorded as a warning.
 - Empty files, and verifications that may have been served from cache, are
   reported as warnings rather than folded into a "Verified" verdict.
 - Reads that fail for a transient reason are retried at the failing chunk, so
@@ -585,7 +634,8 @@ general-purpose tool reports a filename, a size, and a placeholder icon.
 | --- | --- |
 | [`ROADMAP.md`](ROADMAP.md) | What is next, why, and what this will not become |
 | [`docs/release-plan.md`](docs/release-plan.md) | Windows beta release sequence, packaging, signing, acceptance gates, and recovery |
-| [`docs/build-windows.md`](docs/build-windows.md) | Build, sign, and check Windows desktop bundles and installers |
+| [`docs/build-windows.md`](docs/build-windows.md) | Build, sign, and check Windows desktop bundles and installers; the bill of materials, and tagging a candidate |
+| [`docs/updates.md`](docs/updates.md) | What an update checks before it runs anything, and why it never closes a running transfer |
 | [`docs/data-safety.md`](docs/data-safety.md) | Threat model: what is guaranteed, what is not, and the bugs behind each guarantee |
 | [`docs/report-layout.md`](docs/report-layout.md) | Every coordinate of the PDF, measured off the reference report |
 | [`docs/performance.md`](docs/performance.md) | Why not robocopy, with benchmarks and the confounds that made the first run worthless |

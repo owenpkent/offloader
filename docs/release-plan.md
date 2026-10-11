@@ -29,11 +29,12 @@ they surface, and that decision has not been made here.
 
 Those three files cover the **Python distribution dependencies** and say so in
 their own text. They are not the complete third-party inventory: a frozen
-application also ships the CPython runtime DLL and the PyInstaller bootloader
-compiled into each executable, neither of which has packaging metadata for the
-closure to walk. `sbom.uncovered_in_bundle` reports which of those are present
-in a built bundle, so the gap is measured against the tree rather than
-asserted.
+application also ships the CPython runtime DLL, the PyInstaller bootloader
+compiled into each executable, CPython's OpenSSL and libffi DLLs, and the
+VC++ and UCRT runtimes, none of which has packaging metadata for the closure
+to walk. `sbom.uncovered_in_bundle` reports only the CPython DLL and the
+bootloader executables that are present in a built bundle; the rest are not
+yet reported.
 
 Hardware-key signing, clean-machine interactive installation and alternate
 credential checks, the Qt redistribution decision the notices flag, the
@@ -121,13 +122,21 @@ credentials, update endpoints, or installation paths.
 - **Timeline support:** include and test OpenTimelineIO and the currently
   declared adapter in the desktop bundle if timeline import is advertised for
   that bundle. Otherwise mark that capability source-only for the beta.
-- **Updates:** `offloader update` finds and verifies a release and runs the
-  signed installer; the in-app check remains deferred. Refuse replacement
-  while the app or CLI has an active job; never force-kill a copy to install
-  an update.
-- **Scope freeze:** defer new media features, cloud services, notifications,
-  auto-update, and a marketing website. Fix integrity and packaging blockers
-  discovered during qualification.
+- **Updates:** `offloader update` and the desktop app both check for a
+  release, verify it, and run the signed installer. Refuse replacement while
+  the app or CLI has an active job; never force-kill a copy to install an
+  update. See [updates.md](updates.md). Discovery reads the releases
+  collection, ignores drafts and takes the channel from the tag's version, so
+  a beta can find the next beta. What it still needs is the qualification
+  below: an end-to-end update between two signed published releases.
+- **Scope freeze:** defer new media features, cloud services, notifications
+  and a marketing website. Fix integrity and packaging blockers discovered
+  during qualification.
+
+  Updating is inside the freeze only as far as it goes today: the *check* is
+  automatic, and installing never is. Nothing is downloaded, replaced or
+  restarted without someone asking for it, and a silent background update
+  stays out of scope.
 
 These are working defaults for implementation, not statements that the
 packaging or safeguards already exist.
@@ -225,8 +234,11 @@ The update client is now implemented in `src/offloader/update.py`, wrapped for
 the desktop app in `src/offloader/gui/updates.py`, and documented in
 [updates.md](updates.md). It meets the conditions this section set: the
 signature, publisher and embedded version are all verified before elevation,
-and the `/D=` target is computed from the running executable rather than from
-the uninstall registry key.
+and the `/D=` target is computed from the running executable. The installer
+honours an explicit `/D=`, but when it equals the compiled default location it
+cannot tell that from no `/D=` and uses the `InstallLocation` registered under
+HKLM (writable only by an administrator), so in the common case the registry
+value still decides the target; see [updates.md](updates.md).
 
 The app never replaces itself under an active transfer. A running or paused job
 declines the update with a reason, the queue is rechecked immediately before

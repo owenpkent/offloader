@@ -27,6 +27,9 @@ project uses [semantic versioning][semver].
 
 ### Fixed
 
+- **Documentation claims were corrected to match the code:** the updater's
+  re-hash and its remaining window, verify's eviction warning, what an update
+  closes, the installer's `/D=` handling, and the SBOM's coverage.
 - **`offloader update` reported a feed it could not read as "up to date".**
   Being offline, an HTTP error or rate limit, a redirect off the allowlist and
   malformed JSON all printed "the newest release available" and exited 0, so

@@ -130,8 +130,11 @@ checksum finds that.
 
 It also reports files present on disk that the manifest does not list, and it
 evicts each file before reading so a freshly written tree is read off the device,
-and warns when the eviction failed, since the verdicts then say nothing about
-the device. The unlisted-file scan starts at the root the manifest belongs to (the folder
+and warns when the eviction failed (the CLI prints it as `warning:`, and it is
+in the report's warnings), since the verdicts then say nothing about the device.
+Eviction uses `posix_fadvise` on POSIX systems, which macOS does not provide, so
+on macOS it always fails and the warning is expected; it can also fail
+elsewhere. `--allow-cache` skips eviction. The unlisted-file scan starts at the root the manifest belongs to (the folder
 holding `<name>_Reports`), not at the common folder of the files it lists, which
 for a one-file manifest was the file itself and found nothing.
 
