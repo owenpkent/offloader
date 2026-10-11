@@ -285,6 +285,17 @@ came from one read, so they cannot legitimately differ. This is the same
 evidence the CSV and the PDF carry, in front of the person deciding whether to
 reformat the card.
 
+What each mark means: `✓✓` written and read back from the destination and the
+checksums matched (the destination column is green only then); `✓` written but
+not read back (source-only, or full verification whose cache eviction failed,
+so the re-read may have come from memory); `≈` size matched but the algorithm
+produced no checksum; `✕` failed, with no destination checksum shown; `⊘`
+cancelled; `–` skipped. A source-only or no-verification job labels the column
+"As written": that hash is of the bytes handed to the writer, not of the file on
+disk. `mismatch` in red means a destination differs from the source or from
+another destination. A cancelled job's summary reads "cancelled after 2 of 5
+files", and a warning count in the header lists every warning in its tooltip.
+
 Two guards run before anything is queued:
 
 - **Duplicate offload protection.** The source's file listing — names and sizes,

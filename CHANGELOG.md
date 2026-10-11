@@ -75,6 +75,17 @@ project uses [semantic versioning][semver].
 
 ### Fixed
 
+- **The file list no longer implies stronger evidence than the engine
+  produced.** A cancelled job's summary says "cancelled after 2 of 5 files"
+  instead of "verified 2 of 2". A full verification whose page cache could not
+  be evicted (`Job.cache_eviction_failed`) shows one check and says the
+  read-back could not be confirmed. A checksum of "none" shows `≈` and
+  "size-checked", not a double check. The destination column is green only for
+  a verified, read-back, checksummed match; failed destinations show no
+  checksum; a source-only or unchecked job labels the column "As written";
+  a source/destination difference reads `mismatch` in red; warnings are
+  counted in the header with the list in a tooltip; C4 identifiers keep their
+  case when abbreviated.
 - The stalled stage now clears as soon as bytes resume on a slow link, instead
   of staying up until the whole 8 MiB chunk has assembled.
 - Time spent paused no longer counts toward the stall watchdog, so resuming a

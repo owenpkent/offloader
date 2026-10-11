@@ -657,6 +657,7 @@ def run(source_root: Path, options: OffloadOptions,
         processors=host.processors,
         system_ram=host.system_ram,
         paranoid=options.paranoid,
+        scanned_files=len(files),
     )
 
     thumb_dir = options.thumbnail_dir or (dest_roots[0] / f"{job.name}_Reports" / "thumbs")
@@ -806,6 +807,8 @@ def run(source_root: Path, options: OffloadOptions,
                 # file is already in place and reported Verified.
                 evicted = _confirm_source(_src, result.source_checksum,
                                           options.algorithm, control)
+                if not evicted:
+                    job.cache_eviction_failed = True
                 if not evicted and not reread_noted:
                     reread_noted = True
                     job.warnings.append(
@@ -883,7 +886,10 @@ def run(source_root: Path, options: OffloadOptions,
                                        counters.job_bytes_total))
                     # Evict first, or the read-back is served from the page
                     # cache and verifies our own memory against itself.
-                    if not integrity.evict_from_cache(partial) and not evict_noted:
+                    evicted_ok = integrity.evict_from_cache(partial)
+                    if not evicted_ok:
+                        job.cache_eviction_failed = True
+                    if not evicted_ok and not evict_noted:
                         evict_noted = True
                         job.warnings.append(
                             "could not evict files from the page cache on this "

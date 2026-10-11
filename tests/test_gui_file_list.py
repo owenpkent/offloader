@@ -8,6 +8,7 @@ failed. Those are the rows an operator must not misread as verified.
 
 from __future__ import annotations
 
+import errno
 import os
 from pathlib import Path
 
@@ -124,7 +125,8 @@ def test_a_destination_that_does_not_match_is_not_coloured_as_verified(qapp):
                               [("ffffffffffffffff", FileStatus.COPIED)])))
 
     assert _display(model, 0, COL_SOURCE) != _display(model, 0, COL_DESTINATION)
-    assert _colour(model, 0, COL_DESTINATION) is None
+    assert _display(model, 0, COL_DESTINATION) == "mismatch"
+    assert _colour(model, 0, COL_DESTINATION).name() ==         theme.status_color("failed")
 
 
 def test_destinations_disagreeing_with_each_other_say_mismatch(qapp):
@@ -327,3 +329,186 @@ def test_an_engine_full_job_is_shown_as_read_back(qapp, tmp_path):
     summary = panel._summary.text()
     assert "verified 1 of 1" in summary
     assert "source only" not in summary
+
+
+# ------------------------------------------ private review findings (PR 12)
+
+
+def _run(tmp_path: Path, *, files: int = 1, dests: int = 1,
+         mode: VerificationMode = VerificationMode.FULL,
+         algorithm: str = "xxh3-64", control=None, progress=None,
+         retry=None, **extra) -> Job:
+    """An engine-driven job on tmp_path trees."""
+    from offloader import engine
+    from offloader import retry as retry_mod
+
+    card = tmp_path / "card"
+    card.mkdir(exist_ok=True)
+    for i in range(files):
+        (card / f"F{i}.bin").write_bytes(bytes([i + 1]) * 2048)
+    return engine.run(card, engine.OffloadOptions(
+        destinations=[tmp_path / f"dest{i}" for i in range(dests)],
+        algorithm=algorithm, verification=mode, thumbnail_count=0,
+        extra_probe=False, retry=retry or retry_mod.NO_RETRY, **extra),
+        progress=progress, control=control)
+
+
+def _show(job: Job) -> tuple[FileModel, FileListPanel]:
+    model = FileModel()
+    model.set_job(job)
+    panel = FileListPanel()
+    panel.show_job(job)
+    return model, panel
+
+
+def _tip(model: FileModel, row: int = 0) -> str:
+    return model.data(model.index(row, 1), Qt.ToolTipRole)
+
+
+def test_a_cancelled_job_says_how_far_it_got(qapp, tmp_path):
+    from offloader import engine
+
+    control = engine.JobControl()
+
+    def progress(event):
+        if event.file_index == 2:
+            control.cancel()
+
+    job = _run(tmp_path, files=5, control=control, progress=progress)
+    assert job.cancelled and len(job.files) == 2
+
+    _, panel = _show(job)
+    summary = panel._summary.text()
+    assert "cancelled after 2 of 5 files" in summary
+    assert "2 verified" in summary
+    assert "verified 2 of 2" not in summary
+
+
+def test_failed_cache_eviction_is_not_a_read_back(qapp, tmp_path, monkeypatch):
+    from offloader import integrity
+
+    monkeypatch.setattr(integrity, "evict_from_cache", lambda path: False)
+    job = _run(tmp_path)
+    assert job.cache_eviction_failed
+    assert job.files[0].status is FileStatus.VERIFIED
+
+    model, panel = _show(job)
+    assert _display(model, 0, COL_MARK) == "✓"
+    assert _colour(model, 0, COL_DESTINATION) is None
+    assert "not read back" in _tip(model)
+    assert "read-back could not be confirmed" in panel._summary.text()
+
+
+def test_checksum_none_is_size_checked_not_verified(qapp, tmp_path):
+    job = _run(tmp_path, algorithm="none")
+    model, panel = _show(job)
+    assert _display(model, 0, COL_MARK) not in ("✓✓", "✓")
+    assert _display(model, 0, COL_MARK) == "≈"
+    assert "size matched, no checksum" in _tip(model)
+    assert _colour(model, 0, COL_DESTINATION) is None
+    summary = panel._summary.text()
+    assert "size-checked" in summary and "verified" not in summary
+
+
+@pytest.mark.parametrize("mode", [VerificationMode.NONE,
+                                  VerificationMode.SOURCE_ONLY])
+def test_only_a_read_back_destination_is_green(qapp, tmp_path, mode):
+    job = _run(tmp_path, mode=mode)
+    model, panel = _show(job)
+    assert _colour(model, 0, COL_DESTINATION) is None
+    # Not labelled as if it were read from the destination.
+    assert model.headerData(COL_DESTINATION, Qt.Horizontal) != "Destination"
+    assert "as written" in model.headerData(
+        COL_DESTINATION, Qt.Horizontal, Qt.ToolTipRole)
+
+
+def test_source_only_tooltip_says_hash_as_written(qapp, tmp_path):
+    job = _run(tmp_path, mode=VerificationMode.SOURCE_ONLY)
+    model, _ = _show(job)
+    tip = _tip(model)
+    assert "as written" in tip and "not read back" in tip
+    assert "matched" not in tip
+
+
+def test_a_failed_destination_shows_no_checksum(qapp, tmp_path, monkeypatch):
+    from offloader import engine
+
+    real = engine.hash_file
+    calls = []
+
+    def flaky(path, algorithm, *args, **kwargs):
+        calls.append(path)
+        if len(calls) == 2:
+            raise PermissionError("denied")
+        return real(path, algorithm, *args, **kwargs)
+
+    monkeypatch.setattr(engine, "hash_file", flaky)
+    job = _run(tmp_path, dests=2)
+    entry = job.files[0]
+    assert [d.status for d in entry.destinations] == [
+        FileStatus.VERIFIED, FileStatus.FAILED]
+
+    model, _ = _show(job)
+    assert _display(model, 0, COL_MARK) == "✕"
+    assert _display(model, 0, COL_DESTINATION) == "—"
+    assert _colour(model, 0, COL_DESTINATION) is None
+    failed_line = [line for line in _tip(model).splitlines()
+                   if line.startswith("failed")][0]
+    assert entry.checksum not in failed_line and "—" in failed_line
+
+
+def test_warnings_are_counted_in_the_header(qapp, tmp_path, monkeypatch):
+    from offloader import engine
+    from offloader import retry as retry_mod
+
+    real = engine.hash_file
+    calls = []
+
+    def once(path, algorithm, *args, **kwargs):
+        calls.append(path)
+        if len(calls) == 1:
+            raise OSError(errno.EIO, "transient")
+        return real(path, algorithm, *args, **kwargs)
+
+    monkeypatch.setattr(engine, "hash_file", once)
+    job = _run(tmp_path, retry=retry_mod.RetryPolicy(attempts=2, delay=0.0))
+    assert job.warnings
+
+    _, panel = _show(job)
+    assert not panel._warnings.isHidden()
+    assert panel._warnings.text().startswith("⚠ 1 warning")
+    assert "attempt 2" in panel._warnings.toolTip()
+
+
+def test_warnings_show_for_a_cancelled_job_too(qapp):
+    good = "28f7e67d9b39ea9b"
+    job = _job(_entry("A.braw", good, [(good, FileStatus.VERIFIED)]))
+    job.cancelled = True
+    job.warnings.extend(["one", "two"])
+    _, panel = _show(job)
+    assert panel._warnings.text().startswith("⚠ 2 warnings")
+    assert panel._warnings.toolTip() == "one\ntwo"
+
+
+def test_c4_ids_differing_only_in_case_abbreviate_differently():
+    base = "c4" + "1" * 84 + "aBcD"
+    other = "c4" + "1" * 84 + "abcd"
+    assert len(base) == 90
+    assert abbreviate(base) != abbreviate(other)
+    assert abbreviate(base).endswith("aBcD")
+    # Hex digests are still folded.
+    assert abbreviate("28f7e67d9b39ea9b") == "28F7:EA9B"
+
+
+def test_a_full_verification_mismatch_says_mismatch_in_red(
+        qapp, tmp_path, monkeypatch):
+    from offloader import engine
+
+    monkeypatch.setattr(engine, "hash_file", lambda *a, **k: "deadbeefdeadbeef")
+    job = _run(tmp_path)
+    assert job.files[0].status is FileStatus.FAILED
+
+    model, _ = _show(job)
+    assert _display(model, 0, COL_MARK) == "✕"
+    assert _display(model, 0, COL_DESTINATION) == "mismatch"
+    assert _colour(model, 0, COL_DESTINATION).name() ==         theme.status_color("failed")
