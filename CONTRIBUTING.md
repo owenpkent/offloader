@@ -37,7 +37,7 @@ pip install -e ".[dev]"
 `ffmpeg` and `ffprobe` on `PATH` are optional — the suite runs without them.
 
 ```sh
-pytest                      # ~400 tests, about 33s
+pytest                      # 453 tests
 pytest --fuzz               # property tests at 3000 examples each, about 2 min
 ruff check src tests
 pytest --cov=offloader --cov-report=term-missing
@@ -49,6 +49,16 @@ test files, but if you run Qt code by hand:
 ```sh
 QT_QPA_PLATFORM=offscreen python -m pytest tests/test_gui.py
 ```
+
+The README's screenshots are generated, not captured, so a change to the
+interface can bring them along with it:
+
+```sh
+python tools/screenshots.py         # rewrites docs/images/
+```
+
+It runs the real app against a throwaway config directory and invented volumes,
+so it neither reads your presets nor puts your drive labels in the README.
 
 ## Testing without a camera card
 

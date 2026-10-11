@@ -6,11 +6,12 @@ import subprocess
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt
+from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, QTimer
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QHeaderView,
+    QStyle,
     QStyledItemDelegate,
     QTableView,
     QVBoxLayout,
@@ -25,6 +26,15 @@ from .worker import JobState, QueueController, QueueItem
 COLUMNS = ("Job", "Source", "Preset", "Status", "Progress", "Throughput")
 COL_STATUS = 3
 COL_PROGRESS = 4
+COL_THROUGHPUT = 5
+
+#: What each engine stage is doing, in the operator's words.
+STAGE_VERBS = {
+    "copy": "Copying",
+    "verify": "Verifying",
+    "probe": "Reading metadata",
+    "thumbs": "Extracting thumbnails",
+}
 
 
 def _throughput(item: QueueItem) -> str:
@@ -43,6 +53,19 @@ def _throughput(item: QueueItem) -> str:
     if item.state is JobState.PAUSED:
         return "Paused"
     return ""
+
+
+def _active_summary(item: QueueItem) -> str:
+    """The running job in one line: what, on which file, how fast."""
+    if item.state is JobState.PAUSED:
+        return f"Paused — {item.name} at {item.fraction * 100:.0f}%"
+    verb = STAGE_VERBS.get(item.stage, item.stage.capitalize() or "Running")
+    text = f"{verb} {item.current_file}" if item.current_file else verb
+    text += f" — {item.fraction * 100:.0f}%"
+    rate = _throughput(item)
+    if rate:
+        text += f" · {rate}"
+    return text
 
 
 class QueueModel(QAbstractTableModel):
@@ -117,6 +140,15 @@ class QueueModel(QAbstractTableModel):
         self.dataChanged.emit(self.index(index, 0),
                               self.index(index, len(COLUMNS) - 1))
 
+    def refresh_throughput(self) -> None:
+        """Repaint the rate column without a progress event. During a stall no
+        events arrive, which is exactly when the displayed rate must be seen
+        to fall rather than freeze at its last healthy value."""
+        rows = len(self.controller.items)
+        if rows:
+            self.dataChanged.emit(self.index(0, COL_THROUGHPUT),
+                                  self.index(rows - 1, COL_THROUGHPUT))
+
     def item_at(self, index: QModelIndex) -> QueueItem | None:
         if not index.isValid():
             return None
@@ -124,7 +156,16 @@ class QueueModel(QAbstractTableModel):
 
 
 class ProgressDelegate(QStyledItemDelegate):
-    """Draws the progress column as a bar rather than a number."""
+    """Draws the progress column as a bar with its percentage beside it.
+
+    The colours are chosen against both grounds the cell can have: on the
+    normal row the old accent-on-near-black bar read fine, but the running row
+    is auto-selected, and an accent bar on the accent selection colour was
+    invisible — the operator's own job was the one row without a readable bar.
+    """
+
+    TEXT_WIDTH = 40
+    BAR_HEIGHT = 10
 
     def paint(self, painter: QPainter, option, index) -> None:
         fraction = index.data(Qt.UserRole)
@@ -132,22 +173,34 @@ class ProgressDelegate(QStyledItemDelegate):
             super().paint(painter, option, index)
             return
 
-        rect = option.rect.adjusted(6, 0, -6, 0)
-        height = 8
-        bar = rect.adjusted(0, (rect.height() - height) // 2, 0,
-                            -(rect.height() - height) // 2)
-
+        selected = bool(option.state & QStyle.State_Selected)
         painter.save()
+        if selected:
+            painter.fillRect(option.rect, option.palette.highlight())
+
+        rect = option.rect.adjusted(6, 0, -6, 0)
+        bar = rect.adjusted(0, (rect.height() - self.BAR_HEIGHT) // 2,
+                            -self.TEXT_WIDTH,
+                            -(rect.height() - self.BAR_HEIGHT) // 2)
+
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor(theme.BG))
+        painter.setBrush(QColor(0, 0, 0, 90) if selected
+                         else QColor(theme.PROGRESS_TRACK))
         painter.drawRoundedRect(bar, 4, 4)
 
-        width = int(bar.width() * max(0.0, min(1.0, float(fraction))))
+        clamped = max(0.0, min(1.0, float(fraction)))
+        width = int(bar.width() * clamped)
         if width > 0:
             filled = bar.adjusted(0, 0, width - bar.width(), 0)
-            painter.setBrush(QColor(theme.ACCENT))
+            painter.setBrush(QColor("#ffffff") if selected
+                             else QColor(theme.ACCENT))
             painter.drawRoundedRect(filled, 4, 4)
+
+        text_rect = rect.adjusted(rect.width() - self.TEXT_WIDTH + 6, 0, 0, 0)
+        painter.setPen(QColor("#ffffff") if selected else QColor(theme.FG))
+        painter.drawText(text_rect, Qt.AlignRight | Qt.AlignVCenter,
+                         f"{clamped * 100:.0f}%")
         painter.restore()
 
 
@@ -190,8 +243,12 @@ class QueuePanel(QWidget):
         header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(4, QHeaderView.Fixed)
-        header.setSectionResizeMode(5, QHeaderView.ResizeToContents)
-        header.resizeSection(4, 150)
+        header.resizeSection(4, 170)
+        # Fixed, not ResizeToContents: the rate string changes width on every
+        # update, and letting it drive the layout shoved the column — the one
+        # being read — around as values grew and shrank.
+        header.setSectionResizeMode(COL_THROUGHPUT, QHeaderView.Fixed)
+        header.resizeSection(COL_THROUGHPUT, 190)
 
         self._pause = button("Pause", flat=True)
         self._cancel = button("Cancel", flat=True)
@@ -212,10 +269,24 @@ class QueuePanel(QWidget):
         self._empty = label("Nothing queued. Drop a card on a preset to start.",
                             "muted")
 
+        # The running job promoted to where the eye already is: the queue rows
+        # are 30 px tall at the bottom of the window, and a job in flight
+        # looked almost identical to an idle queue.
+        self._active = label("", "heading")
+        self._active.setStyleSheet(f"color: {theme.ACCENT};")
+        self._active.setVisible(False)
+
+        # Repaints the decaying rate during stalls, when no progress events
+        # arrive to do it. Runs only while a job is active.
+        self._ticker = QTimer(self)
+        self._ticker.setInterval(1000)
+        self._ticker.timeout.connect(self._tick)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
         layout.addWidget(row(label("Queue", "heading"), None, self._clear))
+        layout.addWidget(self._active)
         layout.addWidget(self._empty)
         layout.addWidget(self.table, 1)
         layout.addWidget(row(self._pause, self._cancel, 12, self._up, self._down,
@@ -226,6 +297,25 @@ class QueuePanel(QWidget):
         controller.itemChanged.connect(lambda _: self._sync_buttons())
         controller.jobStarted.connect(self._select_job)
         self._sync_buttons()
+
+    def _active_item(self) -> QueueItem | None:
+        return next((i for i in self.controller.items
+                     if i.state in (JobState.RUNNING, JobState.PAUSED)), None)
+
+    def _update_active(self) -> None:
+        item = self._active_item()
+        if item is None:
+            self._active.setVisible(False)
+            self._ticker.stop()
+            return
+        self._active.setText(_active_summary(item))
+        self._active.setVisible(True)
+        if not self._ticker.isActive():
+            self._ticker.start()
+
+    def _tick(self) -> None:
+        self._update_active()
+        self.model.refresh_throughput()
 
     def _select_job(self, identifier: int) -> None:
         """Follow the running job, so the transport controls act on it without
@@ -249,6 +339,7 @@ class QueuePanel(QWidget):
         has_rows = bool(self.controller.items)
         self._empty.setVisible(not has_rows)
         self.table.setVisible(has_rows)
+        self._update_active()
 
         item = self._selected()
         running = item is not None and item.state is JobState.RUNNING

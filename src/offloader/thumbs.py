@@ -23,6 +23,28 @@ def ffmpeg_path() -> str | None:
     return shutil.which("ffmpeg")
 
 
+class DecoderMemo:
+    """Remembers, per file suffix, that this ffmpeg produced no frames.
+
+    A decoder ffmpeg lacks — BRAW without the Blackmagic SDK is the common
+    case — fails identically for every clip, and paying four doomed process
+    spawns per clip is a real cost on a several-hundred-clip card. One memo
+    lives for one job: the first clip of a suffix pays the probe, the rest
+    skip. Scoped to the job rather than the process so a swapped-in ffmpeg
+    gets a fresh chance, and a single corrupt file can mute at most one
+    offload's contact sheet, never the tool's.
+    """
+
+    def __init__(self) -> None:
+        self._dead: set[str] = set()
+
+    def is_dead(self, source: Path) -> bool:
+        return source.suffix.lower() in self._dead
+
+    def record_failure(self, source: Path) -> None:
+        self._dead.add(source.suffix.lower())
+
+
 def _sample_offsets(duration: float, count: int) -> list[float]:
     """Evenly spaced sample points, biased off the very start and end so we
     don't grab slates or black frames."""
@@ -41,11 +63,17 @@ def extract(
     out_dir: Path,
     count: int = 4,
     timeout: float = 60.0,
+    memo: DecoderMemo | None = None,
 ) -> list[Path]:
     """Grab `count` thumbnails. Returns [] if ffmpeg is missing, the file has
-    no video stream, or extraction fails — thumbnails are never load-bearing."""
+    no video stream, or extraction fails — thumbnails are never load-bearing.
+
+    With a `memo`, a suffix whose every extraction failed is skipped for the
+    rest of that memo's lifetime instead of re-spawning ffmpeg per clip."""
     exe = ffmpeg_path()
     if exe is None or not media.is_video or not media.duration_sec:
+        return []
+    if memo is not None and memo.is_dead(source):
         return []
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -81,4 +109,9 @@ def extract(
         if proc.returncode == 0 and target.exists() and target.stat().st_size > 0:
             results.append(target)
 
+    if memo is not None and not results:
+        # Every sample offset failed after real attempts (ffmpeg present, a
+        # video stream, a duration). The overwhelmingly likely cause is a
+        # decoder this ffmpeg does not have, which the next clip has too.
+        memo.record_failure(source)
     return results

@@ -52,6 +52,8 @@ class MainWindow(QMainWindow):
         self.controller.jobStarted.connect(lambda _: self._update_status())
         self.controller.itemsChanged.connect(self._update_status)
         self.controller.itemChanged.connect(lambda _: self._update_status())
+        self.controller.itemsChanged.connect(self._sync_queue_busy)
+        self.controller.itemChanged.connect(lambda _: self._sync_queue_busy())
 
         # ----------------------------------------------------------- panels
         self.simple = SimpleModePanel()
@@ -295,6 +297,10 @@ class MainWindow(QMainWindow):
         return answer == QMessageBox.Yes
 
     # ---------------------------------------------------------------- events
+    def _sync_queue_busy(self) -> None:
+        self.simple.set_queue_busy(
+            any(not i.state.is_terminal for i in self.controller.items))
+
     def _update_status(self) -> None:
         running = [i for i in self.controller.items if i.state is JobState.RUNNING]
         queued = [i for i in self.controller.items if i.state is JobState.QUEUED]

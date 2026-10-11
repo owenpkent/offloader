@@ -17,6 +17,9 @@ FG = "#e6e8ea"
 FG_MUTED = "#9aa0a6"
 ACCENT = "#5577b0"
 ACCENT_HOVER = "#6688c4"
+#: Unfilled part of a progress bar. Distinct from BG, which vanished against
+#: the table's own background.
+PROGRESS_TRACK = "#31363f"
 OK = "#4caf7d"
 WARN = "#d8a13c"
 BAD = "#e0645c"
@@ -131,6 +134,9 @@ QLineEdit, QComboBox, QSpinBox, QPlainTextEdit {{
     border-radius: 6px;
     padding: 5px 8px;
     selection-background-color: {ACCENT};
+    /* Without this the size hint under-reports the styled height and text
+       clips at its bottom edge at fractional DPI scales (125%). */
+    min-height: 18px;
 }}
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QPlainTextEdit:focus {{
     border-color: {ACCENT};
@@ -179,6 +185,7 @@ QTabBar::tab {{
 QTabBar::tab:selected {{ color: {FG}; border-bottom-color: {ACCENT}; }}
 QTabWidget::pane {{ border: none; }}
 
+QCheckBox, QRadioButton {{ min-height: 20px; }}
 QCheckBox::indicator, QRadioButton::indicator {{
     width: 15px; height: 15px;
     border: 1px solid {BORDER};

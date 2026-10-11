@@ -56,6 +56,18 @@ def row(*children, spacing: int = 8) -> QWidget:
     return widget
 
 
+def column(*children: QWidget, spacing: int = 6) -> QWidget:
+    """A vertical stack, for grouping several checkboxes under one form label
+    rather than giving each its own blank one."""
+    widget = QWidget()
+    layout = QVBoxLayout(widget)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(spacing)
+    for child in children:
+        layout.addWidget(child)
+    return widget
+
+
 def _directories_from(event) -> list[Path]:
     """Directories in a drag payload. Files are mapped to their parent, so
     dropping a clip on a destination means "put it in that folder"."""

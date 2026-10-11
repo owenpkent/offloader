@@ -133,3 +133,50 @@ def test_collect_returns_usable_host_facts():
 def test_ram_reading_is_plausible():
     total = sysinfo._ram_bytes()
     assert total == 0 or 256 * 1024**2 < total < 8 * 1024**4
+
+
+def test_memo_skips_a_suffix_that_never_decoded(tmp_path: Path, monkeypatch):
+    """BRAW without the Blackmagic SDK fails identically for every clip; the
+    first clip pays the failed probe, the rest of the job skips the four
+    doomed spawns each."""
+    monkeypatch.setattr(thumbs, "ffmpeg_path", lambda: "ffmpeg")
+    calls: list = []
+
+    class _Failed:
+        returncode = 1
+        stdout = ""
+        stderr = "decoder not found"
+
+    monkeypatch.setattr(thumbs.subprocess, "run",
+                        lambda cmd, **kwargs: calls.append(cmd) or _Failed())
+    media = MediaInfo(width=4096, height=2160, duration_sec=10.0)
+    memo = thumbs.DecoderMemo()
+
+    assert thumbs.extract(tmp_path / "A001.braw", media, tmp_path / "out",
+                          4, memo=memo) == []
+    assert len(calls) == 4
+
+    # Same suffix, case-insensitive: not one more spawn.
+    assert thumbs.extract(tmp_path / "A002.BRAW", media, tmp_path / "out",
+                          4, memo=memo) == []
+    assert len(calls) == 4
+
+    # A different suffix still gets its chance.
+    thumbs.extract(tmp_path / "C001.mov", media, tmp_path / "out", 4, memo=memo)
+    assert len(calls) == 8
+
+
+def test_memo_learns_nothing_from_a_skip(tmp_path: Path, monkeypatch):
+    """No ffmpeg and no video stream never attempted a decode, so they prove
+    nothing about the decoder."""
+    media = MediaInfo(width=1920, height=1080, duration_sec=10.0)
+    memo = thumbs.DecoderMemo()
+
+    monkeypatch.setattr(thumbs, "ffmpeg_path", lambda: None)
+    thumbs.extract(tmp_path / "clip.braw", media, tmp_path / "out", memo=memo)
+    assert not memo.is_dead(tmp_path / "clip.braw")
+
+    monkeypatch.setattr(thumbs, "ffmpeg_path", lambda: "ffmpeg")
+    audio = MediaInfo(duration_sec=10.0)
+    thumbs.extract(tmp_path / "take.wav", audio, tmp_path / "out", memo=memo)
+    assert not memo.is_dead(tmp_path / "take.wav")

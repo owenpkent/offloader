@@ -26,13 +26,44 @@ from ..naming import TOKENS
 from ..presets import PRESET_COLORS, Preset
 from ..reports import WRITERS
 from . import theme
-from .widgets import DestinationList, button, label, row
+from .widgets import DestinationList, button, column, label, row
 
 VERIFICATION_LABELS = {
     VerificationMode.NONE: "None — copy only",
     VerificationMode.SOURCE_ONLY: "Source only — hash while reading and writing",
     VerificationMode.FULL: "Full — re-read each destination from disk",
 }
+
+#: Said the same way in the preset editor and in Simple mode, because it is the
+#: one option here whose cost is not obvious from its name.
+PARANOID_LABEL = "Read each source file twice and compare"
+PARANOID_TOOLTIP = (
+    "Catches a read that returned the wrong bytes without reporting an error — "
+    "the one fault no checksum can see, because the checksum is taken from what "
+    "the read returned.\n\nCosts a second full pass over the card."
+)
+
+
+def _form() -> QFormLayout:
+    form = QFormLayout()
+    form.setSpacing(10)
+    form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+    return form
+
+
+def _section(title: str, form: QFormLayout) -> QWidget:
+    """A titled block of rows.
+
+    There are sixteen fields here. In one flat list they read as a wall, and the
+    two or three that bear on any given change are never next to each other.
+    """
+    box = QWidget()
+    layout = QVBoxLayout(box)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(8)
+    layout.addWidget(label(title, "heading"))
+    layout.addLayout(form)
+    return box
 
 
 def _color_icon(color: str, size: int = 14) -> QIcon:
@@ -75,7 +106,7 @@ class PresetEditor(QDialog):
 
         self._algorithm = QComboBox()
         for key, algorithm in ALGORITHMS.items():
-            self._algorithm.addItem(algorithm.label, key)
+            self._algorithm.addItem(algorithm.picker_label, key)
         self._algorithm.setCurrentIndex(
             max(0, self._algorithm.findData(self._source.algorithm)))
 
@@ -121,6 +152,12 @@ class PresetEditor(QDialog):
         self._preserve.setChecked(self._source.preserve_structure)
         self._skip = QCheckBox("Skip files already present at matching size")
         self._skip.setChecked(self._source.skip_existing)
+        self._skip.setToolTip(
+            "Compares size only, never contents. A speed option, not a safety "
+            "one — do not use it on a tree whose integrity is in question.")
+        self._paranoid = QCheckBox(PARANOID_LABEL)
+        self._paranoid.setChecked(self._source.paranoid)
+        self._paranoid.setToolTip(PARANOID_TOOLTIP)
 
         self._excludes = QLineEdit(", ".join(self._source.excludes))
         self._excludes.setPlaceholderText("*.tmp, *.thm")
@@ -133,25 +170,29 @@ class PresetEditor(QDialog):
         self._footer = QLineEdit(self._source.footer or "")
         self._footer.setPlaceholderText("Offloader Version 0.1.0")
 
-        form = QFormLayout()
-        form.setSpacing(10)
-        form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        form.addRow("Name", self._name)
-        form.addRow("Colour", self._color)
-        form.addRow("Destinations", self._destinations)
-        form.addRow("", row(add, remove, None))
-        form.addRow("Profile", self._profile)
-        form.addRow("Checksum", self._algorithm)
-        form.addRow("Verification", self._verification)
-        form.addRow("Thumbnails", self._thumbnails)
-        form.addRow("Reports", row(*report_row))
-        form.addRow("Job name", self._naming)
-        form.addRow("", tokens)
-        form.addRow("Exclude", self._excludes)
-        form.addRow("PDF logo", row(self._logo, browse_logo))
-        form.addRow("PDF footer", self._footer)
-        form.addRow("", self._preserve)
-        form.addRow("", self._skip)
+        identity = _form()
+        identity.addRow("Name", self._name)
+        identity.addRow("Colour", self._color)
+        identity.addRow("Destinations", self._destinations)
+        identity.addRow("", row(add, remove, None))
+
+        # Profile leads: it decides whether there is any media work to do at
+        # all, which is what every control under it is then qualified by.
+        copying = _form()
+        copying.addRow("Profile", self._profile)
+        copying.addRow("Checksum", self._algorithm)
+        copying.addRow("Verification", self._verification)
+        copying.addRow("Exclude", self._excludes)
+        copying.addRow("Options",
+                       column(self._preserve, self._skip, self._paranoid))
+
+        paperwork = _form()
+        paperwork.addRow("Reports", row(*report_row))
+        paperwork.addRow("Thumbnails", self._thumbnails)
+        paperwork.addRow("Job name template", self._naming)
+        paperwork.addRow("", tokens)
+        paperwork.addRow("PDF logo", row(self._logo, browse_logo))
+        paperwork.addRow("PDF footer", self._footer)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self._accept)
@@ -159,8 +200,10 @@ class PresetEditor(QDialog):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 18, 18, 18)
-        layout.setSpacing(14)
-        layout.addLayout(form)
+        layout.setSpacing(18)
+        layout.addWidget(_section("Preset", identity))
+        layout.addWidget(_section("Copying", copying))
+        layout.addWidget(_section("Reports", paperwork))
         layout.addWidget(buttons)
 
     def _on_profile_changed(self) -> None:
@@ -193,6 +236,7 @@ class PresetEditor(QDialog):
             naming_template=self._naming.text().strip() or "{card}",
             preserve_structure=self._preserve.isChecked(),
             skip_existing=self._skip.isChecked(),
+            paranoid=self._paranoid.isChecked(),
             excludes=excludes,
             logo=Path(logo_text) if logo_text else None,
             footer=footer_text or None,

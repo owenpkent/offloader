@@ -17,15 +17,33 @@ from PySide6.QtWidgets import (
 )
 
 from ..util import format_size
-from ..volumes import Volume, list_volumes
+from ..volumes import Volume, list_roots, order_volumes, probe_many
 from . import theme
 from .widgets import CapacityBar, button, label, row
 
 REFRESH_MS = 4000
 
 
+def scan_batches():
+    """Yield (volumes, final) — local drives first, network shares after.
+
+    A network probe is a synchronous SMB round-trip that can take seconds; the
+    fixed and removable drives — the ones an offload actually uses — must not
+    wait behind it. Each phase probes its roots concurrently, so the wait per
+    batch is the slowest probe, not the sum.
+    """
+    roots = list_roots()
+    local = [(root, kind) for root, kind in roots if kind != "network"]
+    remote = [(root, kind) for root, kind in roots if kind == "network"]
+    found = probe_many(local)
+    if remote:
+        yield order_volumes(found), False
+        found = found + probe_many(remote)
+    yield order_volumes(found), True
+
+
 class _ScanSignals(QObject):
-    done = Signal(list)
+    batch = Signal(list, bool)   # volumes, final
 
 
 class _ScanTask(QRunnable):
@@ -42,11 +60,14 @@ class _ScanTask(QRunnable):
 
     def run(self) -> None:  # noqa: D102 - QRunnable entry point
         try:
-            volumes = list_volumes()
+            for volumes, final in scan_batches():
+                self._emit(volumes, final)
         except Exception:
-            volumes = []
+            self._emit([], True)
+
+    def _emit(self, volumes: list, final: bool) -> None:
         try:
-            self._signals.done.emit(volumes)
+            self._signals.batch.emit(volumes, final)
         except RuntimeError:
             # The window closed while this scan was in flight; nothing to tell.
             pass
@@ -56,6 +77,7 @@ class VolumeWatcher(QObject):
     """Polls for mounted volumes and reports changes."""
 
     volumesChanged = Signal(list)
+    scanningChanged = Signal(bool)
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -64,7 +86,7 @@ class VolumeWatcher(QObject):
         self._stopped = False
         # Parented, so its lifetime is the watcher's rather than a task's.
         self._signals = _ScanSignals(self)
-        self._signals.done.connect(self._on_scanned)
+        self._signals.batch.connect(self._on_batch)
         self._timer = QTimer(self)
         self._timer.setInterval(REFRESH_MS)
         self._timer.timeout.connect(self.refresh)
@@ -86,14 +108,30 @@ class VolumeWatcher(QObject):
         if self._busy or self._stopped:
             return
         self._busy = True
+        self.scanningChanged.emit(True)
         QThreadPool.globalInstance().start(_ScanTask(self._signals))
 
-    def _on_scanned(self, volumes: list) -> None:
-        self._busy = False
+    def _on_batch(self, volumes: list, final: bool) -> None:
+        if final:
+            self._busy = False
         if self._stopped:
             return
+        if not final:
+            # The local half of a scan whose network shares are still being
+            # probed. Keep the shares from the previous scan rather than
+            # tearing their rows down for a few seconds every poll. Dedup by
+            # root, not resolved root — resolving a network path is itself a
+            # round-trip, and this runs on the UI thread.
+            known = {v.root: v for v in self._volumes
+                     if v.drive_type == "network"}
+            for volume in volumes:
+                known[volume.root] = volume
+            volumes = sorted(known.values(),
+                             key=lambda v: (not v.is_camera_card, str(v.root)))
         self._volumes = volumes
         self.volumesChanged.emit(volumes)
+        if final:
+            self.scanningChanged.emit(False)
 
 
 class VolumeRow(QFrame):
@@ -164,10 +202,11 @@ class DrivesPanel(QWidget):
 
         self.watcher = VolumeWatcher(self)
         self.watcher.volumesChanged.connect(self._rebuild)
+        self.watcher.scanningChanged.connect(self._on_scanning)
 
-        refresh = button("Refresh", flat=True)
-        refresh.clicked.connect(self.watcher.refresh)
-        header = row(label("Drives", "heading"), None, refresh)
+        self._refresh = button("Refresh", flat=True)
+        self._refresh.clicked.connect(self.watcher.refresh)
+        header = row(label("Drives", "heading"), None, self._refresh)
 
         self._container = QWidget()
         self._container_layout = QVBoxLayout(self._container)
@@ -192,6 +231,12 @@ class DrivesPanel(QWidget):
 
     def stop(self) -> None:
         self.watcher.stop()
+
+    def _on_scanning(self, scanning: bool) -> None:
+        # The busy state the panel was missing: without it a slow network
+        # share made "Refresh" look like a button that does nothing.
+        self._refresh.setEnabled(not scanning)
+        self._refresh.setText("Scanning…" if scanning else "Refresh")
 
     def _rebuild(self, volumes: list) -> None:
         same_set = (

@@ -52,6 +52,38 @@ in `processinfo/roothash`.
 Both are built by Appendix G: sort the hashes lexicographically, write their raw
 bytes into a fresh generator, digest.
 
+`offloader verify` recomputes both from what is on disk and compares. The two
+answers separate two different failures:
+
+| content | structure | verdict | what happened |
+| --- | --- | --- | --- |
+| matches | matches | `ok` | — |
+| matches | differs | `RENAMED` | every byte is intact; a name changed or a file moved |
+| differs | differs | `CHANGED` | the bytes under this directory are not what was recorded |
+
+This is the only check that can see a rename. Every file involved still hashes
+correctly, so no file hash — and no amount of re-reading — will ever object.
+
+Recomputing means hashing the files the manifest does *not* list, since a
+renamed file is unlisted under its new name and its hash is what proves the
+rename is all that happened. Files matching a recorded `ignore` pattern are left
+out, exactly as the writer left them out.
+
+That is why the writer records where the job's own paperwork went. The PDF, CSV
+and thumbnails are written into the destination *after* the manifest, so they
+are on disk when a verifier recomputes but were never in what it recomputes
+against — and folding them in reports the tool's own output as a change to the
+tree. The manifest carries the report directory as an `ignore` pattern for the
+same reason it carries `ascmhl`: neither is managed data. A path rather than an
+assumed name, because `--report-dir` moves it. A history written before this was
+recorded is read with the conventional `*_Reports` allowed for, which is a name
+and not a fact — a current manifest states its own layout.
+
+A directory whose mismatch is already accounted for by a file that failed on its
+own hash says so, rather than reporting a fresh problem for every directory
+between that file and the root. A directory that gained an unexpected file is
+never counted as accounted for — no file verdict can report an arrival.
+
 ## C4
 
 The chain file identifies each manifest by its C4 ID (SMPTE ST 2114): a SHA-512
@@ -105,10 +137,10 @@ the evidence the format exists to carry.
 
 ## Limits
 
-- **Directory hashes are written but not verified.** `offloader verify` checks
-  file hashes; it does not recompute directory hashes, so a pure rename inside
-  an already-verified tree is reported through the "not in manifest" list rather
-  than as a structure-hash mismatch.
+- **A renamed directory is reported as two facts, not one.** The old name reads
+  as `MISSING` and its parent as `RENAMED`; nothing states that the one became
+  the other. `previousPath` is what the format has for that, and it is not
+  written.
 - **No nested histories.** The spec allows an `ascmhl` folder further down the
   tree with its own history, and permits a parent to take a child's root hash as
   its directory hash. One history per destination root is written here.
