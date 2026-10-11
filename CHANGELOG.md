@@ -27,6 +27,36 @@ project uses [semantic versioning][semver].
 
 ### Fixed
 
+- **A timeline offload could call a partial cut complete.** With nothing to
+  copy it printed "every reference is already here" and exited 0 while
+  references were missing or ambiguous, and with gaps to copy it reported
+  "Verified" and exited 0 while the reports listed only the copied files. Now
+  every unresolved reference is printed, recorded on the job and listed in the
+  CSV, HTML and PDF reports; the job reads `Incomplete` and exits 1, the same
+  code `resolve` uses.
+- **One file could satisfy several different timeline references.** Two
+  recordings sharing a name (`f2/260223_009.WAV`, `f3/260223_009.WAV`) both
+  resolved to the single copy on the drive. They are now `ambiguous` unless
+  their bytes show which is which. A readable original is compared with the
+  same-named file under the roots (size, then checksum), so a "MISSING MEDIA"
+  slate no longer stands in for real footage the timeline can reach; the
+  original is copied instead, with a warning naming the slate.
+- **Offline clips and image sequences were reported as generated media.** An
+  OTIO `MissingReference`, an FCP 7 clip without a `<pathurl>` and an image
+  sequence are now reported by name as `offline` or `unsupported`, count as
+  unresolved and fail the exit code. A generator, title or matte is still
+  `generated`.
+- **A proxy could stand in without any check.** A same-stem file that yields no
+  frame count no longer satisfies a camera original. A proxy whose count
+  cannot be compared with the original's is shown in the terminal with its
+  `frames unverified` note, carried as a job warning, and keeps the job from
+  reading `Verified`.
+- **Relative timeline paths were read against the working directory.** They
+  are now read against the timeline file's folder, so an unrelated file of the
+  same relative path is never copied. Non-file URLs (`https`, `s3` and so on)
+  are reported as `external` and never matched to a local file by name.
+- **A `--control-file` cancel exited 0.** A cancelled job now exits 130, as
+  Ctrl+C does, and the summary says how many files were not attempted.
 - **`--control-file` could overwrite a source or destination file.** Starting a
   job wrote `run` to the control path before anything was validated, so a path
   that named a source clip (or a good copy) truncated it to five bytes, and the

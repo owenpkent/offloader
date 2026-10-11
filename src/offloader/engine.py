@@ -1391,6 +1391,7 @@ def run(source_root: Path, options: OffloadOptions,
 
     if job.cancelled:
         not_attempted = len(files) - len(job.files)
+        job.not_attempted = max(0, not_attempted)
         if not_attempted > 0:
             counters.errors.append(
                 f"cancelled — {not_attempted} file(s) not attempted")

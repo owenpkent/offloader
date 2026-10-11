@@ -145,6 +145,16 @@ def _summarize(job: Job, reports: list[Path]) -> None:
         print(f"  -> {destination}")
     for report in reports:
         print(f"  report: {report}")
+    if job.cancelled:
+        print(f"  cancelled: {job.not_attempted} file(s) not attempted")
+    if job.unresolved:
+        # Every one, uncapped: this is the list of media the job did not
+        # supply, and a truncated version of it is a false "that was all".
+        print(file=sys.stderr)
+        print(f"  {len(job.unresolved)} timeline reference(s) NOT supplied; "
+              "the cut is not complete:", file=sys.stderr)
+        for line in job.unresolved:
+            print(f"    - {line}", file=sys.stderr)
     if job.warnings:
         print(file=sys.stderr)
         print(f"  {len(job.warnings)} warning(s):", file=sys.stderr)
@@ -375,9 +385,21 @@ _STATUS_LINES = (
     (timeline_mod.Status.SUBSTITUTED, "satisfied by a proxy already here"),
     (timeline_mod.Status.GAP, "not here, and copyable"),
     (timeline_mod.Status.GENERATED, "no media in the timeline to supply"),
+    (timeline_mod.Status.EXTERNAL, "NOT A LOCAL FILE (URL), not searched"),
+    (timeline_mod.Status.UNSUPPORTED, "UNSUPPORTED media reference, check by hand"),
+    (timeline_mod.Status.OFFLINE, "OFFLINE in the timeline, no media path"),
     (timeline_mod.Status.MISSING, "not here and not where the timeline says"),
     (timeline_mod.Status.AMBIGUOUS, "MORE THAN ONE CANDIDATE, not chosen"),
 )
+
+#: What `resolve` and a timeline `offload` return while any reference is
+#: unresolved, so a caller gating on the exit code never reads a partial cut
+#: as a complete one.
+EXIT_UNRESOLVED = 1
+#: A job stopped by a cancel (Ctrl+C or `offloader control --cancel`): the
+#: same code either way, so a detached run's caller sees an interruption
+#: rather than the 0 of a finished offload.
+EXIT_CANCELLED = 130
 
 
 def _print_resolution(report: timeline_mod.Report, detail: bool = True) -> None:
@@ -388,15 +410,31 @@ def _print_resolution(report: timeline_mod.Report, detail: bool = True) -> None:
     for status, label in _STATUS_LINES:
         if counts[status]:
             print(f"  {counts[status]:5d}  {label}")
+    if report.unconfirmed:
+        print(f"  {len(report.unconfirmed):5d}  of those proxies, frame counts "
+              "UNVERIFIED")
     if report.gaps:
         print(f"  {format_size(report.gap_bytes)} to copy")
 
     if not detail:
         return
-    for resolution in report.of(timeline_mod.Status.AMBIGUOUS,
-                                timeline_mod.Status.MISSING):
-        print(f"\n  [{resolution.status.value}] {resolution.name} "
+    # Every reference that keeps the cut from being complete, plus the gaps
+    # copied despite a different same-named file under a root. The notes are
+    # the point: "frames unverified" must be read, not left in a CSV.
+    shown = {id(r) for r in report.incomplete + report.differing}
+    for resolution in report.resolutions:
+        if id(resolution) not in shown:
+            continue
+        label = ("unverified proxy" if resolution.unverified
+                 else resolution.status.value)
+        print(f"\n  [{label}] {resolution.name} "
               f"(used {resolution.reference.uses}x)")
+        if resolution.reference.target is not None:
+            print(f"      timeline path: {resolution.reference.target}")
+        elif resolution.reference.url:
+            print(f"      timeline target: {resolution.reference.url}")
+        if resolution.status is timeline_mod.Status.SUBSTITUTED and resolution.location:
+            print(f"      proxy: {resolution.location}")
         if resolution.note:
             print(f"      {resolution.note}")
         for candidate in resolution.alternatives:
@@ -414,7 +452,7 @@ def _write_resolution_csv(report: timeline_mod.Report, path: Path) -> None:
         for r in report.resolutions:
             writer.writerow([
                 r.name, r.status.value, r.reference.uses,
-                str(r.reference.target) if r.reference.target else "",
+                str(r.reference.target) if r.reference.target else r.reference.url,
                 str(r.location) if r.location else "",
                 " | ".join(str(a) for a in r.alternatives),
                 r.note,
@@ -451,24 +489,27 @@ def cmd_resolve(args: argparse.Namespace) -> int:
         _write_resolution_csv(report, args.csv)
         print(f"\nwrote {args.csv}")
 
-    # Exit non-zero on anything a human has to settle. A generated reference is
-    # reported but does not fail the command: no offload can supply it, so
-    # holding the exit code hostage to it would only teach a caller to ignore
-    # the code.
-    unsettled = report.counts[timeline_mod.Status.AMBIGUOUS] + \
-        report.counts[timeline_mod.Status.MISSING]
-    return 1 if unsettled else 0
+    # Exit non-zero on anything a human has to settle, including a proxy whose
+    # frames could not be checked. A generated reference is reported but does
+    # not fail the command: no offload can supply it, so holding the exit code
+    # hostage to it would only teach a caller to ignore the code.
+    return EXIT_UNRESOLVED if report.incomplete else 0
 
 
 def cmd_offload(args: argparse.Namespace) -> int:
     options = _options_from(args, args.destinations)
     source = args.source
+    report: timeline_mod.Report | None = None
 
     if getattr(args, "timeline", None):
         report = _resolve_timeline(args)
         _print_resolution(report, detail=True)
         selection = timeline_mod.selection(report, flat=args.layout == "flat")
         if not selection:
+            if report.incomplete:
+                print(f"\nnothing copyable, and {len(report.incomplete)} "
+                      "reference(s) unresolved: the cut is NOT complete.")
+                return EXIT_UNRESOLVED
             print("\nnothing to copy: every reference is already here.")
             return 0
         print(f"\ncopying {len(selection)} file(s), "
@@ -501,6 +542,20 @@ def cmd_offload(args: argparse.Namespace) -> int:
     job = engine.run(source, options, progress, control)
     progress.done()
 
+    if report is not None:
+        # Recorded before the reports are written, so every one of them shows
+        # what this job did not supply and none reads as the whole cut.
+        job.unresolved = [timeline_mod.describe(r) for r in report.incomplete]
+        for resolution in report.unconfirmed:
+            job.warnings.append(
+                f"{resolution.name}: treated as satisfied by proxy "
+                f"{resolution.location}, frame counts unverified")
+        for resolution in report.differing:
+            others = ", ".join(str(a) for a in resolution.alternatives)
+            job.warnings.append(
+                f"{resolution.name}: copied from {resolution.location}; a "
+                f"different file of this name is under the search roots ({others})")
+
     reports = _write_reports(
         job,
         args.report if isinstance(args.report, list) else _parse_reports(args.report),
@@ -509,7 +564,18 @@ def cmd_offload(args: argparse.Namespace) -> int:
         args.footer,
     )
     _summarize(job, reports)
-    return 1 if any(f.status is FileStatus.FAILED for f in job.files) else 0
+    return _exit_code(job)
+
+
+def _exit_code(job: Job) -> int:
+    """0 only for a job that finished and supplied everything it was asked for."""
+    if any(f.status is FileStatus.FAILED for f in job.files):
+        return 1
+    if job.cancelled:
+        return EXIT_CANCELLED
+    if job.unresolved:
+        return EXIT_UNRESOLVED
+    return 0
 
 
 def cmd_report(args: argparse.Namespace) -> int:
@@ -628,7 +694,7 @@ def main(argv: list[str] | None = None) -> int:
         return handlers[args.command](args)
     except KeyboardInterrupt:
         print("\ninterrupted", file=sys.stderr)
-        return 130
+        return EXIT_CANCELLED
     except (engine.UnsafeDestination, engine.UnsafeControlFile) as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return 3

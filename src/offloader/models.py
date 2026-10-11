@@ -302,6 +302,15 @@ class Job:
     #: erasing a card — empty files, verifications that may have been served
     #: from cache.
     warnings: list[str] = field(default_factory=list)
+    #: Media the job was asked to supply and did not: for a timeline offload,
+    #: every reference that is missing, ambiguous, offline, unsupported, a
+    #: non-file URL, or a proxy standing in without proof. One line each,
+    #: written into every report. Any entry makes the job "Incomplete", so
+    #: copying the reachable part of a cut never reads as the whole of it.
+    unresolved: list[str] = field(default_factory=list)
+    #: Files in the job's file set that were never started because the job
+    #: was cancelled first.
+    not_attempted: int = 0
 
     @property
     def total_bytes(self) -> int:
@@ -340,6 +349,8 @@ class Job:
             return "Failed"
         if self.cancelled:
             return "Cancelled"
+        if self.unresolved:
+            return "Incomplete"
         if self.verification is VerificationMode.NONE:
             return "Copied"
         if all(f.status is FileStatus.VERIFIED for f in self.files) and self.files:

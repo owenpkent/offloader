@@ -127,9 +127,11 @@ offloader verify D:\video\080426\A001
 | `--no-probe` | skip ffprobe metadata and thumbnails |
 | `--quiet` | suppress progress |
 
-Exit status is `0` on success, `1` if any file failed verification, `2` on a
-usage or I/O error, `3` if a destination was refused as unsafe, `4` if a
-timeline could not be read for want of an adapter.
+Exit status is `0` on success, `1` if any file failed verification or a
+timeline offload left references unresolved, `2` on a usage or I/O error, `3`
+if a destination was refused as unsafe, `4` if a timeline could not be read
+for want of an adapter, and `130` if the job was cancelled (Ctrl+C or
+`offloader control --cancel`).
 
 ### Pausing a running job
 
@@ -204,8 +206,12 @@ checksums and reports as a card.
 | `--csv PATH` | (`resolve`) write the full per-reference table |
 
 Every reference gets one status: `present`, `substituted`, `gap`, `ambiguous`,
-`missing` or `generated`. Only `gap` is copied. `resolve` exits non-zero if
-anything is `ambiguous` or `missing`.
+`missing`, `offline`, `unsupported`, `external` or `generated`. Only `gap` is
+copied. While anything is unresolved (every status but `present`, `gap` and
+`generated`, plus a proxy whose frame counts could not be checked), `resolve`
+exits 1 and `offload` copies the gaps, lists what it could not supply in the
+terminal and every report, calls the job `Incomplete` and exits 1. See
+[docs/timeline.md](docs/timeline.md).
 
 The part worth knowing before you trust it: **it refuses to choose between two
 files that share a name.** On the conform it was built against, 20 basenames

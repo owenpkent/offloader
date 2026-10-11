@@ -29,28 +29,65 @@ whole design.
 
 | Status | Meaning | Copied? |
 | --- | --- | --- |
-| `present` | A file of that name is under a search root | no |
-| `substituted` | A camera original, satisfied by a frame-matched proxy already here | no |
+| `present` | A file of that name is under a search root (and, when the timeline's own path is readable, holds the same bytes) | no |
+| `substituted` | A camera original, satisfied by a proxy already here | no |
 | `gap` | Not here, but readable where the timeline says it is | **yes** |
-| `ambiguous` | Several files under the roots share the name and differ | no, refuses |
+| `ambiguous` | Several files under the roots share the name and differ, or several different references share a name the roots hold only one file of | no, refuses |
 | `missing` | Not here, and not where the timeline says either | no, cannot |
+| `offline` | The timeline names the clip but carries no path for it (an OTIO `MissingReference`, an FCP 7 `<file>` without `<pathurl>`) | no, cannot |
+| `unsupported` | A media reference this module does not resolve, such as an image sequence | no, cannot |
+| `external` | A non-file URL (`http`, `https`, `s3` and so on) | no, never |
 | `generated` | The timeline carries no media for it at all | no, cannot |
 
-1. **A generated reference stops immediately.** A Premiere-native graphic, a
-   title, a generator: there is no file, and no search would ever find one.
+1. **A reference with no local file stops immediately.** A Premiere-native
+   graphic, a title, a generator is `generated`: there is no file, and no
+   search would ever find one. Real media without a usable path is reported
+   by name as `offline`, `unsupported` or `external`; files under the roots
+   with an offline clip's name are listed as candidates and never chosen.
 2. **Anything under a search root with that basename wins**, whatever path the
    timeline asked for. An editor's export addresses media on the editor's
    volume, so the path is almost always wrong and the name almost always
    right. This is the test that stops a file being copied a second time under
-   a name the drive already holds.
-3. **A camera original may be satisfied by a proxy**, if the frame counts
-   agree. See below.
+   a name the drive already holds. Two limits apply:
+   - When the timeline's own path is readable, it is the truth. The file under
+     the root counts only if it holds the same bytes (size, then checksum);
+     otherwise the original is a `gap`, copied, and the other file is named in
+     the note and in a job warning.
+   - Different references that share a basename (two different paths) must
+     resolve to different files. When the roots hold only one file of that
+     name and nothing shows which reference it is, every one of them is
+     `ambiguous` rather than all of them mapping to the one file.
+3. **A camera original may be satisfied by a proxy**. See below.
 4. **Only then is a readable file a gap**, which is the thing worth copying.
 5. Anything left is `missing`, and no offload will fix it.
 
-`resolve` exits non-zero when anything is `ambiguous` or `missing`. A
-`generated` reference does not fail it: no offload can supply one, and holding
-the exit code hostage to it would only teach a caller to ignore the code.
+A relative path in a timeline is read relative to the timeline file's own
+folder, never the directory the command was run from.
+
+## Exit codes and "complete"
+
+A reference is *unresolved* when it is `ambiguous`, `missing`, `offline`,
+`unsupported` or `external`, or when it is `substituted` by a proxy whose
+frame counts could not be compared. While any reference is unresolved, the
+cut is not complete and nothing says otherwise:
+
+- `resolve` exits 1.
+- `offload` still copies every `gap`, because the reachable part of a cut is
+  worth having, but it lists every unresolved reference before and after the
+  copy, records them on the job, writes them into the CSV, HTML and PDF
+  reports under "Unresolved timeline references, NOT supplied by this job",
+  reports the job as `Incomplete` rather than `Verified`, and exits 1.
+- With no gap to copy, `offload` prints "nothing to copy: every reference is
+  already here" only when that is true. Otherwise it prints "nothing
+  copyable" with the unresolved count and exits 1.
+
+A `generated` reference does not fail either command: no offload can supply
+one, and holding the exit code hostage to it would only teach a caller to
+ignore the code.
+
+A job cancelled with `offloader control PATH --cancel` exits 130, the same as
+Ctrl+C, and its summary says how many files were not attempted. A failed file
+still exits 1.
 
 ## Why `ambiguous` refuses instead of choosing
 
@@ -85,17 +122,27 @@ A timeline that references 55 GB of BRAW usually references it because that is
 what the *camera* wrote, not because the cut needs it: the editor cut with
 proxies, and the proxies are already on the drive.
 
-`substituted` means a stem-matched proxy was found under a search root **and
-the frame counts agree**. That check is not decoration. Relink a clip to a file
-one frame shorter and every edit point after it moves, quietly, and the first
-person to notice is whoever watches the export.
+`substituted` means a stem-matched proxy was found under a search root and
+nothing contradicts it. Proof means **the frame counts agree**. That check is
+not decoration. Relink a clip to a file one frame shorter and every edit point
+after it moves, quietly, and the first person to notice is whoever watches the
+export.
 
 The count comes from `probe.py`, which reads BRAW out of the container because
-ffprobe cannot open the format at all. Where a count cannot be established -
-no ffprobe, an unreachable original - the substitution is still offered but the
-note says `frame counts unverified` rather than implying agreement. Where the
-counts are established and **disagree**, the reference is reported `ambiguous`
-and nothing is substituted.
+ffprobe cannot open the format at all. The outcomes:
+
+- **Both counts known and equal**: `substituted`, settled.
+- **Both known and different**: `ambiguous`, nothing substituted.
+- **The proxy's count known, the original's not** (an unreachable original, or
+  one probe cannot read): still `substituted`, but *unverified*. The terminal
+  prints the reference with the note `frames unverified`, the job carries a
+  warning naming the file, and it counts as unresolved: the job is
+  `Incomplete` and the exit code is 1.
+- **The proxy itself yields no frame count**, which includes a same-stem file
+  that is not media at all: it does not stand in. A readable original is then
+  an ordinary `gap` and is copied; an unreachable one is `missing`, with the
+  rejected file named in the note. Without ffprobe no `.mov` or `.mp4` proxy
+  can be counted, so none stands in.
 
 `--no-proxy-substitution` turns the whole step off, and every camera original
 becomes an ordinary gap.
