@@ -38,7 +38,9 @@ DEFAULT_SETTINGS = {
 
 
 class MainWindow(QMainWindow):
-    def __init__(self) -> None:
+    def __init__(self, source: Path | None = None) -> None:
+        """`source` pre-fills the source field — what the Explorer context-menu
+        entry passes, so a right-clicked card arrives already selected."""
         super().__init__()
         self.setWindowTitle(f"{PRODUCT_NAME} {__version__}")
         self.resize(1280, 840)
@@ -124,6 +126,10 @@ class MainWindow(QMainWindow):
 
         self._set_mode(1 if self.settings.get("mode") == "simple" else 0)
         self.drives.start()
+
+        # Last, so the panels it fills are built and the mode is settled.
+        if source is not None:
+            self._set_source(Path(source))
 
     # ---------------------------------------------------------------- chrome
     def _build_menu(self) -> None:
