@@ -134,6 +134,9 @@ class VerifyReport:
     unlisted: list[Path] = field(default_factory=list)
     #: One per directory hash the manifest recorded. Only ASC MHL has these.
     directories: list[DirectoryVerdict] = field(default_factory=list)
+    #: Caveats on the evidence that do not change a verdict, such as a
+    #: page-cache eviction that failed, so the bytes may have come from memory.
+    warnings: list[str] = field(default_factory=list)
 
     @property
     def checked(self) -> int:
@@ -304,6 +307,16 @@ def verify_manifest(
             on_disk[relative] = digest
         return relative
 
+    def _evict(path: Path) -> None:
+        # A failed eviction leaves the verdicts alone but must stay visible:
+        # a read served from the page cache checks memory against itself and
+        # proves nothing about the device. Offload says so; verify must too.
+        if not evict_from_cache(path) and not report.warnings:
+            report.warnings.append(
+                "could not evict files from the page cache on this platform, "
+                "so this verification may have read from memory rather than "
+                "the device")
+
     for index, (path, algorithm_key, expected, expected_size) in enumerate(entries):
         if progress:
             progress(index, len(entries), path)
@@ -324,7 +337,7 @@ def verify_manifest(
         try:
             actual_size = path.stat().st_size
             if bypass_cache:
-                evict_from_cache(path)
+                _evict(path)
             actual = hash_file(path, algorithm_key)
         except OSError as exc:
             note(path, None)
@@ -378,7 +391,7 @@ def verify_manifest(
                 unexpected.add(relative)
                 try:
                     if bypass_cache:
-                        evict_from_cache(candidate)
+                        _evict(candidate)
                     on_disk[relative] = hash_file(candidate, report.algorithm)
                 except OSError:
                     unsound.add(relative)

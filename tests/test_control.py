@@ -215,3 +215,36 @@ def test_cancel_during_full_verification_reread_does_not_promote(
         progress, control)
 
     _assert_nothing_promoted(job, tmp_path)
+
+
+def test_cancel_during_the_second_destination_reread_records_the_missing_copy(
+    tmp_path: Path,
+):
+    """A cancel while destination two is being reread must not leave the file
+    reading as Verified on the strength of destination one. The missing copy
+    is recorded as cancelled, so the entry's status is its weakest copy."""
+    card = _one_file_card(tmp_path)
+    first, second = tmp_path / "d1", tmp_path / "d2"
+    control = engine.JobControl()
+    verifies: list[str] = []
+
+    def progress(event: engine.ProgressEvent) -> None:
+        if event.stage == "verify":
+            verifies.append(event.file_name)
+            if len(verifies) == 2:
+                control.cancel()
+
+    job = engine.run(
+        card, _options(tmp_path, destinations=[first, second],
+                       verification=VerificationMode.FULL),
+        progress, control)
+
+    assert job.cancelled
+    assert job.final_status != "Verified"
+    (entry,) = job.files
+    assert entry.status is FileStatus.CANCELLED
+    assert [d.status for d in entry.destinations] == [
+        FileStatus.VERIFIED, FileStatus.CANCELLED]
+    assert (first / "clip.mov").exists()
+    assert not (second / "clip.mov").exists()
+    assert not list(tmp_path.rglob("*.offloader-partial"))
