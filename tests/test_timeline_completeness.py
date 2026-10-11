@@ -114,7 +114,7 @@ def test_nothing_to_copy_with_unresolved_references_fails_and_names_them(
     code = _offload(cut, root, tmp_path / "dest")
 
     out = capsys.readouterr().out
-    assert code == 1
+    assert code == 4
     assert "every reference is already here" not in out
     assert "NOT complete" in out
     assert "[missing] missing.mov" in out
@@ -144,7 +144,7 @@ def test_offload_copies_the_gap_lists_the_unresolved_and_is_not_verified(
 
     captured = capsys.readouterr()
     text = captured.out + captured.err
-    assert code == 1
+    assert code == 4
     landed = list(dest.rglob("gap.mov"))
     assert len(landed) == 1 and landed[0].read_bytes() == b"G" * 5000
     assert ": Incomplete" in captured.out
@@ -348,9 +348,9 @@ def test_missing_reference_is_offline_by_name_and_fails(tmp_path: Path, capsys):
     assert resolution.alternatives == [root / "A001_C002.mov"]
 
     assert cli.main(["resolve", "--timeline", str(cut),
-                     "--search-root", str(root)]) == 1
+                     "--search-root", str(root)]) == 4
     assert "[offline] A001_C002.mov" in capsys.readouterr().out
-    assert _offload(cut, root, tmp_path / "dest") == 1
+    assert _offload(cut, root, tmp_path / "dest") == 4
     assert "every reference is already here" not in capsys.readouterr().out
 
 
@@ -381,7 +381,7 @@ def test_image_sequence_is_unsupported_by_name_and_fails(tmp_path: Path, capsys)
     assert plates.as_uri() in resolution.note
 
     assert cli.main(["resolve", "--timeline", str(cut),
-                     "--search-root", str(root)]) == 1
+                     "--search-root", str(root)]) == 4
     assert "[unsupported] sh010.####.exr" in capsys.readouterr().out
 
 
@@ -426,7 +426,7 @@ def test_fcp_clip_with_no_pathurl_is_offline_by_name(tmp_path: Path, capsys):
     assert resolution.status is Status.OFFLINE
     assert resolution.name == "B002_C007.mov"
     assert cli.main(["resolve", "--timeline", str(cut),
-                     "--search-root", str(root)]) == 1
+                     "--search-root", str(root)]) == 4
 
 
 # --------------------------------------------------------------------------
@@ -487,7 +487,7 @@ def test_unverified_proxy_is_shown_warned_and_not_verified(
     assert "A001_C001.braw: treated as satisfied by proxy" in captured.err
     assert ": Incomplete" in captured.out
     assert _csv_status(dest) == "Status: Incomplete"
-    assert code == 1
+    assert code == 4
     assert list(dest.rglob("gap.wav"))
 
 
@@ -500,7 +500,7 @@ def test_unverified_proxy_alone_is_not_nothing_to_copy(tmp_path: Path, monkeypat
                         lambda path: 240 if Path(path).suffix == ".mov" else None)
     cut = _otio(tmp_path / "cut.otio", ["file:///Z:/CardA/A001_C001.braw"])
 
-    assert _offload(cut, root, tmp_path / "dest") == 1
+    assert _offload(cut, root, tmp_path / "dest") == 4
     assert "every reference is already here" not in capsys.readouterr().out
 
 
@@ -589,10 +589,10 @@ def test_a_non_file_url_is_external_and_never_matched_locally(
     assert url in resolution.note
 
     assert cli.main(["resolve", "--timeline", str(cut),
-                     "--search-root", str(root)]) == 1
+                     "--search-root", str(root)]) == 4
     out = capsys.readouterr().out
     assert "[external] clip.mov" in out and url in out
-    assert _offload(cut, root, tmp_path / "dest") == 1
+    assert _offload(cut, root, tmp_path / "dest") == 4
     assert not (tmp_path / "dest").exists()
 
 

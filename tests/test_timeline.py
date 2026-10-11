@@ -553,7 +553,7 @@ def test_resolve_exits_non_zero_when_something_is_unsettled(
 
     code = cli.main(["resolve", "--timeline", str(cut),
                      "--search-root", str(library)])
-    assert code == 1
+    assert code == 4
     assert "MORE THAN ONE CANDIDATE" in capsys.readouterr().out
 
 

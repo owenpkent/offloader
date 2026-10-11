@@ -12,19 +12,30 @@ from pathlib import Path
 from . import PRODUCT_NAME, __version__, engine, hashers, longpath, probe, retry, thumbs
 from . import timeline as timeline_mod
 from .models import FileStatus, Job, Profile, VerificationMode
-from .reports import WRITERS
+from .reports import WRITERS, paperwork
 from .util import format_elapsed, format_size
 
 #: Filenames written inside "<name>_Reports/", matching the reference layout.
-REPORT_FILENAMES = {
-    "pdf": "JobReport.pdf",
-    "csv": "JobReport.csv",
-    "mhl": "JobReport.mhl",
-    "ascmhl": "ascmhl",
-    "html": "JobReport.html",
-}
+REPORT_FILENAMES = paperwork.REPORT_FILENAMES
 
 DEFAULT_REPORTS = "pdf"
+
+#: Exit codes for `offload`, `resolve`, `report` and `verify`. Documented in
+#: the README; a format script keys off them, so a new meaning gets a new
+#: number rather than reusing one.
+EXIT_OK = 0                  # Verified, or Copied under --verify none
+EXIT_FAILED = 1              # a copy, verify or scan failure
+EXIT_ERROR = 2               # usage, environment, unreadable manifest
+EXIT_REFUSED = 3             # unsafe destination or control file, nothing copied
+EXIT_INCOMPLETE = 4          # unresolved timeline references, empty source,
+                             # or an all-skipped rerun: nothing failed, but
+                             # not everything asked for was verified
+EXIT_REPORTS_FAILED = 5      # copies good, but a report or manifest failed
+EXIT_CANCELLED = 130         # Ctrl+C or a control-file cancel
+#: What `resolve` and a timeline `offload` return while any reference is
+#: unresolved, so a caller gating on the exit code never reads a partial cut
+#: as a complete one. The same code as any other incomplete job.
+EXIT_UNRESOLVED = EXIT_INCOMPLETE
 
 
 class _Progress:
@@ -72,53 +83,15 @@ def _parse_reports(value: str) -> list[str]:
     return keys
 
 
-def _write_reports(job: Job, formats: list[str], out_dir: Path,
+def _write_reports(job: Job, formats: list[str], out_dir: Path | None,
                    logo: Path | None, footer: str | None = None) -> list[Path]:
-    out_dir.mkdir(parents=True, exist_ok=True)
-    written: list[Path] = []
-    for key in formats:
-        target = out_dir / REPORT_FILENAMES[key]
-        try:
-            written.append(WRITERS[key](job, target, logo=logo, footer=footer))
-        except Exception as exc:  # a bad report must not mask a good offload
-            print(f"  ! {key} report failed: {exc}", file=sys.stderr)
+    """Every requested report, plus one manifest inside each destination.
 
-    if "mhl" in formats:
-        written.extend(_write_extra_manifests(job, out_dir))
-    if "ascmhl" in formats:
-        written.extend(_write_extra_histories(job))
-    return written
-
-
-def _write_extra_manifests(job: Job, primary_dir: Path) -> list[Path]:
-    """One MHL per destination, written beside that copy.
-
-    A manifest that lives only with the first copy cannot re-verify the second.
-    Each copy needs its own chain of custody.
+    `out_dir` is `--report-dir`, or None for the job's own folder. Failures
+    land on `job.report_failures`, which the summary and exit code report.
     """
-    written: list[Path] = []
-    for index, root in enumerate(job.destination_roots[1:], start=1):
-        target = root / f"{job.name}_Reports" / REPORT_FILENAMES["mhl"]
-        if target.parent == primary_dir:
-            continue
-        try:
-            written.append(WRITERS["mhl"](job, target, destination_index=index))
-        except Exception as exc:
-            print(f"  ! MHL for {root} failed: {exc}", file=sys.stderr)
-    return written
-
-
-def _write_extra_histories(job: Job) -> list[Path]:
-    """An ASC MHL history belongs at the root of every copy, not just the first."""
-    from .ascmhl import write_manifest
-
-    written: list[Path] = []
-    for index, root in enumerate(job.destination_roots[1:], start=1):
-        try:
-            written.append(write_manifest(job, root, destination_index=index))
-        except Exception as exc:
-            print(f"  ! ASC MHL for {root} failed: {exc}", file=sys.stderr)
-    return written
+    return paperwork.write_reports(job, formats, report_dir=out_dir,
+                                   logo=logo, footer=footer)
 
 
 def _summarize(job: Job, reports: list[Path]) -> None:
@@ -146,7 +119,7 @@ def _summarize(job: Job, reports: list[Path]) -> None:
     for report in reports:
         print(f"  report: {report}")
     if job.cancelled:
-        print(f"  cancelled: {job.not_attempted} file(s) not attempted")
+        print(f"  cancelled: {len(job.not_attempted)} file(s) not attempted")
     if job.unresolved:
         # Every one, uncapped: this is the list of media the job did not
         # supply, and a truncated version of it is a false "that was all".
@@ -155,6 +128,17 @@ def _summarize(job: Job, reports: list[Path]) -> None:
               "the cut is not complete:", file=sys.stderr)
         for line in job.unresolved:
             print(f"    - {line}", file=sys.stderr)
+    if job.report_failures:
+        print(file=sys.stderr)
+        print(f"  {len(job.report_failures)} REPORT(S) FAILED:", file=sys.stderr)
+        for failure in job.report_failures:
+            print(f"    ! {failure}", file=sys.stderr)
+    if job.scan_errors:
+        print(file=sys.stderr)
+        print(f"  {len(job.scan_errors)} folder(s) could not be read, so "
+              "their files were not copied:", file=sys.stderr)
+        for problem in job.scan_errors:
+            print(f"    {problem.describe()}", file=sys.stderr)
     if job.warnings:
         print(file=sys.stderr)
         print(f"  {len(job.warnings)} warning(s):", file=sys.stderr)
@@ -268,6 +252,10 @@ def build_parser() -> argparse.ArgumentParser:
                          help="make the job pausable from another terminal: "
                               "it reads this file between chunks. Drive it with "
                               "'offloader control PATH --pause|--resume|--cancel'")
+    offload.add_argument("--replace-existing", action="store_true",
+                         help="let a copy replace a file already at the "
+                              "destination whose content differs (by default "
+                              "that file is kept and the copy is failed)")
     offload.add_argument("--paranoid", action="store_true",
                          help="read each source file twice and compare, to "
                               "catch a read that returned wrong bytes without "
@@ -351,13 +339,27 @@ def _options_from(args: argparse.Namespace, destinations: list[Path]) -> engine.
         retry=retry.RetryPolicy(attempts=max(1, args.retries),
                                 delay=max(0.0, args.retry_wait)),
         paranoid=getattr(args, "paranoid", False),
+        replace_existing=getattr(args, "replace_existing", False),
     )
 
 
-def _report_dir(args: argparse.Namespace, job: Job, fallback_root: Path) -> Path:
-    if args.report_dir:
-        return args.report_dir
-    return fallback_root / f"{job.name}_Reports"
+def exit_code(job: Job) -> int:
+    """The `offload` exit code for a finished job. See the EXIT_* constants."""
+    status = job.copy_status
+    if status == "Failed":
+        return EXIT_FAILED
+    if status == "Cancelled":
+        # The same code as Ctrl+C, so a detached run's caller sees an
+        # interruption rather than the 0 of a finished offload.
+        return EXIT_CANCELLED
+    if status not in ("Verified", "Copied"):
+        # Incomplete: references a timeline offload could not supply, nothing
+        # to copy, or files skipped on size alone rather than verified. Not a
+        # failure, and not a pass either.
+        return EXIT_INCOMPLETE
+    if job.report_failures:
+        return EXIT_REPORTS_FAILED
+    return EXIT_OK
 
 
 def _resolve_timeline(args: argparse.Namespace) -> timeline_mod.Report:
@@ -391,15 +393,6 @@ _STATUS_LINES = (
     (timeline_mod.Status.MISSING, "not here and not where the timeline says"),
     (timeline_mod.Status.AMBIGUOUS, "MORE THAN ONE CANDIDATE, not chosen"),
 )
-
-#: What `resolve` and a timeline `offload` return while any reference is
-#: unresolved, so a caller gating on the exit code never reads a partial cut
-#: as a complete one.
-EXIT_UNRESOLVED = 1
-#: A job stopped by a cancel (Ctrl+C or `offloader control --cancel`): the
-#: same code either way, so a detached run's caller sees an interruption
-#: rather than the 0 of a finished offload.
-EXIT_CANCELLED = 130
 
 
 def _print_resolution(report: timeline_mod.Report, detail: bool = True) -> None:
@@ -559,23 +552,12 @@ def cmd_offload(args: argparse.Namespace) -> int:
     reports = _write_reports(
         job,
         args.report if isinstance(args.report, list) else _parse_reports(args.report),
-        _report_dir(args, job, job.destination_roots[0]),
+        args.report_dir,
         args.logo,
         args.footer,
     )
     _summarize(job, reports)
-    return _exit_code(job)
-
-
-def _exit_code(job: Job) -> int:
-    """0 only for a job that finished and supplied everything it was asked for."""
-    if any(f.status is FileStatus.FAILED for f in job.files):
-        return 1
-    if job.cancelled:
-        return EXIT_CANCELLED
-    if job.unresolved:
-        return EXIT_UNRESOLVED
-    return 0
+    return exit_code(job)
 
 
 def cmd_report(args: argparse.Namespace) -> int:
@@ -587,12 +569,12 @@ def cmd_report(args: argparse.Namespace) -> int:
     reports = _write_reports(
         job,
         args.report if isinstance(args.report, list) else _parse_reports(args.report),
-        _report_dir(args, job, (args.destinations or [args.source])[0]),
+        args.report_dir,
         args.logo,
         args.footer,
     )
     _summarize(job, reports)
-    return 0
+    return EXIT_REPORTS_FAILED if job.report_failures else 0
 
 
 def cmd_verify(args: argparse.Namespace) -> int:
@@ -637,6 +619,8 @@ def cmd_verify(args: argparse.Namespace) -> int:
             print(f"  {verdict.describe()}")
         for verdict in report.directory_failures:
             print(f"  {verdict.describe()}")
+        for warning in report.warnings:
+            print(f"  warning: {warning}")
         for extra in report.unlisted[:20]:
             print(f"  not in manifest: {extra}")
         if len(report.unlisted) > 20:
@@ -697,13 +681,14 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_CANCELLED
     except (engine.UnsafeDestination, engine.UnsafeControlFile) as exc:
         print(f"refused: {exc}", file=sys.stderr)
-        return 3
+        return EXIT_REFUSED
     except timeline_mod.TimelineSupportMissing as exc:
+        # A missing optional dependency is an environment error.
         print(f"error: {exc}", file=sys.stderr)
-        return 4
+        return EXIT_ERROR
     except (OSError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
-        return 2
+        return EXIT_ERROR
 
 
 if __name__ == "__main__":

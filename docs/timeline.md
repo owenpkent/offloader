@@ -71,15 +71,15 @@ A reference is *unresolved* when it is `ambiguous`, `missing`, `offline`,
 frame counts could not be compared. While any reference is unresolved, the
 cut is not complete and nothing says otherwise:
 
-- `resolve` exits 1.
+- `resolve` exits 4.
 - `offload` still copies every `gap`, because the reachable part of a cut is
   worth having, but it lists every unresolved reference before and after the
   copy, records them on the job, writes them into the CSV, HTML and PDF
   reports under "Unresolved timeline references, NOT supplied by this job",
-  reports the job as `Incomplete` rather than `Verified`, and exits 1.
+  reports the job as `Incomplete` rather than `Verified`, and exits 4.
 - With no gap to copy, `offload` prints "nothing to copy: every reference is
   already here" only when that is true. Otherwise it prints "nothing
-  copyable" with the unresolved count and exits 1.
+  copyable" with the unresolved count and exits 4.
 
 A `generated` reference does not fail either command: no offload can supply
 one, and holding the exit code hostage to it would only teach a caller to
@@ -87,7 +87,8 @@ ignore the code.
 
 A job cancelled with `offloader control PATH --cancel` exits 130, the same as
 Ctrl+C, and its summary says how many files were not attempted. A failed file
-still exits 1.
+still exits 1. Exit 4 is the code for any incomplete job (an empty source or an
+all-skipped rerun as well); the full table is in the README.
 
 ## Why `ambiguous` refuses instead of choosing
 
@@ -137,7 +138,7 @@ ffprobe cannot open the format at all. The outcomes:
   one probe cannot read): still `substituted`, but *unverified*. The terminal
   prints the reference with the note `frames unverified`, the job carries a
   warning naming the file, and it counts as unresolved: the job is
-  `Incomplete` and the exit code is 1.
+  `Incomplete` and the exit code is 4.
 - **The proxy itself yields no frame count**, which includes a same-stem file
   that is not media at all: it does not stand in. A readable original is then
   an ordinary `gap` and is copied; an unreachable one is `missing`, with the
