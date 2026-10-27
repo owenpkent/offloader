@@ -102,16 +102,24 @@ def new_hasher(key: str) -> Hasher:
     return get_algorithm(key).new() or _NullHasher()
 
 
-def hash_file(path: Path, key: str, chunk_size: int = 8 << 20) -> str:
+def hash_file(path: Path, key: str, chunk_size: int = 8 << 20,
+              on_bytes: Callable[[int], None] | None = None) -> str:
     """Hash a file off disk. Used by full verification to re-read a
     destination, and by the `report` and `verify` commands to reconstruct or
-    re-check checksums without copying."""
+    re-check checksums without copying.
+
+    `on_bytes`, if given, is called with the running byte count after each
+    chunk, so a caller can show progress inside one very large file."""
     from .longpath import open_binary
 
     hasher = new_hasher(key)
+    read = 0
     with open_binary(path, "rb") as handle:
         for chunk in iter(lambda: handle.read(chunk_size), b""):
             hasher.update(chunk)
+            read += len(chunk)
+            if on_bytes:
+                on_bytes(read)
     return hasher.hexdigest()
 
 

@@ -178,6 +178,85 @@ def test_quiet_progress_is_silent_off_a_tty(monkeypatch):
     assert err.text == ""
 
 
+class _SlowHandle:
+    """Four 10-byte reads, each costing 20 s on the fake clock, and a hook that
+    sees whatever has been logged so far at the moment each read happens."""
+
+    def __init__(self, clock, on_read):
+        self._clock, self._on_read, self._left = clock, on_read, 4
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self, _n):
+        self._on_read()
+        self._clock[0] += 20.0
+        if self._left:
+            self._left -= 1
+            return b"x" * 10
+        return b""
+
+
+def _slow_reads(monkeypatch, err, on_read=lambda: None):
+    clock = [1000.0]
+    monkeypatch.setattr(cli.sys, "stderr", err)
+    monkeypatch.setattr(cli.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(cli.longpath, "open_binary",
+                        lambda *a, **k: _SlowHandle(clock, on_read))
+
+
+def test_report_logs_a_periodic_line_while_one_file_is_still_hashing(
+        tmp_path: Path, monkeypatch):
+    """A 37 GB clip must not leave the log silent for the whole read."""
+    source = tmp_path / "card"
+    source.mkdir()
+    (source / "only.mov").write_bytes(b"x" * 40)
+    err = _PipedStderr()
+    _slow_reads(monkeypatch, err)
+    seen_mid_file: list[str] = []
+
+    real = cli.engine.hash_file
+
+    def spy(path, key, *a, **k):
+        digest = real(path, key, *a, **k)
+        seen_mid_file.append(err.text)      # before rescan returns
+        return digest
+
+    monkeypatch.setattr(cli.engine, "hash_file", spy)
+    assert cli.main(["report", "--source", str(source), "--name", "A001",
+                     "--no-probe", "--report", "csv"]) == 0
+    mid = seen_mid_file[0].splitlines()
+    # One line when the file starts, then at least one periodic line before
+    # the hash finished, each showing progress within the file.
+    assert len(mid) >= 2
+    assert any("%" in line and "ETA" in line for line in mid[1:])
+
+
+def test_report_logs_a_completion_line(source_tree: Path, capsys):
+    cli.main(["report", "--source", str(source_tree), "--name", "A001",
+              "--no-probe", "--report", "csv"])
+    lines = capsys.readouterr().err.splitlines()
+    assert lines and lines[-1].startswith("[100.0%]")
+
+
+def test_verify_does_not_claim_100_percent_before_the_last_hash_returns(
+        source_tree: Path, tmp_path: Path, monkeypatch, capsys):
+    destination = tmp_path / "d1"
+    cli.main(["offload", "--source", str(source_tree), "--dest", str(destination),
+              "--name", "A001", "--verify", "full", "--report", "mhl",
+              "--no-probe", "--quiet"])
+    capsys.readouterr()
+    err = _PipedStderr()
+    snapshots: list[str] = []
+    _slow_reads(monkeypatch, err, on_read=lambda: snapshots.append(err.text))
+    cli.main(["verify", str(destination)])
+    assert snapshots and all("100.0%" not in text for text in snapshots)
+    assert "[100.0%]" in err.text
+
+
 def test_report_command_logs_progress_off_a_tty_and_quiet_silences_it(
         source_tree: Path, tmp_path: Path, monkeypatch, capsys):
     # capsys replaces stderr with a non-TTY object, the case under test.

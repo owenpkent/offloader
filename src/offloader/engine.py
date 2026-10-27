@@ -533,7 +533,14 @@ def run(source_root: Path, options: OffloadOptions,
                         )
                     try:
                         dst_sum, verify_attempts = retry_mod.call(
-                            lambda p=partial: hash_file(p, options.algorithm),
+                            lambda p=partial, _i=index, _s=source, _z=stat.st_size:
+                            hash_file(
+                                p, options.algorithm,
+                                on_bytes=lambda n: emit(ProgressEvent(
+                                    _i, len(files), _s.name, "verify",
+                                    n, _z,
+                                    counters.job_bytes_done,
+                                    counters.job_bytes_total))),
                             options.retry,
                         )
                         if verify_attempts > 1:
@@ -680,7 +687,12 @@ def rescan(source_root: Path, destination_roots: Sequence[Path],
                                    0, stat.st_size, done, total))
         if algorithm.factory is not None:
             try:
-                entry.checksum = hash_file(source, options.algorithm)
+                entry.checksum = hash_file(
+                    source, options.algorithm,
+                    on_bytes=lambda n, _i=index, _s=source, _z=stat.st_size, _d=done:
+                        progress(ProgressEvent(_i, len(files), _s.name, "verify",
+                                               n, _z, _d + n, total))
+                        if progress else None)
             except OSError:
                 entry.checksum = None
         done += stat.st_size
@@ -706,6 +718,12 @@ def rescan(source_root: Path, destination_roots: Sequence[Path],
                     source, entry.media, thumb_dir, options.thumbnail_count
                 )
         job.files.append(entry)
+
+    if progress and files:
+        # The last per-file event fires before that file is hashed, so say
+        # outright that the job is complete.
+        progress(ProgressEvent(len(files) - 1, len(files), files[-1].name, "verify",
+                               stat.st_size, stat.st_size, total, total))
 
     job.finished = _dt.datetime.now()
     return job

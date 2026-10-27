@@ -27,7 +27,8 @@ project uses [semantic versioning][semver].
   six-hour `offloader report` was indistinguishable from a hung one. Off a TTY,
   `offload`, `report` and `verify` now write plain newline-terminated lines
   (percent of job bytes, files done/total, file name, throughput and ETA): one
-  when a file starts, one every 30 s, and one on completion. The single-line
+  when a file starts, one every 30 s (including partway through a single large
+  file, via a new `on_bytes` callback on `hash_file`), and one on completion. The single-line
   bar on a terminal is unchanged and `--quiet` still silences both.
 
 ### Fixed

@@ -368,35 +368,54 @@ def cmd_verify(args: argparse.Namespace) -> int:
     show = not args.quiet
     tty = sys.stderr.isatty()
     last_log = time.monotonic()
+    last_start = -LOG_START_GAP
+    started_index = -1
 
     def progress(index: int, total: int, path: Path) -> None:
-        nonlocal last_log
-        if not show:
-            return
-        if tty:
+        if show and tty:
             sys.stderr.write('\r' + f"  [{index + 1}/{total}] {path.name[:70]:<70}")
             sys.stderr.flush()
+
+    def log_bytes(index: int, total: int, path: Path, done: int, size: int) -> None:
+        """Off a TTY: a line as each file starts and one per LOG_INTERVAL after.
+
+        Percent counts files completed plus the share of this one read so far,
+        and stops short of 100 until the last hash has returned (the manifest's
+        own completion line below says so).
+        """
+        nonlocal last_log, last_start, started_index
+        if not show or tty:
             return
-        # Off a TTY: the first and last file of each manifest, and one line per
-        # LOG_INTERVAL in between, so a long verify leaves a trail in the log.
         now = time.monotonic()
-        if index == 0 or index + 1 == total or now - last_log >= LOG_INTERVAL:
-            last_log = now
-            pct = (index + 1) / total * 100 if total else 100.0
-            sys.stderr.write(f"[{pct:5.1f}%] verify {index + 1}/{total} {path.name}\n")
-            sys.stderr.flush()
+        new_file = index != started_index
+        started_index = index
+        due = now - last_log >= LOG_INTERVAL
+        if not (due or (new_file and now - last_start >= LOG_START_GAP)):
+            return
+        if new_file:
+            last_start = now
+        last_log = now
+        share = done / size if size else 0.0
+        pct = min((index + share) / total * 100, 99.9) if total else 0.0
+        sys.stderr.write(f"[{pct:5.1f}%] verify {index + 1}/{total} {path.name}\n")
+        sys.stderr.flush()
 
     worst = 0
     for manifest in manifests:
         try:
             report = verify_mod.verify_manifest(
-                manifest, progress=progress, bypass_cache=not args.allow_cache)
+                manifest, progress=progress, bytes_progress=log_bytes,
+                bypass_cache=not args.allow_cache)
         except Exception as exc:
             print(f"error: could not read {manifest}: {exc}", file=sys.stderr)
             worst = max(worst, 2)
             continue
         if show and tty:
             sys.stderr.write('\r' + " " * 90 + '\r')
+        elif show and report.verdicts:
+            sys.stderr.write(f"[100.0%] verify {len(report.verdicts)}/"
+                             f"{len(report.verdicts)} {manifest.name} done\n")
+            sys.stderr.flush()
 
         print('\n' + str(manifest))
         print(f"  {report.summary()}")
