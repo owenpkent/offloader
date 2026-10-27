@@ -24,25 +24,46 @@ REPORT_FILENAMES = {
 DEFAULT_REPORTS = "pdf"
 
 
+#: Seconds between periodic progress lines when stderr is not a terminal.
+LOG_INTERVAL = 30.0
+#: Minimum seconds between "file started" lines, so a card of thousands of
+#: small clips cannot flood a log.
+LOG_START_GAP = 1.0
+
+
 class _Progress:
-    """Single-line progress on stderr; silent when not a TTY."""
+    """Progress on stderr: a single redrawn line on a TTY, plain lines otherwise.
+
+    A background job or CI run has no terminal to redraw, and a six-hour run
+    that logs nothing until its summary is indistinguishable from a hung one.
+    So off a TTY it writes newline-terminated lines, throttled to stay readable.
+    `--quiet` silences both.
+    """
 
     def __init__(self, enabled: bool) -> None:
-        self.enabled = enabled and sys.stderr.isatty()
+        self.enabled = enabled
+        self.tty = sys.stderr.isatty()
         self._last = 0.0
         self._width = 0
+        self._started = time.monotonic()
+        self._last_start = -LOG_START_GAP
+        self._last_log = self._started
+        self._key: tuple[int, str] | None = None
+        self._logged_final = False
 
     def __call__(self, event: engine.ProgressEvent) -> None:
         if not self.enabled:
             return
         now = time.monotonic()
         final = event.job_bytes_done >= event.job_bytes_total
+        if not self.tty:
+            self._log(event, now, final)
+            return
         if now - self._last < 0.1 and not final:
             return
         self._last = now
 
-        pct = (event.job_bytes_done / event.job_bytes_total * 100
-               if event.job_bytes_total else 100.0)
+        pct = self._percent(event)
         line = (f"  [{pct:5.1f}%] {event.stage:<6} "
                 f"{event.file_index + 1}/{event.file_total}  {event.file_name}")
         line = line[:110]
@@ -51,8 +72,40 @@ class _Progress:
         sys.stderr.write("\r" + line + " " * pad)
         sys.stderr.flush()
 
+    @staticmethod
+    def _percent(event: engine.ProgressEvent) -> float:
+        return (event.job_bytes_done / event.job_bytes_total * 100
+                if event.job_bytes_total else 100.0)
+
+    def _log(self, event: engine.ProgressEvent, now: float, final: bool) -> None:
+        key = (event.file_index, event.stage)
+        new_file = key != self._key
+        self._key = key
+        due = now - self._last_log >= LOG_INTERVAL
+        started = new_file and now - self._last_start >= LOG_START_GAP
+        finished = final and not self._logged_final
+        if not (due or started or finished):
+            return
+        if new_file:
+            self._last_start = now
+        self._last_log = now
+        self._logged_final = self._logged_final or final
+
+        pct = self._percent(event)
+        parts = [f"[{pct:5.1f}%] {event.stage} "
+                 f"{event.file_index + 1}/{event.file_total} {event.file_name}"]
+        elapsed = now - self._started
+        if event.job_bytes_done and elapsed > 0:
+            rate = event.job_bytes_done / elapsed
+            parts.append(f"{format_size(int(rate))}/s")
+            remaining = event.job_bytes_total - event.job_bytes_done
+            if remaining > 0:
+                parts.append(f"ETA {format_elapsed(remaining / rate)}")
+        sys.stderr.write("  ".join(parts) + "\n")
+        sys.stderr.flush()
+
     def done(self) -> None:
-        if self.enabled and self._width:
+        if self.enabled and self.tty and self._width:
             sys.stderr.write("\r" + " " * self._width + "\r")
             sys.stderr.flush()
             self._width = 0
@@ -312,11 +365,25 @@ def cmd_verify(args: argparse.Namespace) -> int:
         print(f"error: no .mhl manifest found under {target}", file=sys.stderr)
         return 2
 
-    show = not args.quiet and sys.stderr.isatty()
+    show = not args.quiet
+    tty = sys.stderr.isatty()
+    last_log = time.monotonic()
 
     def progress(index: int, total: int, path: Path) -> None:
-        if show:
+        nonlocal last_log
+        if not show:
+            return
+        if tty:
             sys.stderr.write('\r' + f"  [{index + 1}/{total}] {path.name[:70]:<70}")
+            sys.stderr.flush()
+            return
+        # Off a TTY: the first and last file of each manifest, and one line per
+        # LOG_INTERVAL in between, so a long verify leaves a trail in the log.
+        now = time.monotonic()
+        if index == 0 or index + 1 == total or now - last_log >= LOG_INTERVAL:
+            last_log = now
+            pct = (index + 1) / total * 100 if total else 100.0
+            sys.stderr.write(f"[{pct:5.1f}%] verify {index + 1}/{total} {path.name}\n")
             sys.stderr.flush()
 
     worst = 0
@@ -328,7 +395,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
             print(f"error: could not read {manifest}: {exc}", file=sys.stderr)
             worst = max(worst, 2)
             continue
-        if show:
+        if show and tty:
             sys.stderr.write('\r' + " " * 90 + '\r')
 
         print('\n' + str(manifest))
