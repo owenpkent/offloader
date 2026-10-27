@@ -161,6 +161,7 @@ def verify_manifest(
     manifest: Path,
     *,
     progress: Callable[[int, int, Path], None] | None = None,
+    bytes_progress: Callable[[int, int, Path, int, int], None] | None = None,
     bypass_cache: bool = True,
     find_unlisted: bool = True,
 ) -> VerifyReport:
@@ -168,6 +169,9 @@ def verify_manifest(
 
     `bypass_cache` evicts each file before reading it, so a freshly written tree
     is read off the device rather than out of memory.
+
+    `progress` fires as each entry starts; `bytes_progress` (index, total, path,
+    bytes read, file size) fires after each chunk read within the entry.
     """
     manifest = Path(manifest)
     entries = list(_entries(manifest))
@@ -191,7 +195,11 @@ def verify_manifest(
             actual_size = path.stat().st_size
             if bypass_cache:
                 evict_from_cache(path)
-            actual = hash_file(path, algorithm_key)
+            actual = hash_file(
+                path, algorithm_key,
+                on_bytes=(lambda n, _i=index, _p=path, _z=actual_size:
+                          bytes_progress(_i, len(entries), _p, n, _z))
+                if bytes_progress else None)
         except OSError as exc:
             report.verdicts.append(
                 FileVerdict(path, EntryResult.UNREADABLE, expected=expected,

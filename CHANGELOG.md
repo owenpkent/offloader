@@ -22,6 +22,15 @@ project uses [semantic versioning][semver].
   and is selectable in the desktop app's Simple mode and preset editor. This is
   a one-way verified transfer, not two-way sync — see `ROADMAP.md`.
 
+- **Progress lines when stderr is not a terminal.** A background job, CI run
+  or redirected log used to print nothing until the final summary, so a
+  six-hour `offloader report` was indistinguishable from a hung one. Off a TTY,
+  `offload`, `report` and `verify` now write plain newline-terminated lines
+  (percent of job bytes, files done/total, file name, throughput and ETA): one
+  when a file starts, one every 30 s (including partway through a single large
+  file, via a new `on_bytes` callback on `hash_file`), and one on completion. The single-line
+  bar on a terminal is unchanged and `--quiet` still silences both.
+
 ### Fixed
 
 Found by adding CI on Linux and macOS — the suite had only ever run on Windows.
